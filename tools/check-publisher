@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/check-publisher -- checks that every name and contact this repository publishes under is copied from
+# publisher.conf, so a fork that publishes without setting its own fails before it ships under this repository's
+# identity.
+#
+#     python3 tools/check-publisher                        the copies agree with publisher.conf (every pull request)
+#     python3 tools/check-publisher --repository <o>/<r>   and publisher.conf describes that repository (every release)
+#
+# publisher.conf holds `publisher`, `contact`, `maintainers` and `source`. From them:
+#   - the marketplace in .claude-plugin/marketplace.json is named `<publisher>-ai-tools-assets`, its `owner` is
+#     the publisher and the contact, and it lists each set once as the plugin `ai-tools-assets-<set>` from
+#     `./sets/<set>`;
+#   - each set `sets/<set>/` is named `<publisher>` or `<publisher>-<topic>`, except `core`, which belongs to
+#     UPSTREAM_PUBLISHER; its set.conf carries the publisher's `maintainers` and `source`;
+#   - both of a set's plugin manifests carry the plugin name, the publisher and contact as `author`, and `source` as
+#     `homepage` and `repository`.
+# The publisher and each set name follow the asset name rule, do not contain `anthropic` or `claude`, and do not
+# start with a word from tools/reserved-words.txt. With `--repository` (a release passes github.repository), the
+# publisher is the repository's owner and `source` is its GitHub URL, compared case-insensitively as GitHub compares
+# them; and a publisher other than UPSTREAM_PUBLISHER may not keep a contact at UPSTREAM_DOMAIN. Each finding is
+# printed as `check-publisher: <file>: <what>`; the exit status is 1 when any is found. Standard library only.
+
+import argparse
+import json
+import pathlib
+import re
+import sys
+
+UPSTREAM_PUBLISHER = "dag-node"
+UPSTREAM_DOMAIN = "dagnode.com"
+MARKETPLACE_SUFFIX = "-ai-tools-assets"
+PLUGIN_PREFIX = "ai-tools-assets-"
+NAME_RULE = re.compile(r"^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+CLAUDE_RESERVED = ("anthropic", "claude")
+IDENTITY_KEYS = ("publisher", "contact", "maintainers", "source")
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+findings = []
+
+
+def finding(path, what):
+    findings.append(f"check-publisher: {path}: {what}")
+
+
+def read_conf(path):
+    """Return the KEY=value pairs of a config file: `#` comments and blank lines skipped, one layer of quotes removed."""
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def as_list(value):
+    """Return the items of a `[a, b]` list value, or the value alone, stripped, as a tuple."""
+    value = value.strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    return tuple(item.strip().strip("\"'") for item in value.split(",") if item.strip())
+
+
+def reserved_words():
+    path = ROOT / "tools" / "reserved-words.txt"
+    return {line.strip() for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")}
+
+
+def check_name(path, kind, name, reserved):
+    if not NAME_RULE.match(name):
+        finding(path, f"{kind} `{name}` is not 1-64 characters of a-z, 0-9 and single hyphens, starting and ending "
+                      f"with a letter or digit")
+        return
+    for word in CLAUDE_RESERVED:
+        if word in name:
+            finding(path, f"{kind} `{name}` contains `{word}`, which Claude reserves")
+    if name.split("-", 1)[0] in reserved:
+        finding(path, f"{kind} `{name}` starts with `{name.split('-', 1)[0]}`, a word in tools/reserved-words.txt")
+
+
+def load_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        finding(path.relative_to(ROOT), f"cannot be read as JSON: {error}")
+        return None
+
+
+def expect(path, field, found, wanted):
+    if found != wanted:
+        finding(path, f"`{field}` is `{found}`, expected `{wanted}` from publisher.conf")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check the published names and contacts against publisher.conf.")
+    parser.add_argument("--repository", help="<owner>/<repo> the release runs in; a release passes github.repository")
+    args = parser.parse_args()
+
+    reserved = reserved_words()
+    conf = read_conf(ROOT / "publisher.conf")
+    missing = [key for key in IDENTITY_KEYS if not conf.get(key)]
+    if missing:
+        finding("publisher.conf", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+        return report()
+    publisher, contact, source = conf["publisher"], conf["contact"], conf["source"]
+    maintainers = as_list(conf["maintainers"])
+    check_name("publisher.conf", "publisher", publisher, reserved)
+
+    if args.repository is not None:
+        owner = args.repository.split("/", 1)[0]
+        if publisher != owner.lower():
+            finding("publisher.conf", f"publisher is `{publisher}`, but this repository belongs to `{owner}`. To "
+                                      f"publish from it, set `publisher={owner.lower()}`, rename the sets to start "
+                                      f"with it, and run the check again")
+        wanted_source = f"https://github.com/{args.repository}"
+        if source.lower() != wanted_source.lower():
+            finding("publisher.conf", f"source is `{source}`, but this repository is `{wanted_source}`")
+        if publisher != UPSTREAM_PUBLISHER:
+            for key in ("contact", "maintainers"):
+                if UPSTREAM_DOMAIN in conf[key].lower():
+                    finding("publisher.conf", f"`{key}` still names {UPSTREAM_PUBLISHER}'s address at "
+                                              f"{UPSTREAM_DOMAIN}; set the publisher's own")
+
+    author = {"name": publisher, "email": contact}
+    sets = sorted(path.name for path in (ROOT / "sets").iterdir() if (path / "set.conf").is_file())
+    for name in sets:
+        conf_path = pathlib.Path("sets", name, "set.conf")
+        set_conf = read_conf(ROOT / conf_path)
+        if set_conf.get("name", "") != name:
+            finding(conf_path, f"`name={set_conf.get('name', '')}` differs from the set's directory `{name}`")
+        check_name(conf_path, "set name", name, reserved)
+        if name == "core":
+            if publisher != UPSTREAM_PUBLISHER:
+                finding(conf_path, f"`core` belongs to {UPSTREAM_PUBLISHER}; a set published by `{publisher}` is "
+                                   f"named `{publisher}` or `{publisher}-<topic>`")
+        elif name != publisher and not name.startswith(publisher + "-"):
+            finding(conf_path, f"set `{name}` does not start with its publisher: name it `{publisher}` or "
+                               f"`{publisher}-<topic>`")
+        expect(conf_path, "maintainers", as_list(set_conf.get("maintainers", "")), maintainers)
+        expect(conf_path, "source", set_conf.get("source", ""), source)
+
+        plugin = PLUGIN_PREFIX + name
+        for manifest in (pathlib.Path("sets", name, "plugin.json"),
+                         pathlib.Path("sets", name, ".claude-plugin", "plugin.json")):
+            data = load_json(ROOT / manifest)
+            if data is None:
+                continue
+            expect(manifest, "name", data.get("name"), plugin)
+            expect(manifest, "author", data.get("author"), author)
+            expect(manifest, "homepage", data.get("homepage"), source)
+            expect(manifest, "repository", data.get("repository"), source)
+
+    marketplace_path = pathlib.Path(".claude-plugin", "marketplace.json")
+    marketplace = load_json(ROOT / marketplace_path)
+    if marketplace is not None:
+        expect(marketplace_path, "name", marketplace.get("name"), publisher + MARKETPLACE_SUFFIX)
+        expect(marketplace_path, "owner", marketplace.get("owner"), author)
+        entries = {entry.get("name"): entry.get("source") for entry in marketplace.get("plugins", [])}
+        wanted = {PLUGIN_PREFIX + name: f"./sets/{name}" for name in sets}
+        for plugin, plugin_source in wanted.items():
+            if entries.get(plugin) != plugin_source:
+                finding(marketplace_path, f"lists `{plugin}` from `{entries.get(plugin)}`, expected "
+                                          f"`{plugin_source}`")
+        for plugin in sorted(set(entries) - set(wanted)):
+            finding(marketplace_path, f"lists `{plugin}`, which is not a set in sets/")
+
+    return report()
+
+
+def report():
+    for line in findings:
+        print(line, file=sys.stderr)
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

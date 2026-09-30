@@ -1,0 +1,79 @@
+# Words a published set's name does not start with, so a set, and every
+# asset it authors, does not read as published by an AI vendor or a large
+# technology company. One lowercase word per line; `#` starts a comment.
+# A word matches the first hyphen-separated part of a set name. `anthropic`
+# and `claude` are also refused anywhere in any name, as Claude requires.
+# A vendored asset keeps its upstream name. See CONTRIBUTING.md, "Names".
+
+# Anthropic
+anthropic
+claude
+
+# OpenAI
+openai
+chatgpt
+gpt
+codex
+
+# Google
+google
+gemini
+deepmind
+
+# Microsoft and GitHub
+microsoft
+azure
+copilot
+github
+
+# Amazon
+amazon
+aws
+bedrock
+kiro
+
+# Meta
+meta
+llama
+
+# Alibaba
+alibaba
+qwen
+
+# Other model providers
+mistral
+deepseek
+xai
+grok
+cohere
+perplexity
+moonshot
+kimi
+zhipu
+glm
+minimax
+baidu
+ernie
+tencent
+bytedance
+doubao
+huggingface
+
+# Agent and runtime products
+ollama
+cursor
+windsurf
+opencode
+jetbrains
+
+# Other large technology companies
+apple
+nvidia
+ibm
+oracle
+salesforce
+adobe
+intel
+amd
+samsung
+huawei
