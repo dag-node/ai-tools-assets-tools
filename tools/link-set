@@ -12,6 +12,11 @@
 # by copying. A subagent is not placed, since a skills directory holds skills alone. A copied skill does not follow the
 # set, so an update is a `--remove` and a new run.
 #
+# The set is validated first, through the validator's own descriptor chain from the root (`tools/lib/safe_read.py`),
+# and a set that does not validate places nothing: the validator refuses every symbolic link inside a set, so the
+# skills placed are the ones it recorded, and a copy is taken from a tree that held no link when it was judged. A
+# linked `sets/` or set directory is refused the same way, before a byte of its target is read.
+#
 # What was placed is recorded in `<target>/.ai-tools-assets-<set>.links`, one `<name>\t<mode>\t<identity>` line each:
 # a `link` line carries the absolute skill directory the link points at, a `copy` line the SHA-256 of the copy's
 # inventory (every entry's relative path and, for a file, the SHA-256 of its content). `--remove` takes an entry out
@@ -37,6 +42,10 @@ sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
+from license_policy import allowlist_in_force  # noqa: E402
+from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
+from set_validation import PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
 
 MODE_LINK = "link"
 MODE_COPY = "copy"
@@ -130,6 +139,45 @@ def remove_installed_skills(target: pathlib.Path, set_name: str, collector: Find
     return collector.report()
 
 
+def validated_skill_names(root: pathlib.Path, set_name: str, collector: FindingCollector) -> Optional[list]:
+    """The names of the skills the validator recorded for the set, or None when the set did not validate.
+
+    The root is the operator's argument; `sets/` and the set are opened from its descriptor without following a link,
+    and the set is judged under the source profile with the repository's `publisher.conf` and `LICENSES/`.
+    """
+    try:
+        root_fd = open_root(root)
+    except OSError:
+        collector.refuse(str(root), "repo.layout", "is not a directory; a set is placed from its publisher repository")
+        return None
+    try:
+        try:
+            publisher = parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("publisher.conf"), fmt.FILE_MAX_BYTES))
+            sets_fd = open_directory("sets", root_fd)
+        except FileNotFoundError:
+            collector.refuse(f"sets/{set_name}", "repo.layout", f"publisher.conf and sets/ are read under {root}")
+            return None
+        except RefusedRead as refusal:
+            collector.refuse("publisher.conf or sets", "repo.layout", refusal.message)
+            return None
+        allowlist, allowlist_error = allowlist_in_force(publisher)
+        if allowlist_error:
+            collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
+        options = ValidationOptions(publisher=publisher.get("publisher") or None, profile=PROFILE_SOURCE,
+                                    reserved_words=read_reserved_words(TOOLS / "reserved-words.txt"), license_allowlist=allowlist,
+                                    license_text_directories=[root], display_root=root, publisher_conf=publisher)
+        try:
+            summary = validate_set_directory(root / "sets" / set_name, options, collector, parent_fd=sets_fd)
+        finally:
+            os.close(sets_fd)
+    finally:
+        os.close(root_fd)
+    if collector.has_refusals():
+        print(f"link-set: `{set_name}` does not validate; nothing was placed", file=sys.stderr)
+        return None
+    return sorted(asset.name for asset in summary.assets if asset.kind_id == "skills")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Link or copy a set's skills into an agent's skills directory.")
     parser.add_argument("set", help="the set whose skills are placed, by name")
@@ -150,18 +198,17 @@ def main() -> int:
     target = args.target.expanduser().resolve()
     if args.remove:
         return remove_installed_skills(target, args.set, collector)
-    skills_root = root / "sets" / args.set / "skills"
-    if not skills_root.is_dir():
-        collector.refuse(f"sets/{args.set}/skills", "kind.shape", f"no skills directory under {root}")
+    names = validated_skill_names(root, args.set, collector)
+    if names is None:
         return collector.report()
-    skills = sorted(path for path in skills_root.iterdir()
-                    if fmt.is_valid_name(path.name) and path.is_dir() and not path.is_symlink() and (path / "SKILL.md").is_file())
+    skills_root = root / "sets" / args.set / "skills"
     if wanted is not None:
-        for name in sorted(wanted - {path.name for path in skills}):
+        for name in sorted(wanted - set(names)):
             collector.refuse(f"sets/{args.set}/skills/{name}", "kind.shape", "no such skill")
-        skills = [path for path in skills if path.name in wanted]
+        names = [name for name in names if name in wanted]
     if collector.has_refusals():
         return collector.report()
+    skills = [skills_root / name for name in names]
     target.mkdir(parents=True, exist_ok=True)
     record = record_path(target, args.set)
     placed = read_record(record, collector)
