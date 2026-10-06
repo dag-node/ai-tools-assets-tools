@@ -4,9 +4,12 @@
 # publisher.conf, so a fork that publishes without setting its own fails before it ships under this repository's
 # identity.
 #
-#     python3 tools/check-publisher                        the copies agree with publisher.conf (every pull request)
-#     python3 tools/check-publisher --repository <o>/<r>   and publisher.conf describes that repository (every release)
+# ```bash
+# python3 tools/check-publisher [--root DIR]                        # every pull request
+# python3 tools/check-publisher [--root DIR] --repository <o>/<r>   # every release: publisher.conf describes <o>/<r>
+# ```
 #
+# The repository checked is the current directory, or `--root`; the reserved words are read beside this file.
 # publisher.conf holds `publisher`, `contact`, `maintainers` and `source`. From them:
 #   - the marketplace in .claude-plugin/marketplace.json is named `<publisher>-ai-tools-assets`, its `owner` is
 #     the publisher and the contact, and it lists each set once as the plugin `ai-tools-assets-<set>` from
@@ -35,7 +38,8 @@ NAME_RULE = re.compile(r"^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 CLAUDE_RESERVED = ("anthropic", "claude")
 IDENTITY_KEYS = ("publisher", "contact", "maintainers", "source")
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+TOOLS = pathlib.Path(__file__).resolve().parent
+ROOT = pathlib.Path(".")
 findings = []
 
 
@@ -44,7 +48,7 @@ def finding(path, what):
 
 
 def read_conf(path):
-    """Return the KEY=value pairs of a config file: `#` comments and blank lines skipped, one layer of quotes removed."""
+    """Return the KEY=value pairs of a config file: `#` comments and blank lines skipped, one quote layer removed."""
     values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -67,7 +71,7 @@ def as_list(value):
 
 
 def reserved_words():
-    path = ROOT / "tools" / "reserved-words.txt"
+    path = TOOLS / "reserved-words.txt"
     return {line.strip() for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.lstrip().startswith("#")}
 
@@ -99,9 +103,16 @@ def expect(path, field, found, wanted):
 
 def main():
     parser = argparse.ArgumentParser(description="Check the published names and contacts against publisher.conf.")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."),
+                        help="the publisher repository (default: the current directory)")
     parser.add_argument("--repository", help="<owner>/<repo> the release runs in; a release passes github.repository")
     args = parser.parse_args()
 
+    global ROOT
+    ROOT = args.root.resolve()
+    if not (ROOT / "publisher.conf").is_file():
+        finding("publisher.conf", f"not found under {ROOT}; run from the publisher repository or pass --root")
+        return report()
     reserved = reserved_words()
     conf = read_conf(ROOT / "publisher.conf")
     missing = [key for key in IDENTITY_KEYS if not conf.get(key)]

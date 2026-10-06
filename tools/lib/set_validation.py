@@ -1,0 +1,685 @@
+# SPDX-License-Identifier: MIT
+"""The format-1 validator over one set directory: every rule `asset_format.RULES` names, applied in one walk.
+
+A set is read as data. The walk does not follow a symlink, reads each file once, and judges what it read; no file under
+the set is imported, executed or sourced. The same function serves `tools/validate` over a publisher repository, the
+conformance fixtures under `fixtures/`, and a built set under the release profile, so one implementation decides what
+a set may carry.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Set, Tuple
+
+import asset_format as fmt
+from findings import FindingCollector
+from frontmatter import FrontmatterDocument, split_frontmatter
+from key_value_config import ConfigDocument, read_key_value_file
+from license_policy import check_declared_license, check_license_texts
+
+PROFILE_SOURCE = "source"
+PROFILE_RELEASE = "release"
+PROFILES: Tuple[str, ...] = (PROFILE_SOURCE, PROFILE_RELEASE)
+TEXT_SUFFIXES_KEPT: Tuple[str, ...] = (".md", ".conf", ".json", ".cs", ".txt", ".yaml", ".yml")
+SHA256SUMS_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64}) [ *](?P<path>.+)$")
+
+
+@dataclass
+class FileRecord:
+    """One regular file the walk met, with the text it read where the suffix is one the rules inspect."""
+
+    relative_path: Path
+    size: int
+    text: Optional[str] = None
+    is_text: bool = True
+
+
+@dataclass
+class AssetRecord:
+    kind_id: str
+    name: str
+    root: Path  # relative to the set root; the skill directory, or the subagent file
+    is_vendored: bool = False
+
+
+@dataclass
+class SetSummary:
+    """What the validator learned about a set, for the caller that renders or builds it."""
+
+    set_name: str
+    set_conf: Optional[ConfigDocument] = None
+    assets: List[AssetRecord] = field(default_factory=list)
+    files: List[FileRecord] = field(default_factory=list)
+    declared_licenses: Set[str] = field(default_factory=set)
+
+
+@dataclass
+class ValidationOptions:
+    publisher: Optional[str]
+    profile: str
+    reserved_words: Set[str]
+    license_allowlist: Sequence[str]
+    license_text_directories: Sequence[Path]
+    display_root: Path
+
+
+def validate_set_directory(set_directory: Path, options: ValidationOptions, collector: FindingCollector) -> SetSummary:
+    """Apply every set-level rule to `set_directory` and return what was read."""
+    validator = _SetValidator(set_directory, options, collector)
+    return validator.run()
+
+
+class _SetValidator:
+    def __init__(self, set_directory: Path, options: ValidationOptions, collector: FindingCollector) -> None:
+        self.set_directory = set_directory
+        self.options = options
+        self.collector = collector
+        self.set_name = set_directory.name
+        self.summary = SetSummary(set_name=self.set_name)
+        self.files_by_path: Dict[Path, FileRecord] = {}
+        self.directories: Set[Path] = set()
+
+    # ── reporting ──────────────────────────────────────────────────────────────────────────────────────────────
+    def display(self, relative_path: Path) -> str:
+        try:
+            return str((self.set_directory / relative_path).relative_to(self.options.display_root))
+        except ValueError:
+            return str(self.set_directory / relative_path)
+
+    def refuse(self, relative_path: Path, rule_id: str, message: str) -> None:
+        self.collector.refuse(self.display(relative_path), rule_id, message)
+
+    def warn(self, relative_path: Path, rule_id: str, message: str) -> None:
+        self.collector.warn(self.display(relative_path), rule_id, message)
+
+    # ── the run ────────────────────────────────────────────────────────────────────────────────────────────────
+    def run(self) -> SetSummary:
+        if not self.set_directory.is_dir():
+            self.refuse(Path("."), "set.conf.missing", "is not a directory")
+            return self.summary
+        self.walk(Path("."))
+        self.check_set_root_entries()
+        set_conf = self.check_set_conf()
+        self.check_claude_plugin_directory()
+        if set_conf is not None:
+            self.check_plugin_manifests(set_conf)
+        self.check_set_name()
+        skills = self.check_skills()
+        subagents = self.check_subagents()
+        self.check_name_collisions(skills, subagents)
+        self.check_metadata_directory()
+        self.check_reserved_kind_directories()
+        if self.options.profile == PROFILE_RELEASE:
+            self.check_release_inventory()
+        return self.summary
+
+    # ── the walk ───────────────────────────────────────────────────────────────────────────────────────────────
+    def walk(self, relative_directory: Path) -> None:
+        directory = self.set_directory / relative_directory
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError as error:
+            self.refuse(relative_directory, "file.special", f"cannot be read: {error.strerror}")
+            return
+        for entry in entries:
+            relative_path = relative_directory / entry.name
+            if not self.check_file_name(relative_path, entry.name):
+                continue
+            if entry.is_symlink():
+                self.refuse(relative_path, "file.symlink", "is a symbolic link; a zip or a copy does not carry one the same way on every host")
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                self.directories.add(relative_path)
+                self.check_reserved_directory_name(relative_path, entry.name)
+                self.walk(relative_path)
+                continue
+            if not entry.is_file(follow_symlinks=False):
+                self.refuse(relative_path, "file.special", "is not a regular file or a directory")
+                continue
+            self.record_file(relative_path, entry)
+        if relative_directory == Path(".") and len(self.files_by_path) > fmt.SET_MAX_FILES:
+            self.refuse(Path("."), "file.size", f"holds {len(self.files_by_path)} files; a set holds at most {fmt.SET_MAX_FILES}")
+
+    def check_file_name(self, relative_path: Path, name: str) -> bool:
+        if any(character in name for character in "\n\r") or not name.isprintable():
+            self.refuse(relative_path.parent / repr(name), "file.name", "a file name is printable and carries no newline")
+            return False
+        return True
+
+    def check_reserved_directory_name(self, relative_path: Path, name: str) -> None:
+        if name == ".agents":
+            self.refuse(relative_path, "file.reserved-name", "`.agents` is reserved and not used inside a set")
+        elif name in (fmt.CLAUDE_PLUGIN_DIRECTORY, fmt.METADATA_DIRECTORY, "variants") and relative_path.parent != Path("."):
+            if name == fmt.CLAUDE_PLUGIN_DIRECTORY and relative_path.parts[0] == "skills":
+                self.refuse(relative_path, "skill.plugin-manifest", "a `.claude-plugin` directory inside a skill makes it a plugin of its own")
+            else:
+                self.refuse(relative_path, "file.reserved-name", f"`{name}` is reserved for the set root")
+
+    def record_file(self, relative_path: Path, entry: os.DirEntry) -> None:
+        try:
+            stat = entry.stat(follow_symlinks=False)
+        except OSError as error:
+            self.refuse(relative_path, "file.special", f"cannot be read: {error.strerror}")
+            return
+        record = FileRecord(relative_path=relative_path, size=stat.st_size)
+        if stat.st_nlink > 1:
+            self.refuse(relative_path, "file.hardlink", f"has {stat.st_nlink} links; a file inside a set has one")
+        if stat.st_size > fmt.FILE_MAX_BYTES:
+            self.refuse(relative_path, "file.size", f"is {stat.st_size} bytes; a file is at most {fmt.FILE_MAX_BYTES}")
+            record.is_text = False
+        else:
+            record.is_text = self.read_text(relative_path, record)
+        self.check_reserved_file_placement(relative_path)
+        self.files_by_path[relative_path] = record
+        self.summary.files.append(record)
+
+    def read_text(self, relative_path: Path, record: FileRecord) -> bool:
+        try:
+            data = (self.set_directory / relative_path).read_bytes()
+        except OSError as error:
+            self.refuse(relative_path, "file.special", f"cannot be read: {error.strerror}")
+            return False
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            self.refuse(relative_path, "file.binary", "is not UTF-8 text; a set carries text files alone")
+            return False
+        control = fmt.CONTROL_CHARACTERS.search(text)
+        if control:
+            self.refuse(relative_path, "file.binary", f"carries the control character U+{ord(control.group(0)):04X}")
+            return False
+        if relative_path.suffix in TEXT_SUFFIXES_KEPT or relative_path.name in ("SHA256SUMS", "LICENSE"):
+            record.text = text
+        return True
+
+    def check_reserved_file_placement(self, relative_path: Path) -> None:
+        name = relative_path.name
+        parent = relative_path.parent
+        parts = relative_path.parts
+        if name in ("SHA256SUMS", "SHA256SUMS.asc") or name.startswith("SHA512SUMS"):
+            if parent != Path(".") or self.options.profile != PROFILE_RELEASE:
+                self.refuse(relative_path, "file.reserved-name", f"`{name}` is written by build-set at the set root of a release; it is not committed")
+        elif name.endswith(".oms.sig"):
+            self.refuse(relative_path, "file.reserved-name", "`*.oms.sig` is reserved for asset signing, which is not implemented")
+        elif name == fmt.UPSTREAM_CONF_FILE:
+            in_skill_root = len(parts) == 3 and parts[0] == "skills"
+            in_metadata = len(parts) == 4 and parts[0] == fmt.METADATA_DIRECTORY
+            if not (in_skill_root or in_metadata):
+                self.refuse(relative_path, "file.reserved-name", "`UPSTREAM.conf` sits at a skill's root or under metadata/<kind>/<name>/")
+        elif name == fmt.ASSET_CONF_FILE:
+            if not (len(parts) == 4 and parts[0] == fmt.METADATA_DIRECTORY):
+                self.refuse(relative_path, "file.reserved-name", "`asset.conf` sits under metadata/<kind>/<name>/")
+        elif name == fmt.PORTABLE_PLUGIN_MANIFEST:
+            # A `.claude-plugin/` inside a skill is reported by the walk as the skill's own plugin manifest.
+            if parent != Path(".") and parent.name != fmt.CLAUDE_PLUGIN_DIRECTORY:
+                self.refuse(relative_path, "file.reserved-name", "`plugin.json` is a set's manifest, at the set root and under .claude-plugin/")
+        elif name == "README.md":
+            if parent in (Path("skills"), Path("agents")) or parent in (Path(kind.directory) for kind in fmt.KINDS if kind.directory):
+                self.refuse(relative_path, "file.reserved-name", "a README.md at a kind directory is read as an asset by an agent's scanner; the set's README.md sits at the set root")
+
+    # ── the set root ───────────────────────────────────────────────────────────────────────────────────────────
+    def root_entries(self) -> List[Path]:
+        entries = {record.relative_path for record in self.files_by_path.values() if len(record.relative_path.parts) == 1}
+        entries.update(directory for directory in self.directories if len(directory.parts) == 1)
+        return sorted(entries)
+
+    def check_set_root_entries(self) -> None:
+        allowed = set(fmt.SET_ROOT_ENTRIES_ALLOWED)
+        if self.options.profile == PROFILE_RELEASE:
+            allowed |= fmt.RELEASE_ROOT_ENTRIES_ALLOWED
+        for entry in self.root_entries():
+            name = entry.name
+            if name in allowed:
+                continue
+            if name in fmt.RELEASE_ROOT_ENTRIES_ALLOWED or name.startswith("SHA512SUMS"):
+                continue  # reported as file.reserved-name under the source profile
+            if name in fmt.SET_ROOT_ENTRIES_RESERVED:
+                self.refuse(entry, "set.entry.reserved", f"`{name}/` is reserved; it holds no content in format 1")
+                continue
+            kind = fmt.KINDS_BY_DIRECTORY.get(name)
+            if kind is not None and kind.support == "reserved" and entry in self.directories:
+                continue  # reported as kind.reserved
+            self.refuse(entry, "set.entry.unknown", "a set directory holds " + ", ".join(sorted(fmt.SET_ROOT_ENTRIES_ALLOWED)) + " alone")
+
+    def check_set_conf(self) -> Optional[ConfigDocument]:
+        relative_path = Path(fmt.SET_CONF_FILE)
+        record = self.files_by_path.get(relative_path)
+        if record is None:
+            self.refuse(relative_path, "set.conf.missing", "a set directory holds set.conf")
+            return None
+        if record.text is None:
+            return None
+        try:
+            set_conf = read_key_value_file(self.set_directory / relative_path)
+        except (OSError, UnicodeDecodeError) as error:
+            self.refuse(relative_path, "set.conf.syntax", f"cannot be read: {error}")
+            return None
+        for message in set_conf.syntax_errors():
+            self.refuse(relative_path, "set.conf.syntax", message)
+        missing = [key for key in fmt.SET_CONF_REQUIRED if not set_conf.get(key).strip()]
+        if missing:
+            self.refuse(relative_path, "set.conf.required-key", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+        if set_conf.has("format") and set_conf.get("format").strip() != str(fmt.FORMAT_VERSION):
+            self.refuse(relative_path, "set.conf.format", f"`format={set_conf.get('format')}`; this format is `{fmt.FORMAT_VERSION}`")
+        if set_conf.has("name") and set_conf.get("name") != self.set_name:
+            self.refuse(relative_path, "set.conf.name", f"`name={set_conf.get('name')}` differs from the set's directory `{self.set_name}`")
+        if set_conf.has("version") and not fmt.is_semver(set_conf.get("version")):
+            self.refuse(relative_path, "set.conf.version", f"`version={set_conf.get('version')}` is not a semantic version")
+        for key in fmt.SET_CONF_LIST_KEYS:
+            if set_conf.has(key):
+                items, reason = set_conf.list_value(key)
+                if reason is not None:
+                    self.refuse(relative_path, "set.conf.syntax", f"`{key}` is not a list ({reason}); write it as [a, b]")
+                elif key == "requires_capabilities":
+                    for capability in items:
+                        if capability not in fmt.KNOWN_CAPABILITIES:
+                            self.refuse(relative_path, "set.conf.requires-capabilities", f"`{capability}` is not a capability this format defines; the set is refused as a whole")
+                elif key == "integrations":
+                    for integration in items:
+                        if not fmt.INTEGRATION_TOKEN_PATTERN.match(integration):
+                            self.refuse(relative_path, "set.conf.integrations", f"`{integration}` is not written as integration-<name>")
+        known = set(fmt.SET_CONF_REQUIRED) | set(fmt.SET_CONF_OPTIONAL)
+        for key in set_conf.values:
+            if key not in known:
+                self.warn(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; base reports and ignores it")
+        if set_conf.has("license"):
+            evaluation = check_declared_license(self.collector, self.display(relative_path), set_conf.get("license"),
+                                                self.options.license_allowlist, "the set's licence")
+            if evaluation.is_allowed:
+                self.summary.declared_licenses.update(evaluation.identifiers)
+                check_license_texts(self.collector, self.display(relative_path), evaluation.identifiers,
+                                    self.license_text_directories())
+        self.summary.set_conf = set_conf
+        return set_conf
+
+    def license_text_directories(self) -> List[Path]:
+        return [self.set_directory, *self.options.license_text_directories]
+
+    def check_claude_plugin_directory(self) -> None:
+        directory = Path(fmt.CLAUDE_PLUGIN_DIRECTORY)
+        if directory not in self.directories:
+            return
+        for record in self.files_by_path.values():
+            if record.relative_path.parent == directory and record.relative_path.name != fmt.CLAUDE_PLUGIN_MANIFEST:
+                self.refuse(record.relative_path, "set.manifest.claude-plugin", "`.claude-plugin/` holds plugin.json alone")
+        for sub in self.directories:
+            if sub.parent == directory:
+                self.refuse(sub, "set.manifest.claude-plugin", "`.claude-plugin/` holds plugin.json alone")
+
+    def check_plugin_manifests(self, set_conf: ConfigDocument) -> None:
+        wanted_name = fmt.PLUGIN_NAME_PREFIX + self.set_name
+        for relative_path in (Path(fmt.PORTABLE_PLUGIN_MANIFEST), Path(fmt.CLAUDE_PLUGIN_DIRECTORY) / fmt.CLAUDE_PLUGIN_MANIFEST):
+            record = self.files_by_path.get(relative_path)
+            if record is None:
+                self.refuse(relative_path, "set.manifest.plugin", "is absent; sync-manifests writes it from set.conf")
+                continue
+            if record.text is None:
+                continue
+            try:
+                document = json.loads(record.text)
+            except ValueError as error:
+                self.refuse(relative_path, "set.manifest.plugin", f"cannot be read as JSON: {error}")
+                continue
+            if not isinstance(document, dict):
+                self.refuse(relative_path, "set.manifest.plugin", "is not a JSON object")
+                continue
+            expected = {"name": wanted_name, "version": set_conf.get("version"), "description": set_conf.get("summary"),
+                        "license": set_conf.get("license")}
+            for key, value in expected.items():
+                if document.get(key) != value:
+                    self.refuse(relative_path, "set.manifest.plugin", f"`{key}` is `{document.get(key)}`, expected `{value}` from set.conf")
+            if relative_path.name == fmt.PORTABLE_PLUGIN_MANIFEST and relative_path.parent == Path("."):
+                if document.get("$schema") != fmt.PORTABLE_PLUGIN_SCHEMA:
+                    self.refuse(relative_path, "set.manifest.plugin", f"`$schema` is `{document.get('$schema')}`, expected `{fmt.PORTABLE_PLUGIN_SCHEMA}`")
+            declared = sorted(key for key in document if key in fmt.PLUGIN_MANIFEST_COMPONENT_KEYS)
+            if declared:
+                self.refuse(relative_path, "set.manifest.components", "declares " + ", ".join(f"`{key}`" for key in declared) + "; a set manifest declares no component, each agent reads skills/ and agents/ from its default place")
+
+    def check_set_name(self) -> None:
+        relative_path = Path(fmt.SET_CONF_FILE)
+        if not self.check_name_grammar(relative_path, "set name", self.set_name):
+            return
+        first_word = self.set_name.split("-", 1)[0]
+        if first_word in self.options.reserved_words:
+            self.refuse(relative_path, "name.reserved-word", f"set `{self.set_name}` starts with `{first_word}`, a word in reserved-words.txt")
+        publisher = self.options.publisher
+        if publisher is None:
+            return
+        if self.set_name == fmt.UPSTREAM_SET:
+            if publisher != fmt.UPSTREAM_PUBLISHER:
+                self.refuse(relative_path, "name.publisher", f"`core` belongs to {fmt.UPSTREAM_PUBLISHER}; a set published by `{publisher}` is named `{publisher}` or `{publisher}-<topic>`")
+        elif self.set_name != publisher and not self.set_name.startswith(publisher + "-"):
+            self.refuse(relative_path, "name.publisher", f"set `{self.set_name}` does not start with its publisher: name it `{publisher}` or `{publisher}-<topic>`")
+
+    def check_name_grammar(self, relative_path: Path, what: str, name: str) -> bool:
+        if not fmt.is_valid_name(name):
+            self.refuse(relative_path, "name.grammar", f"{what} `{name}` is not 1-64 characters of a-z, 0-9 and single hyphens, starting and ending with a letter or digit")
+            return False
+        for word in fmt.CLAUDE_RESERVED_WORDS:
+            if word in name:
+                self.refuse(relative_path, "name.reserved-claude", f"{what} `{name}` contains `{word}`, which Claude reserves")
+        return True
+
+    # ── skills ─────────────────────────────────────────────────────────────────────────────────────────────────
+    def children_of(self, relative_directory: Path) -> Tuple[List[Path], List[Path]]:
+        files = sorted(path for path in self.files_by_path if path.parent == relative_directory)
+        directories = sorted(path for path in self.directories if path.parent == relative_directory)
+        return files, directories
+
+    def check_skills(self) -> Dict[str, AssetRecord]:
+        skills: Dict[str, AssetRecord] = {}
+        kind_directory = Path("skills")
+        if kind_directory not in self.directories:
+            return skills
+        files, directories = self.children_of(kind_directory)
+        for stray in files:
+            if stray.name != "README.md":
+                self.refuse(stray, "kind.shape", "an entry under skills/ is a directory holding SKILL.md")
+        for skill_root in directories:
+            name = skill_root.name
+            entry_file = skill_root / "SKILL.md"
+            if entry_file not in self.files_by_path:
+                self.refuse(skill_root, "kind.shape", "a skill directory holds SKILL.md")
+                continue
+            if not self.check_name_grammar(skill_root, "skill", name):
+                continue
+            is_vendored = (skill_root / fmt.UPSTREAM_CONF_FILE) in self.files_by_path or self.has_metadata_upstream("skills", name)
+            record = AssetRecord("skills", name, skill_root, is_vendored)
+            skills[name] = record
+            self.summary.assets.append(record)
+            self.check_asset_prefix(skill_root, "skill", name, is_vendored)
+            self.check_composed_length(skill_root, name)
+            self.check_skill_entries(skill_root)
+            self.check_skill_frontmatter_and_body(skill_root, name)
+            self.check_skill_scripts(skill_root)
+            if (skill_root / fmt.UPSTREAM_CONF_FILE) in self.files_by_path:
+                self.check_upstream_conf(skill_root / fmt.UPSTREAM_CONF_FILE)
+                if self.has_metadata_upstream("skills", name):
+                    self.refuse(skill_root / fmt.UPSTREAM_CONF_FILE, "provenance.duplicate", f"skill `{name}` also has metadata/skills/{name}/UPSTREAM.conf; an asset has one provenance declaration")
+        return skills
+
+    def has_metadata_upstream(self, kind_id: str, name: str) -> bool:
+        return (Path(fmt.METADATA_DIRECTORY) / kind_id / name / fmt.UPSTREAM_CONF_FILE) in self.files_by_path
+
+    def check_asset_prefix(self, relative_path: Path, what: str, name: str, is_vendored: bool) -> None:
+        if is_vendored:
+            return
+        wanted = fmt.authored_asset_prefix(self.set_name)
+        if self.set_name not in (fmt.UPSTREAM_SET, fmt.BASE_SET) and name.startswith(fmt.UPSTREAM_ASSET_PREFIX):
+            self.refuse(relative_path, "name.asset-prefix", f"{what} `{name}` carries `{fmt.UPSTREAM_ASSET_PREFIX}`, which belongs to `core`; an authored asset of `{self.set_name}` is named `{wanted}<name>`")
+        elif not name.startswith(wanted):
+            self.refuse(relative_path, "name.asset-prefix", f"{what} `{name}` does not carry the set's prefix `{wanted}`; a vendored asset records its origin in UPSTREAM.conf")
+
+    def check_composed_length(self, relative_path: Path, name: str) -> None:
+        composed = fmt.composed_plugin_name(self.set_name, name)
+        if len(composed) > fmt.COMPOSED_NAME_MAX_LENGTH:
+            self.warn(relative_path, "name.composed-length", f"`{composed}` is {len(composed)} characters; OpenAI's plugin submission takes at most {fmt.COMPOSED_NAME_MAX_LENGTH}")
+
+    def check_skill_entries(self, skill_root: Path) -> None:
+        files, directories = self.children_of(skill_root)
+        sidecar = skill_root / fmt.SKILL_SIDECAR_RESERVED_PATH
+        has_sidecar = sidecar in self.files_by_path
+        for entry in files + directories:
+            if entry.name not in fmt.SKILL_ROOT_ENTRIES_ALLOWED:
+                if entry.name == fmt.CLAUDE_PLUGIN_DIRECTORY or (has_sidecar and entry == sidecar.parent):
+                    continue  # reported by the walk, or as the sidecar
+                self.refuse(entry, "skill.entry.unknown", "a skill holds " + ", ".join(sorted(fmt.SKILL_ROOT_ENTRIES_ALLOWED)) + " alone")
+        if has_sidecar:
+            self.refuse(sidecar, "skill.sidecar", "`agents/openai.yaml` carries invocation policy and tool dependencies; it is reserved until a tested profile admits it")
+
+    def check_skill_frontmatter_and_body(self, skill_root: Path, name: str) -> None:
+        entry_file = skill_root / "SKILL.md"
+        record = self.files_by_path[entry_file]
+        if record.text is None:
+            return
+        line_count = record.text.count("\n") + (0 if record.text.endswith("\n") else 1)
+        if line_count > fmt.SKILL_MD_LINES_WARN:
+            self.warn(entry_file, "skill.length", f"is {line_count} lines; the specification's guidance is under {fmt.SKILL_MD_LINES_WARN}, with longer material in files it links to")
+        document, body = split_frontmatter(record.text)
+        self.check_frontmatter(entry_file, document, name, fmt.SKILL_FRONTMATTER_REQUIRED, fmt.SKILL_FRONTMATTER_ALLOWED,
+                               fmt.SKILL_FRONTMATTER_REFUSED_WHY)
+        if document.present and not document.has_errors():
+            compatibility = document.values.get("compatibility")
+            if isinstance(compatibility, str) and len(compatibility) > fmt.COMPATIBILITY_MAX_LENGTH:
+                self.refuse(entry_file, "frontmatter.length", f"`compatibility` is {len(compatibility)} characters; at most {fmt.COMPATIBILITY_MAX_LENGTH}")
+            license_field = document.values.get("license")
+            if isinstance(license_field, str) and license_field:
+                evaluation = check_declared_license(self.collector, self.display(entry_file), license_field,
+                                                    self.options.license_allowlist, "the skill's licence")
+                if evaluation.is_allowed:
+                    self.summary.declared_licenses.update(evaluation.identifiers)
+                    check_license_texts(self.collector, self.display(entry_file), evaluation.identifiers,
+                                        [self.set_directory / skill_root, *self.license_text_directories()])
+        self.check_body(entry_file, body, inject=True)
+        for relative_path, other in self.files_by_path.items():
+            if relative_path != entry_file and relative_path.suffix in fmt.PROSE_FILE_SUFFIXES and other.text is not None \
+                    and skill_root in relative_path.parents:
+                self.check_body(relative_path, other.text, inject=False)
+
+    def check_frontmatter(self, relative_path: Path, document: FrontmatterDocument, expected_name: str,
+                          required: Sequence[str], allowed: Set[str], refused_why: Dict[str, str]) -> None:
+        if not document.present:
+            self.refuse(relative_path, "frontmatter.missing", "opens with a `---` frontmatter carrying name and description")
+            return
+        for error in document.errors:
+            self.refuse(relative_path, "frontmatter.syntax", error)
+        if document.has_errors():
+            return
+        for key in required:
+            value = document.values.get(key)
+            if not isinstance(value, str) or not value.strip():
+                self.refuse(relative_path, "frontmatter.required", f"`{key}` is missing or empty")
+        for key in document.values:
+            if key in allowed:
+                continue
+            why = refused_why.get(key, "is not on the allowlist for this kind; propose it in an issue with the asset that needs it")
+            self.refuse(relative_path, "frontmatter.refused-key", f"`{key}` {why}")
+        name_value = document.values.get("name")
+        if isinstance(name_value, str) and name_value and name_value != expected_name:
+            self.refuse(relative_path, "name.frontmatter", f"frontmatter `name: {name_value}` differs from `{expected_name}`")
+        description = document.values.get("description")
+        if isinstance(description, str) and len(description) > fmt.DESCRIPTION_MAX_LENGTH:
+            self.refuse(relative_path, "frontmatter.length", f"`description` is {len(description)} characters; at most {fmt.DESCRIPTION_MAX_LENGTH}")
+        metadata = document.values.get("metadata")
+        if metadata is not None:
+            if not isinstance(metadata, dict):
+                self.refuse(relative_path, "frontmatter.metadata", "`metadata` is a map of string values")
+            else:
+                for key in metadata:
+                    if not key.startswith(fmt.METADATA_KEY_PREFIX):
+                        self.warn(relative_path, "frontmatter.metadata-prefix", f"`metadata.{key}`: a key this format reads starts with `{fmt.METADATA_KEY_PREFIX}`; another is left to its reader")
+
+    def check_body(self, relative_path: Path, body: str, inject: bool) -> None:
+        for line_number, line in enumerate(body.split("\n"), start=1):
+            if inject and (fmt.DYNAMIC_INJECTION_LINE.match(line) or fmt.DYNAMIC_INJECTION_FENCE.match(line)):
+                self.refuse(relative_path, "body.dynamic-injection", f"line {line_number} runs a command when the asset loads, before a person or the model reads it")
+            match = fmt.ABSOLUTE_PATH_REFUSED.search(line)
+            if match:
+                self.refuse(relative_path, "body.absolute-path", f"line {line_number} names `{match.group(0).strip()}`; a skill names its own files relative to its root, and another skill by name")
+
+    def check_skill_scripts(self, skill_root: Path) -> None:
+        for relative_path, record in self.files_by_path.items():
+            if relative_path.suffix != ".cs" or skill_root not in relative_path.parents or record.text is None:
+                continue
+            for line_number, line in enumerate(record.text.split("\n"), start=1):
+                match = fmt.CS_DIRECTIVE.match(line)
+                if not match:
+                    if line.strip() and not line.lstrip().startswith(("#", "//")):
+                        break  # directives sit at the top of a file-based app
+                    continue
+                directive, value = match.group("directive"), match.group("value")
+                if directive == "package":
+                    self.refuse(relative_path, "cs.package", f"line {line_number}: `#:package {value}` fetches code at run time that SHA256SUMS and the signature do not cover")
+                elif directive == "sdk":
+                    sdk = value.split("@", 1)[0].strip()
+                    if sdk not in fmt.CS_SDKS_ALLOWED:
+                        self.refuse(relative_path, "cs.sdk", f"line {line_number}: `#:sdk {value}`; " + " or ".join(sorted(fmt.CS_SDKS_ALLOWED)) + " ship with the SDK, another is fetched from NuGet")
+                elif directive == "project":
+                    target = Path(value.strip())
+                    inside = not target.is_absolute() and ".." not in target.parts and target.suffix == ".csproj"
+                    if not inside:
+                        self.refuse(relative_path, "cs.project", f"line {line_number}: `#:project {value}` names a project outside the skill")
+
+    # ── subagents ──────────────────────────────────────────────────────────────────────────────────────────────
+    def check_subagents(self) -> Dict[str, AssetRecord]:
+        subagents: Dict[str, AssetRecord] = {}
+        kind_directory = Path("agents")
+        if kind_directory not in self.directories:
+            return subagents
+        files, directories = self.children_of(kind_directory)
+        for stray in directories:
+            self.refuse(stray, "kind.shape", "an entry under agents/ is a <name>.md file; Claude Code reads every .md in agents/ as a subagent")
+        for file_path in files:
+            if file_path.suffix != ".md" or file_path.name == "README.md":
+                if file_path.name != "README.md":
+                    self.refuse(file_path, "kind.shape", "an entry under agents/ is a <name>.md file")
+                continue
+            name = file_path.stem
+            if not self.check_name_grammar(file_path, "subagent", name):
+                continue
+            is_vendored = self.has_metadata_upstream("subagents", name)
+            record = AssetRecord("subagents", name, file_path, is_vendored)
+            subagents[name] = record
+            self.summary.assets.append(record)
+            self.check_asset_prefix(file_path, "subagent", name, is_vendored)
+            self.check_composed_length(file_path, name)
+            text = self.files_by_path[file_path].text
+            if text is None:
+                continue
+            document, body = split_frontmatter(text)
+            self.check_frontmatter(file_path, document, name, fmt.SUBAGENT_FRONTMATTER_REQUIRED,
+                                   fmt.SUBAGENT_FRONTMATTER_ALLOWED, fmt.SUBAGENT_FRONTMATTER_REFUSED_WHY)
+            self.check_body(file_path, body, inject=True)
+        return subagents
+
+    def check_name_collisions(self, skills: Dict[str, AssetRecord], subagents: Dict[str, AssetRecord]) -> None:
+        for name in sorted(set(skills) & set(subagents)):
+            self.refuse(subagents[name].root, "name.collision", f"`{name}` is both a skill and a subagent; an agent lists the two kinds in one list")
+
+    # ── metadata ───────────────────────────────────────────────────────────────────────────────────────────────
+    def check_metadata_directory(self) -> None:
+        metadata_root = Path(fmt.METADATA_DIRECTORY)
+        if metadata_root not in self.directories:
+            return
+        asset_names = {(asset.kind_id, asset.name) for asset in self.summary.assets}
+        files, kind_directories = self.children_of(metadata_root)
+        for stray in files:
+            self.refuse(stray, "metadata.entry", "metadata/ holds <kind>/<name>/ directories alone")
+        for kind_directory in kind_directories:
+            kind = fmt.KINDS_BY_ID.get(kind_directory.name)
+            if kind is None or not kind.is_implemented:
+                self.refuse(kind_directory, "metadata.kind", f"`{kind_directory.name}` is not an implemented kind id (" + ", ".join(k.kind_id for k in fmt.IMPLEMENTED_KINDS) + ")")
+                continue
+            kind_files, asset_directories = self.children_of(kind_directory)
+            for stray in kind_files:
+                self.refuse(stray, "metadata.entry", "metadata/<kind>/ holds <name>/ directories alone")
+            for asset_directory in asset_directories:
+                if (kind.kind_id, asset_directory.name) not in asset_names:
+                    self.refuse(asset_directory, "metadata.asset", f"the set holds no {kind.kind_id[:-1]} named `{asset_directory.name}`")
+                asset_files, asset_subdirectories = self.children_of(asset_directory)
+                for entry in asset_files + asset_subdirectories:
+                    if entry.name not in fmt.METADATA_ENTRIES_ALLOWED:
+                        self.refuse(entry, "metadata.entry", "metadata/<kind>/<name>/ holds asset.conf, UPSTREAM.conf and references/ alone")
+                if (asset_directory / fmt.ASSET_CONF_FILE) in self.files_by_path:
+                    self.check_asset_conf(asset_directory / fmt.ASSET_CONF_FILE)
+                if (asset_directory / fmt.UPSTREAM_CONF_FILE) in self.files_by_path:
+                    self.check_upstream_conf(asset_directory / fmt.UPSTREAM_CONF_FILE)
+
+    def check_asset_conf(self, relative_path: Path) -> None:
+        try:
+            document = read_key_value_file(self.set_directory / relative_path)
+        except (OSError, UnicodeDecodeError) as error:
+            self.refuse(relative_path, "metadata.asset-conf", f"cannot be read: {error}")
+            return
+        for message in document.syntax_errors():
+            self.refuse(relative_path, "metadata.asset-conf", message)
+        if document.get("format").strip() != str(fmt.FORMAT_VERSION):
+            self.refuse(relative_path, "metadata.asset-conf", f"`format={document.get('format')}`; this format is `{fmt.FORMAT_VERSION}`")
+        for key in fmt.ASSET_CONF_LIST_KEYS:
+            if not document.has(key):
+                continue
+            items, reason = document.list_value(key)
+            if reason is not None:
+                self.refuse(relative_path, "metadata.asset-conf", f"`{key}` is not a list ({reason})")
+                continue
+            for item in items:
+                if key == "requires_capabilities" and item not in fmt.KNOWN_CAPABILITIES:
+                    self.refuse(relative_path, "metadata.asset-conf", f"`{item}` is not a capability this format defines; the asset is refused")
+                elif key == "requires_integrations" and not fmt.INTEGRATION_TOKEN_PATTERN.match(item):
+                    self.refuse(relative_path, "metadata.asset-conf", f"`{item}` is not written as integration-<name>")
+                elif key == "targets" and not fmt.is_valid_name(item):
+                    self.refuse(relative_path, "metadata.asset-conf", f"target `{item}` is not a name")
+        known = set(fmt.ASSET_CONF_REQUIRED) | set(fmt.ASSET_CONF_OPTIONAL)
+        for key in document.values:
+            if key not in known:
+                self.warn(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; base reports and ignores it")
+
+    def check_upstream_conf(self, relative_path: Path) -> None:
+        try:
+            document = read_key_value_file(self.set_directory / relative_path)
+        except (OSError, UnicodeDecodeError) as error:
+            self.refuse(relative_path, "provenance.syntax", f"cannot be read: {error}")
+            return
+        for message in document.syntax_errors():
+            self.refuse(relative_path, "provenance.syntax", message)
+        missing = [key for key in fmt.UPSTREAM_CONF_REQUIRED if not document.get(key).strip()]
+        if missing:
+            self.refuse(relative_path, "provenance.syntax", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+        revision = document.get("revision").strip()
+        if revision and not fmt.COMMIT_ID_PATTERN.match(revision):
+            self.refuse(relative_path, "provenance.syntax", f"`revision={revision}` is not a full commit id")
+        known = set(fmt.UPSTREAM_CONF_REQUIRED) | set(fmt.UPSTREAM_CONF_OPTIONAL)
+        for key in document.values:
+            if key not in known:
+                self.warn(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; base reports and ignores it")
+        if document.get("license").strip():
+            evaluation = check_declared_license(self.collector, self.display(relative_path), document.get("license"),
+                                                self.options.license_allowlist, "the upstream licence")
+            if evaluation.is_allowed:
+                self.summary.declared_licenses.update(evaluation.identifiers)
+                check_license_texts(self.collector, self.display(relative_path), evaluation.identifiers,
+                                    [self.set_directory / relative_path.parent, *self.license_text_directories()])
+
+    def check_reserved_kind_directories(self) -> None:
+        for kind in fmt.KINDS:
+            if kind.support != "reserved" or not kind.directory:
+                continue
+            directory = Path(kind.directory)
+            if directory in self.directories and directory.name not in fmt.SET_ROOT_ENTRIES_RESERVED:
+                self.refuse(directory, "kind.reserved", f"`{kind.directory}/` is the reserved kind `{kind.kind_id}`, which this format does not admit")
+
+    # ── release profile ────────────────────────────────────────────────────────────────────────────────────────
+    def check_release_inventory(self) -> None:
+        inventory_path = Path("SHA256SUMS")
+        record = self.files_by_path.get(inventory_path)
+        if record is None or record.text is None:
+            self.refuse(inventory_path, "release.inventory", "a built set carries SHA256SUMS at its root")
+            return
+        listed: Dict[str, str] = {}
+        for line_number, line in enumerate(record.text.splitlines(), start=1):
+            match = SHA256SUMS_LINE.match(line)
+            if not match:
+                self.refuse(inventory_path, "release.inventory", f"line {line_number} is not `<sha256>  <path>`")
+                continue
+            listed[match.group("path")] = match.group("digest")
+        present = {str(path) for path in self.files_by_path if path.name not in ("SHA256SUMS", "SHA256SUMS.asc")}
+        for missing in sorted(present - set(listed)):
+            self.refuse(inventory_path, "release.inventory", f"`{missing}` is in the set and not in SHA256SUMS")
+        for extra in sorted(set(listed) - present):
+            self.refuse(inventory_path, "release.inventory", f"`{extra}` is in SHA256SUMS and not in the set")
+        for path_text, digest in sorted(listed.items()):
+            if path_text in present:
+                actual = hashlib.sha256((self.set_directory / path_text).read_bytes()).hexdigest()
+                if actual != digest:
+                    self.refuse(inventory_path, "release.inventory", f"`{path_text}` does not match its SHA256SUMS line")
+
+
+def read_reserved_words(path: Path) -> Set[str]:
+    """The words a set name does not start with, one per line, `#` lines and blanks skipped."""
+    return {line.strip() for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")}
