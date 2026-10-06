@@ -210,7 +210,8 @@ CONTROL_CHARACTERS = re.compile("[" + "".join(re.escape(chr(code)) for code in (
 # Dynamic context injection: text Claude Code runs as a shell command when the asset loads, before anyone reads it.
 # The inline form is !`command` at the start of a line or after whitespace, anywhere in a line; the fence form is a
 # fence opener whose info string's first word carries `!` (```! and ```bash! alike, so a liberal loader is covered).
-# Both are read in SKILL.md and a subagent file alone: a script runs through its interpreter and is not expanded.
+# Both are read over the whole of SKILL.md and a subagent file, frontmatter included, and nowhere else: a script runs
+# through its interpreter and is not expanded.
 DYNAMIC_INJECTION_INLINE = re.compile(r"(?:^|\s)!`")
 DYNAMIC_INJECTION_FENCE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*\S*!")
 ABSOLUTE_PATH_REFUSED = re.compile(r"(?<![A-Za-z0-9_.-])/(?:opt/ai-tools|usr/share|usr/local/share)(?:/|\b)")

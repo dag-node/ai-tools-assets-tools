@@ -206,12 +206,15 @@ none empty and none opening with a YAML indicator.
 - No line runs a command when the asset loads: `` !`command` `` at the start
   of a line or after whitespace, anywhere in a line, and a fence whose info
   string's first word carries `!` (` ```! `, ` ```bash! `) are refused
-  in `SKILL.md` and in a subagent file. `scripts/` and `references/` are not
+  anywhere in `SKILL.md` and in a subagent file, the frontmatter included,
+  since a loader expands the substitution wherever it stands and quoting
+  the YAML string does not exempt it. `scripts/` and `references/` are not
   scanned for them: a script runs through its interpreter, and a reference is
   read, not loaded.
 - No `.md` file of an asset names an absolute path into `/opt/ai-tools`,
-  `/usr/share` or `/usr/local/share`; a skill names its own files relative
-  to its root and another skill by name.
+  `/usr/share` or `/usr/local/share`, anywhere in the file, an entry file's
+  frontmatter included; a skill names its own files relative to its root
+  and another skill by name.
 - Every entry is a regular file or a directory: no symbolic link, no file
   with a second hard link, no special file. Every file is UTF-8 text without
   a control character (every `Cc` code point other than tab, LF and CR, the C1
