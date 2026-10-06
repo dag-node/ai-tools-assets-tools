@@ -573,7 +573,7 @@ class _SetValidator:
         line_count = record.text.count("\n") + (0 if record.text.endswith("\n") else 1)
         if line_count > fmt.SKILL_MD_LINES_WARN:
             self.warn(entry_file, "skill.length", f"is {line_count} lines; the specification's guidance is under {fmt.SKILL_MD_LINES_WARN}, with longer material in files it links to")
-        document, body = split_frontmatter(record.text)
+        document, _ = split_frontmatter(record.text)
         typed = self.check_frontmatter(entry_file, document, name, fmt.SKILL_FRONTMATTER_REQUIRED, fmt.SKILL_FRONTMATTER_TYPES,
                                        fmt.SKILL_FRONTMATTER_REFUSED_WHY)
         compatibility = typed.get("compatibility")
@@ -587,7 +587,7 @@ class _SetValidator:
                 self.summary.declared_licenses.update(evaluation.identifiers)
                 check_license_texts(self.collector, self.display(entry_file), evaluation.identifiers,
                                     self.carried_license_texts(skill_root), self.options.license_text_directories)
-        self.check_body(entry_file, body, inject=True)
+        self.check_body(entry_file, record.text, inject=True)
         for relative_path, other in self.files_by_path.items():
             if relative_path != entry_file and relative_path.suffix in fmt.PROSE_FILE_SUFFIXES and other.text is not None \
                     and skill_root in relative_path.parents:
@@ -669,8 +669,10 @@ class _SetValidator:
             return None
         return value.text
 
-    def check_body(self, relative_path: Path, body: str, inject: bool) -> None:
-        for line_number, line in enumerate(body.split("\n"), start=1):
+    def check_body(self, relative_path: Path, text: str, inject: bool) -> None:
+        """Scan every line of the file -- an entry file's frontmatter included, since a loader expands a substitution
+        wherever it stands -- for a dynamic substitution (where `inject`) and a refused absolute path."""
+        for line_number, line in enumerate(text.split("\n"), start=1):
             if inject and (fmt.DYNAMIC_INJECTION_INLINE.search(line) or fmt.DYNAMIC_INJECTION_FENCE.match(line)):
                 self.refuse(relative_path, "body.dynamic-injection", f"line {line_number} runs a command when the asset loads, before a person or the model reads it")
             match = fmt.ABSOLUTE_PATH_REFUSED.search(line)
@@ -736,10 +738,10 @@ class _SetValidator:
             text = self.files_by_path[file_path].text
             if text is None:
                 continue
-            document, body = split_frontmatter(text)
+            document, _ = split_frontmatter(text)
             self.check_frontmatter(file_path, document, name, fmt.SUBAGENT_FRONTMATTER_REQUIRED,
                                    fmt.SUBAGENT_FRONTMATTER_TYPES, fmt.SUBAGENT_FRONTMATTER_REFUSED_WHY)
-            self.check_body(file_path, body, inject=True)
+            self.check_body(file_path, text, inject=True)
         return subagents
 
     def check_name_collisions(self, skills: Dict[str, AssetRecord], subagents: Dict[str, AssetRecord]) -> None:
