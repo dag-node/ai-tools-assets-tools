@@ -8,6 +8,7 @@ synthetic history each have a case here; the set-level rules are tests/test_fixt
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
 import shutil
 import subprocess
@@ -162,6 +163,40 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("marketplace.json: file.symlink", stderr)
         self.assertFalse((elsewhere / "marketplace.json").exists())
+
+    def test_a_hard_linked_generated_file_is_refused_and_its_other_name_is_not_written_into(self):
+        outside = self.root.parent / "outside.json"
+        outside.write_text("OUTSIDE DATA\n", encoding="utf-8")
+        manifest = self.root / "sets" / "acme" / "plugin.json"
+        manifest.unlink()
+        os.link(outside, manifest)
+        status, _, stderr = run("sync-manifests", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("sets/acme/plugin.json: file.hardlink: ", stderr)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "OUTSIDE DATA\n")
+        manifest.unlink()
+        status, _, stderr = run("sync-manifests", "--root", str(self.root))
+        self.assertEqual(status, 0, stderr)
+        status, _, stderr = run("build-set", "acme", cwd=self.root)
+        self.assertEqual(status, 0, stderr)
+        marker = self.root / "build" / ".acme.ai-tools-assets-build"
+        archive = self.root / "dist" / "ai-tools-assets-acme-0.1.0.zip"
+        for generated, content in ((marker, marker.read_bytes()), (archive, b"OUTSIDE ZIP")):
+            other_name = self.root.parent / ("outside-" + generated.name)
+            other_name.write_bytes(content)
+            generated.unlink()
+            os.link(other_name, generated)
+            status, _, stderr = run("build-set", "acme", cwd=self.root)
+            self.assertEqual(status, 1, generated.name)
+            self.assertIn("file.hardlink: ", stderr)
+            self.assertEqual(other_name.read_bytes(), content, "the inode behind the other name is unchanged")
+            generated.unlink()
+            other_name.unlink()
+            generated.write_bytes(content)  # one link again: the entry is replaced
+            status, _, stderr = run("build-set", "acme", cwd=self.root)
+            self.assertEqual(status, 0, stderr)
+        self.assertEqual(sorted(path.name for path in (self.root / "build").iterdir()), [".acme.ai-tools-assets-build", "acme"],
+                         "no temporary name is left beside the replaced entry")
 
     def test_scaffolding_refuses_a_bad_name(self):
         status, _, stderr = run("new-set", "openai-things", "--root", str(self.root))

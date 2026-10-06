@@ -20,9 +20,11 @@
 # destination; and every existing component of each is `lstat`ed, a symbolic link refusing. The set is staged into a
 # fresh `mkdtemp` directory beside the destination and renamed over `build/<set>` only when the sibling marker
 # `build/.<set>.ai-tools-assets-build` names this set and this marker version -- another directory at that name is left
-# where it is and refused -- and the marker is written after the rename. When a step fails after staging, the staging
-# directory is removed and the findings name what failed. The release workflow signs `SHA256SUMS` and the zip; this
-# command does not sign a file. Standard library only.
+# where it is and refused -- and the marker is written after the rename. The marker, the zip and its checksum are
+# replaced as directory entries (`tools/lib/safe_write.py`): an entry at one of those names that is a link or has a
+# second hard link is refused, not written into. When a step fails after staging, the staging directory is removed and
+# the findings name what failed. The release workflow signs `SHA256SUMS` and the zip; this command does not sign a
+# file. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -217,7 +219,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
         try:
             replace_file(build_root, pathlib.PurePath(marker_path(build_root, set_name).name), marker_text(set_name).encode("utf-8"))
         except RefusedRead as refusal:
-            collector.refuse(str(marker_path(build_root, set_name)), "repo.layout", refusal.message)
+            collector.refuse(str(marker_path(build_root, set_name)), refusal.rule_id, refusal.message)
             return collector.report()
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
@@ -230,7 +232,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
         replace_file(dist_root, pathlib.PurePath(archive_path.name), archive)
         replace_file(dist_root, pathlib.PurePath(checksum_path.name), f"{hashlib.sha256(archive).hexdigest()}  {archive_path.name}\n".encode("utf-8"))
     except RefusedRead as refusal:
-        collector.refuse(str(archive_path), "repo.layout", refusal.message)
+        collector.refuse(str(archive_path), refusal.rule_id, refusal.message)
         return collector.report()
     for written in (destination, destination / "SHA256SUMS", archive_path, checksum_path):
         print(f"build-set: wrote {written.relative_to(root) if root in written.parents else written}")
