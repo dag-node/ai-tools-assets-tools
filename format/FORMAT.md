@@ -29,11 +29,17 @@ sets/<set>/
     └── references/
 ```
 
-A set directory holds these entries and no other. `jobs/`, `libs/`
-and `variants/` are reserved and hold no content; every other Claude Code
-plugin component (hooks, MCP and LSP servers, `bin/`, commands, monitors,
-workflows, output styles, themes, `settings.json`) is refused, and so is
-a component kind Claude Code adds later, since the list is an allowlist.
+A set directory holds these entries and no other. `jobs/`, `libs/`,
+`variants/` and `llms.txt` are reserved: the names are spoken for, and no
+capability of format 1 admits content at one. `llms.txt` is the
+agent-discovery index of [llmstxt.org](https://llmstxt.org/) -- an H1,
+a blockquote summary and H2 link lists, which an agent without a plugin
+loader reads from a root -- that the tools may generate beside the manifests;
+today they write and read none, and a repository-level `llms.txt` is
+the publisher's own file. Every other Claude Code plugin component (hooks,
+MCP and LSP servers, `bin/`, commands, monitors, workflows, output styles,
+themes, `settings.json`) is refused, and so is a component kind Claude Code
+adds later, since the list is an allowlist.
 
 ## Profiles
 
@@ -67,7 +73,7 @@ a name, since an agent lists both kinds in one list.
 | `skills` | `skills/` | a directory holding `SKILL.md` | implemented |
 | `subagents` | `agents/` | a `<name>.md` file | implemented |
 | `orientation` | — | base's own; not a set kind | base-only |
-| `jobs`, `mcps`, `commands`, `instructions`, `hooks`, `lsps`, `output-styles`, `settings`, `workflows`, `themes`, `monitors`, `tools` | the kind's name | reserved: refused with content until a later format defines each | reserved |
+| `jobs`, `mcps`, `commands`, `instructions`, `hooks`, `lsps`, `output-styles`, `settings`, `workflows`, `themes`, `monitors`, `tools` | the kind's name | reserved: refused with content; a capability token admits each (see Forward compatibility) | reserved |
 
 The id `subagents` is stable; the directory is Claude Code's `agents/`,
 and `agents/` holds subagent files alone because Claude Code loads every `.md`
@@ -285,8 +291,21 @@ at most 256 characters, with `**` standing alone between slashes.
 
 Allowing a name, a field or an entry later is additive; refusing one a shipped
 set carries breaks that set, which is why each list starts narrow. `format`
-stays the integer `1` until a change a set must follow, which is `format=2`
-and a new major of the tools. A publisher's own key in `set.conf`,
+stays the integer `1` until a change in what an existing entry means, which
+is `format=2` and a new major of the tools; a new entry is not that change.
+
+A reserved entry (`jobs/`, `libs/`, `variants/`, `llms.txt`, a reserved kind)
+is admitted by one bundled change: a capability token in the existing
+`<kind>.<profile>.v<n>` shape joins the capabilities this format defines,
+the entry moves to the allowed table with its shape and rules, a rule
+requires a set carrying content at it to declare the token
+in `requires_capabilities`, and fixtures prove both directions. A reader
+without the token -- an earlier release of the tools, or of `ai-tools-base`
+-- then refuses such a set whole, on the token, before reading the content;
+a reader with it refuses a set that carries the content and omits the token.
+No reader reads an entry it does not define, and none ignores one.
+
+A publisher's own key in `set.conf`,
 `UPSTREAM.conf` or `asset.conf` is `x_<name>`, which base reads past; a key
 of another shape outside the file's table is refused, and a requirement
 (`requires_base`, `requires_capabilities`, `requires_integrations`,
@@ -298,7 +317,11 @@ refused with content.
 
 The validator holds a set to these bounds and stops at the first it meets,
 with one `file.size` finding at the set root, so a tree too large to read
-whole is refused rather than judged in part:
+whole is refused rather than judged in part. The bounds are bytes, lines
+and entries, which every reader measures the same way; none is a token
+count, since a tokenizer is the model's and two models count one file
+differently. An advisory token estimate, if one is added, is a warning rule
+beside these bounds and does not refuse a set.
 
 | Bound | Value |
 |---|---|
@@ -339,7 +362,7 @@ differ.
 | `set.conf.requires-integrations` | refuses | every required integration is written as `integration-<name>` |
 | `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<name>` extension key |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
-| `set.entry.reserved` | refuses | `jobs`, `libs` and `variants` are reserved and do not hold any content |
+| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 admits content at one |
 | `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |
 | `set.manifest.components` | refuses | a plugin manifest does not declare a component key |
 | `set.manifest.claude-plugin` | refuses | `.claude-plugin` holds `plugin.json` alone |

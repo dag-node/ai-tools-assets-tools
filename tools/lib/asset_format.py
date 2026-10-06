@@ -88,8 +88,11 @@ SET_ROOT_ENTRY_TYPES: Dict[str, str] = {
     "skills": ENTRY_DIRECTORY, "agents": ENTRY_DIRECTORY, "metadata": ENTRY_DIRECTORY,
 }
 SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SET_ROOT_ENTRY_TYPES)
-# Reserved: named so a later format admits them without renaming; content under one is refused today.
-SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants"})
+# Reserved: named now so the format admits each without a rename. Admission is additive and stays format 1: a capability
+# token joins KNOWN_CAPABILITIES, the entry moves to the allowed table, and a set carrying content at it declares the
+# token, so a reader without the token refuses the set whole. Until then no capability admits content at one.
+# `llms.txt` is the agent-discovery index (llmstxt.org) the tools may generate beside the manifests.
+SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt"})
 RELEASE_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({"SHA256SUMS", "SHA256SUMS.asc"})
 CLAUDE_PLUGIN_DIRECTORY = ".claude-plugin"
 CLAUDE_PLUGIN_MANIFEST = "plugin.json"
@@ -252,7 +255,7 @@ RULES: Dict[str, str] = {
     "set.conf.requires-integrations": "every required integration is written as `integration-<name>`",
     "set.conf.unknown-key": "a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<name>` extension key",
     "set.entry.unknown": "a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone",
-    "set.entry.reserved": "`jobs`, `libs` and `variants` are reserved and do not hold any content",
+    "set.entry.reserved": "`jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 admits content at one",
     "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read",
     "set.manifest.components": "a plugin manifest does not declare a component key",
     "set.manifest.claude-plugin": "`.claude-plugin` holds `plugin.json` alone",

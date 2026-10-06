@@ -265,6 +265,8 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
      lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\nMore text.\n\n```!\ngit status\n```\n")),
     ("body.dynamic-injection.fence-tagged", "body.dynamic-injection",
      lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n```bash!\ngit status\n```\n")),
+    ("set.entry.reserved.llms-txt", "set.entry.reserved",
+     lambda tree: tree.__setitem__("llms.txt", "# acme\n\n> A set.\n")),
     ("body.dynamic-injection.fence-spaced", "body.dynamic-injection",
      lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n  ~~~~  sh! title\ngit status\n~~~~\n")),
     ("body.dynamic-injection.subagent", "body.dynamic-injection",

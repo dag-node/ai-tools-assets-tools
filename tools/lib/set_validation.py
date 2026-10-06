@@ -356,7 +356,8 @@ class _SetValidator:
             if name in fmt.RELEASE_ROOT_ENTRIES_ALLOWED or name.startswith("SHA512SUMS"):
                 continue  # reported as file.reserved-name under the source profile
             if name in fmt.SET_ROOT_ENTRIES_RESERVED:
-                self.refuse(entry, "set.entry.reserved", f"`{name}/` is reserved; it holds no content in format 1")
+                shown = f"{name}/" if entry in self.directories else name
+                self.refuse(entry, "set.entry.reserved", f"`{shown}` is reserved; no capability of format 1 admits content at it")
                 continue
             kind = fmt.KINDS_BY_DIRECTORY.get(name)
             if kind is not None and kind.support == "reserved" and entry in self.directories:
