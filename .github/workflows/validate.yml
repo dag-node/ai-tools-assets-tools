@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: MIT
+# The checks every publisher repository runs, as a reusable workflow a publisher calls at a pinned tag and as this
+# repository's own, on every pull request and every push to develop and main.
+#
+#   jobs:
+#     validate:
+#       uses: dag-node/ai-tools-assets-tools/.github/workflows/validate.yml@v1
+#       with:
+#         license-exceptions: ''          # space-separated GLOB=ID pairs check-licenses admits
+#         enforce-signoff: false          # true once the repository requires a DCO sign-off on every commit
+#
+# The job name `validate` is the status check a ruleset requires on main; renaming it leaves the requirement waiting
+# for a check that no longer runs. The tools run from a checkout of this repository at the commit of the called
+# workflow (github.workflow_sha), never from a default branch, so a caller pinned at a tag runs that tag's tools; a
+# run whose workflow ref or sha is empty stops before the checkout. Over a repository with no publisher.conf (this one)
+# the set checks are skipped and the tree checks run. The sign-off check reads a pull request's own range,
+# base.sha..head.sha, and reports without failing the job until enforce-signoff is true.
+name: validate
+
+on:
+  workflow_call:
+    inputs:
+      license-exceptions:
+        description: space-separated GLOB=ID pairs check-licenses admits, for a tree carrying another licence in one directory
+        type: string
+        required: false
+        default: ''
+      enforce-signoff:
+        description: fail the job when a commit of the pull request carries no author-matching Signed-off-by
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-24.04
+    env:
+      TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
+      # This repository's own run admits its AGPL formatters; a caller passes its own pairs.
+      LICENSE_EXCEPTIONS: ${{ inputs.license-exceptions || (github.repository == 'dag-node/ai-tools-assets-tools' && 'formatters/*=AGPL-3.0-only' || '') }}
+    steps:
+      - name: Check out the repository under check
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the tools repository and commit from the called workflow
+        id: tools
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REF" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "the called workflow's ref or commit is empty; the tools cannot be checked out at a known commit" >&2
+            exit 1
+          fi
+          echo "repository=${WORKFLOW_REF%%/.github/*}" >> "$GITHUB_OUTPUT"
+          echo "sha=$WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tools at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ steps.tools.outputs.repository }}
+          ref: ${{ steps.tools.outputs.sha }}
+          path: .ai-tools-assets-tools
+
+      - name: Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: The sets follow the format
+        if: hashFiles('publisher.conf') != ''
+        run: python3 "$TOOLS/tools/validate"
+
+      - name: The committed manifests are what sync-manifests writes
+        if: hashFiles('publisher.conf') != ''
+        run: python3 "$TOOLS/tools/sync-manifests" --check
+
+      - name: Every file's licence is on the list in force
+        run: |
+          set -- ; for pair in $LICENSE_EXCEPTIONS; do set -- "$@" --exception "$pair"; done
+          python3 "$TOOLS/tools/check-licenses" "$@"
+
+      - name: REUSE lint
+        run: |
+          python3 -m pip install --quiet --requirement "$TOOLS/.github/requirements-ci.txt"
+          reuse lint
+
+      - name: ShellCheck
+        run: git ls-files -z -- '*.sh' | xargs -0 -r shellcheck
+
+      - name: Every commit of the pull request carries an author-matching Signed-off-by
+        if: github.event_name == 'pull_request'
+        continue-on-error: ${{ !inputs.enforce-signoff }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 "$TOOLS/tools/check-signoff" --range "$BASE_SHA..$HEAD_SHA"
+
+  tests:
+    name: tests (python ${{ matrix.python }})
+    if: github.repository == 'dag-node/ai-tools-assets-tools' && github.event_name != 'workflow_call'
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: The suite, the fixtures and the documented rules
+        run: python3 -m unittest discover -s tests -v
