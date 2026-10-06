@@ -116,16 +116,31 @@ COMPATIBILITY_MAX_LENGTH = 500
 METADATA_KEY_PREFIX = "ai-tools-"
 SKILL_MD_LINES_WARN = 500
 
+# Every allowed field has a declared type, checked before its value: a string, a string list (a flow list, a block
+# sequence, or Claude Code's comma-separated line), a map of strings, or an unquoted positive integer.
+FIELD_STRING = "string"
+FIELD_STRING_LIST = "string list"
+FIELD_STRING_MAP = "map of strings"
+FIELD_INTEGER = "integer"
+INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
+
 SKILL_FRONTMATTER_REQUIRED: Tuple[str, ...] = ("name", "description")
-SKILL_FRONTMATTER_ALLOWED: FrozenSet[str] = frozenset({"name", "description", "license", "compatibility", "metadata"})
+SKILL_FRONTMATTER_TYPES: Dict[str, str] = {
+    "name": FIELD_STRING, "description": FIELD_STRING, "license": FIELD_STRING, "compatibility": FIELD_STRING,
+    "metadata": FIELD_STRING_MAP,
+}
+SKILL_FRONTMATTER_ALLOWED: FrozenSet[str] = frozenset(SKILL_FRONTMATTER_TYPES)
 SKILL_FRONTMATTER_REFUSED_WHY: Dict[str, str] = {
     "allowed-tools": "pre-approves tools without a prompt while the skill runs",
 }
 
 SUBAGENT_FRONTMATTER_REQUIRED: Tuple[str, ...] = ("name", "description")
-SUBAGENT_FRONTMATTER_ALLOWED: FrozenSet[str] = frozenset({
-    "name", "description", "tools", "disallowedTools", "model", "effort", "maxTurns", "color", "skills", "metadata",
-})
+SUBAGENT_FRONTMATTER_TYPES: Dict[str, str] = {
+    "name": FIELD_STRING, "description": FIELD_STRING, "model": FIELD_STRING, "effort": FIELD_STRING, "color": FIELD_STRING,
+    "tools": FIELD_STRING_LIST, "disallowedTools": FIELD_STRING_LIST, "skills": FIELD_STRING_LIST,
+    "maxTurns": FIELD_INTEGER, "metadata": FIELD_STRING_MAP,
+}
+SUBAGENT_FRONTMATTER_ALLOWED: FrozenSet[str] = frozenset(SUBAGENT_FRONTMATTER_TYPES)
 SUBAGENT_FRONTMATTER_REFUSED_WHY: Dict[str, str] = {
     "permissionMode": "changes the permissions a session runs under",
     "hooks": "runs commands on the subagent's events",
@@ -234,7 +249,8 @@ RULES: Dict[str, str] = {
     "skill.sidecar": "`agents/openai.yaml` is reserved inside a skill",
     "skill.length": "`SKILL.md` is under 500 lines",
     "frontmatter.missing": "`SKILL.md` and a subagent file open with a frontmatter",
-    "frontmatter.syntax": "the frontmatter is in the accepted YAML subset",
+    "frontmatter.syntax": "the frontmatter is in the accepted YAML subset: a plain scalar carries no `: ` or ` #`, a double-quoted one escapes `\\\\` and `\\\"` alone, a flow list holds plain, non-empty items",
+    "frontmatter.type": "a field has its declared type: a string is quoted where YAML would read a number, a boolean or null; `tools`, `disallowedTools` and `skills` are string lists; `maxTurns` is an unquoted integer; `metadata` values are strings",
     "frontmatter.required": "`name` and `description` are present and non-empty",
     "frontmatter.refused-key": "a frontmatter key is on the kind's allowlist",
     "frontmatter.length": "`description` is at most 1024 characters and `compatibility` at most 500",

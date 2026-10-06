@@ -115,9 +115,9 @@ The frontmatter is the Agent Skills specification's fields:
 
 | Field | In a set skill |
 |---|---|
-| `name`, `description` | required; `description` at most 1024 characters |
-| `license` | allowed; overrides the set's licence for this skill |
-| `compatibility` | allowed; at most 500 characters |
+| `name`, `description` | required strings; `description` at most 1024 characters |
+| `license` | allowed; a string, the SPDX expression that overrides the set's licence for this skill |
+| `compatibility` | allowed; a string of at most 500 characters |
 | `metadata` | allowed; a map of string values; keys this format reads start with `ai-tools-` |
 | `allowed-tools`, any other key | refused |
 
@@ -137,8 +137,10 @@ An allowlisted subset of Claude Code's format:
 
 | Field | In a set subagent |
 |---|---|
-| `name`, `description` | required; `description` at most 1024 characters |
-| `tools`, `disallowedTools`, `model`, `effort`, `maxTurns`, `color`, `skills` | allowed |
+| `name`, `description` | required strings; `description` at most 1024 characters |
+| `model`, `effort`, `color` | allowed strings |
+| `tools`, `disallowedTools`, `skills` | allowed string lists: a flow list `[Read, Grep]`, a block sequence of `- item` lines, or Claude Code's comma-separated line `Read, Grep` |
+| `maxTurns` | allowed; an unquoted positive integer |
 | `metadata` | allowed; a map of string values |
 | `permissionMode`, `hooks`, `mcpServers` | refused: they change permissions, run commands or add tool servers |
 | `memory`, `isolation`, `background`, `initialPrompt`, `omitClaudeMd`, `experimental`, any other key | refused until a set needs one and it is reviewed |
@@ -153,6 +155,14 @@ a one-level map of `key: value` lines or a sequence of `- item` lines. A tab
 in the indentation, a block scalar, an anchor, an alias, a tag, a flow map,
 a deeper nesting and a key written twice are refused, so every reader parses
 the same file the same way.
+
+Every field has a declared type, checked before its value. A plain scalar
+that another YAML reader types -- `true`, `no`, `null`, `~`, an integer,
+a float, in any letter case -- is refused in a string field: quote it. A plain
+scalar does not carry `: ` or ` #`, which a reader takes as a mapping
+or a comment; quote the value instead. A double-quoted scalar escapes `\\`
+and `\"` alone, a single-quoted one `''` alone. A flow list holds plain items,
+none empty and none opening with a YAML indicator.
 
 ## Bodies and files
 
@@ -259,7 +269,8 @@ differ.
 | `skill.sidecar` | refuses | `agents/openai.yaml` is reserved inside a skill |
 | `skill.length` | warns | `SKILL.md` is under 500 lines |
 | `frontmatter.missing` | refuses | `SKILL.md` and a subagent file open with a frontmatter |
-| `frontmatter.syntax` | refuses | the frontmatter is in the accepted YAML subset |
+| `frontmatter.syntax` | refuses | the frontmatter is in the accepted YAML subset: a plain scalar carries no `: ` or ` #`, a double-quoted one escapes `\\` and `\"` alone, a flow list holds plain, non-empty items |
+| `frontmatter.type` | refuses | a field has its declared type: a string is quoted where YAML would read a number, a boolean or null; `tools`, `disallowedTools` and `skills` are string lists; `maxTurns` is an unquoted integer; `metadata` values are strings |
 | `frontmatter.required` | refuses | `name` and `description` are present and non-empty |
 | `frontmatter.refused-key` | refuses | a frontmatter key is on the kind's allowlist |
 | `frontmatter.length` | refuses | `description` is at most 1024 characters and `compatibility` at most 500 |
