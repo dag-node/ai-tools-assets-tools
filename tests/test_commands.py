@@ -86,6 +86,21 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("frontmatter.missing", stderr)
 
+    def test_the_publisher_checks_read_the_shared_key_value_grammar(self):
+        set_conf = self.root / "sets" / "acme" / "set.conf"
+        text = set_conf.read_text(encoding="utf-8")
+        text = text.replace("source=https://github.com/acme/ai-tools-assets", 'source="https://github.com/acme/ai-tools-assets" # the publisher\'s')
+        text = text.replace("maintainers=[maintainers@acme.example]", "maintainers=maintainers@acme.example")
+        set_conf.write_text(text, encoding="utf-8")
+        status, _, stderr = run("check-publisher", "--root", str(self.root))
+        self.assertEqual((status, stderr), (0, ""))
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual((status, stderr), (0, ""))
+        set_conf.write_text(text.replace("maintainers=maintainers@acme.example", "maintainers=[a,,b]"), encoding="utf-8")
+        status, _, stderr = run("check-publisher", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("`maintainers` is not a list", stderr)
+
     def test_a_symlinked_manifest_is_refused_before_any_publisher_check_reads_it(self):
         outside = self.root.parent / "outside.json"
         manifest = self.root / "sets" / "acme" / "plugin.json"
