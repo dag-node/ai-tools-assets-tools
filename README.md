@@ -15,9 +15,10 @@ names it. This repository holds what every such repository shares: the format
 a set follows, the validator that applies it, the scaffolding and build
 commands, and the GitHub workflows that run them.
 
-**Status.** The repository holds `check-publisher` and the formatters.
-The commands, the format specification, the fixtures and the workflows are
-being added; each lands with its tests.
+**Status.** Format 1, the commands, the fixtures and the workflows are
+in the tree and unreleased: the first tag `v0.1.0` follows the signing slice,
+which adds the RPM and the signed set release to the workflows. Until then
+a consumer runs the tools from a checkout.
 
 ## Layout
 
