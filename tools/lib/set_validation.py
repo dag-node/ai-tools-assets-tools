@@ -266,13 +266,14 @@ class _SetValidator:
             self.refuse(relative_path, "file.special", f"cannot be read: {error.strerror}")
             return
         record = FileRecord(relative_path=relative_path, size=read.size)
+        # The bytes a truncated read did read count too, so a tree of many over-size files trips the aggregate budget.
+        self.bytes_read += len(read.data)
+        if self.bytes_read > fmt.SET_MAX_BYTES:
+            raise _BudgetExceeded(f"the set holds more than {fmt.SET_MAX_BYTES} bytes")
         if read.truncated:
             self.refuse(relative_path, "file.size", f"is {read.size} bytes; a file is at most {fmt.FILE_MAX_BYTES}")
             record.is_text = False
         else:
-            self.bytes_read += len(read.data)
-            if self.bytes_read > fmt.SET_MAX_BYTES:
-                raise _BudgetExceeded(f"the set holds more than {fmt.SET_MAX_BYTES} bytes")
             record.data = read.data
             record.digest = read.digest
             record.is_text = self.keep_text(relative_path, record)

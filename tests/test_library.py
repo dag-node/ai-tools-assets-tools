@@ -278,6 +278,16 @@ class WalkReadsEachFileOnce(unittest.TestCase):
         self.assertEqual({finding.rule_id for finding in collector.findings}, {"file.size"})
         self.assertEqual(len(collector.findings), 1)
 
+    def test_a_truncated_read_is_charged_against_the_aggregate_budget(self):
+        references = self.set_directory / "skills" / "acme-pdf-processing" / "references"
+        for index in range(70):
+            (references / f"big-{index:02}.md").write_bytes(b"x" * (fmt.FILE_MAX_BYTES + 1))
+        reads, collector = self.validate_counting_reads()
+        self.assertLess(len([name for name in reads if name.startswith("big-")]), 70, "the files after the budget are not opened")
+        self.assertEqual({finding.rule_id for finding in collector.findings}, {"file.size"})
+        self.assertEqual([finding.path for finding in collector.findings if "more than" in finding.message], ["acme"],
+                         "one root finding names the budget, beside the per-file findings made before it tripped")
+
     def test_a_tripped_file_budget_stops_the_reads(self):
         references = self.set_directory / "skills" / "acme-pdf-processing" / "references"
         for directory in range(3):
