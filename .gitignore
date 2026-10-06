@@ -1,0 +1,26 @@
+# Built sets, release staging and packages: tools/build-set writes under
+# build/ and dist/, and CI rebuilds a release from its tag.
+build/
+dist/
+*.rpm
+*.zip
+
+# Python bytecode cache, created when a tool or a test runs.
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# Editor and IDE state.
+.idea/
+.vscode/
+*~
+.#*
+
+# Credential-pattern files stay out of a public repository.
+.env
+.env/
+*.pem
+*.key
+
+# Per-user Claude Code permission grants written by the harness.
+.claude/settings.local.json
