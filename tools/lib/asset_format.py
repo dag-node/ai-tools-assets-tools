@@ -183,7 +183,10 @@ DEFAULT_LICENSE_ALLOWLIST: Tuple[str, ...] = (
     "MIT", "MIT-0", "0BSD", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Apache-2.0", "CC0-1.0", "Unlicense",
 )
 LICENSE_TEXTS_DIRECTORY = "LICENSES"
+# `reuse lint` reads the tag inside this pattern as a second expression of this file, so the line is ignored for it.
+# REUSE-IgnoreStart
 SPDX_HEADER = re.compile(r"SPDX-License-Identifier:\s*(?P<expression>[^\r\n*]+?)\s*(?:-->|\*/|\*\)|\s*$)")
+# REUSE-IgnoreEnd
 SPDX_HEADER_LINES_READ = 20
 
 # ── Rules ──────────────────────────────────────────────────────────────────────────────────────────────────────────
