@@ -9,13 +9,13 @@
 ;; every language's comment syntax, so the rule is a `fill-nobreak-predicate' hook.
 ;;
 ;; Interactive use: load this file, then `M-q' on a comment block. Batch use over whole files:
-;; `bash tools/formatters/fill-comments.sh <file>...', which calls `ai-tools-fill-comments-file'.
+;; `bash formatters/fill-comments.sh <file>...', which calls `ai-tools-fill-comments-file'.
 ;;
 ;; The batch filler is conservative on purpose. It fills a run of consecutive lines carrying the
 ;; same comment prefix, one space and text, and leaves every other shape as it finds it: a run
 ;; one of whose lines is indented deeper (an aligned table, an example command), a run drawing a
 ;; table or a diagram (two lines carrying a vertical rule at the same column -- the reading
-;; `tools/formatters/align-tables.py' states, and the tool that puts such a table in order), a line inside a
+;; `formatters/align-tables.py' states, and the tool that puts such a table in order), a line inside a
 ;; string, inside a CDATA or `<pre>' region, or inside a fenced block the comment carries (the
 ;; commands a header shows), and every line `ai-tools-fill--skip-line' names. A docstring is not a
 ;; comment and is not read.
@@ -27,7 +27,7 @@
     "along" "across" "around" "near" "off" "out" "up" "down" "via" "per" "as"
     "what" "which" "who" "whom" "whose" "that" "when" "where" "why" "how")
   "The words a line does not end on: they tie to the word after them.
-Mirrors `_AI_TOOLS_MSG_TIES' in `msg.lib.sh', the runtime's own copy. `tools/formatters/fill-markdown.py'
+ai-tools-base's `msg.lib.sh' keeps the same list as `_AI_TOOLS_MSG_TIES' for its runtime. `formatters/fill-markdown.py'
 reads this list at run time, so the two formatters share it.")
 
 (defun ai-tools-no-break-after-tie ()
@@ -45,7 +45,7 @@ A word closing a sentence is not a tie; trailing punctuation around the word is 
 
 (defconst ai-tools-fill--code-span "\\(`+\\)[^`]*?\\1"
   "An inline code span: a backtick run, content without a backtick, and a matching run.
-`tools/formatters/fill-markdown.py' reads the checker's `BACKTICK_SPAN' for the same rule, which elisp
+`formatters/fill-markdown.py' reads the checker's `BACKTICK_SPAN' for the same rule, which elisp
 cannot read, so this states it again -- narrower in one way, since a span whose content holds a
 backtick run of another length is not matched.")
 
@@ -205,7 +205,7 @@ RANGES is the marker list `ai-tools-fill--range-markers' builds; nil means every
 (defun ai-tools-fill-comments (&optional ranges)
   "Fill every plain comment paragraph in the current buffer at `fill-column'.
 With RANGES, a list of (FIRST . LAST) line-number pairs, fill only a paragraph meeting one,
-which is how `tools/formatters/format.sh' fills what a diff touched. Returns the number of paragraphs
+which is how `formatters/format.sh' fills what a diff touched. Returns the number of paragraphs
 filled. See the file header for what is left alone."
   (let ((filled 0)
         (sentence-end-double-space nil)

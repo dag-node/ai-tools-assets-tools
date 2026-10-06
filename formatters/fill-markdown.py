@@ -3,24 +3,26 @@
 """Reflow the paragraphs of a Markdown page at a column, leaving every other block as written.
 
 ```bash
-python3 tools/formatters/fill-markdown.py --width N [--lines A-B,C-D] [--] <file>...
+python3 formatters/fill-markdown.py --checker <prose-check.py> --width N [--lines A-B,C-D] [--] <file>...
 ```
 
-The Markdown half of the formatter `tools/formatters/format.sh` fronts, beside `tools/formatters/fill-comments.sh` for a
+The Markdown half of the formatter `formatters/format.sh` fronts, beside `formatters/fill-comments.sh` for a
 source comment. It rewrites each file in place and prints one line per file. `--lines` names
 1-based inclusive line ranges and confines the reflow to the blocks meeting one, which is how the
-front door fills only what a diff touched. A file is read and written through `tools/formatters/text_file.py`,
+front door fills only what a diff touched. A file is read and written through `formatters/text_file.py`,
 which refuses what is not plain text -- a symlink, a binary, a control or a bidi character -- and
 the file is then reported, left as it is, and the run exits 1 after the others are filled.
 
 Filled, with its structure kept: a paragraph under its own leading indent, a list item and its
 continuation lines under a hanging indent the width of the marker, and a blockquote paragraph
 under its `> ` prefix. Three rules decide where a break falls. Two are shared with the comment
-filler: no line ends on a tie word (the list is read from `tools/formatters/emacs/ai-tools-fill.el`, its one
+filler: no line ends on a tie word (the list is read from `formatters/emacs/ai-tools-fill.el`, its one
 home), and no line begins with a token that opens a block, since a wrap that moves a fence, a
 pipe, a heading mark or a list marker to a line start invents the block. The third is shared with
 the checker: no break falls inside an inline code span (the span is the checker's
-`BACKTICK_SPAN`, read from `prose-check.py`, its one home), since a span holds a literal -- a
+`BACKTICK_SPAN`, read from the `prose-check.py` that `--checker` names, its one home; the option
+has no default, since the checker ships inside the `ai-tools-technical-docs` skill and a repository
+names the copy it pins), since a span holds a literal -- a
 command line, an owner and mode, a flag with its operand -- that `grep` finds only on one line;
 a span wider than the column runs the line over on its own, as the checker's width rule expects.
 
@@ -48,7 +50,6 @@ import text_file
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 TIE_LIST = TOOLS / "emacs" / "ai-tools-fill.el"
-CHECKER = TOOLS.parent.parent / "src/usr/share/ai-tools/skills/ai-tools-technical-docs/prose-check.py"
 IGNORE_MARKER = "prose-check: ignore"
 CODE_INDENT = 4
 RANGES = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
@@ -88,17 +89,17 @@ def tie_words() -> frozenset[str]:
     return words
 
 
-def code_span_pattern() -> Pattern[str]:
+def code_span_pattern(checker_path: pathlib.Path) -> Pattern[str]:
     """The checker's `BACKTICK_SPAN`, the one statement of what a code span is; exits when absent."""
     try:
-        spec = importlib.util.spec_from_file_location("prose_check", CHECKER)
+        spec = importlib.util.spec_from_file_location("prose_check", checker_path)
         if spec is None or spec.loader is None:
-            raise ImportError(f"no module at {CHECKER}")
+            raise ImportError(f"no module at {checker_path}")
         checker = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(checker)
         return checker.BACKTICK_SPAN
     except (OSError, AttributeError, ImportError, SyntaxError) as exc:
-        sys.exit(f"fill-markdown: cannot read the code-span rule from {CHECKER}: {exc}")
+        sys.exit(f"fill-markdown: cannot read the code-span rule from {checker_path}: {exc}")
 
 
 def units(text: str, span: Pattern[str]) -> list[str]:
@@ -301,6 +302,8 @@ def positive_int(text: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="reflow Markdown paragraphs at a column")
+    parser.add_argument("--checker", type=pathlib.Path, required=True, metavar="PROSE_CHECK",
+                        help="the prose-check.py whose code-span rule the filler reads; no default")
     parser.add_argument("--width", type=positive_int, required=True, help="the column to wrap at")
     parser.add_argument("--lines", metavar="RANGES",
                         help="fill only the blocks meeting these 1-based line ranges, `A-B,C-D`")
@@ -310,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         ranges = parse_ranges(args.lines) if args.lines else None
     except ValueError as exc:
         parser.error(f"--lines: {exc}")
-    rules = Rules(tie_words(), code_span_pattern())
+    rules = Rules(tie_words(), code_span_pattern(args.checker))
     status = 0
     for path in args.paths:
         try:
