@@ -2,7 +2,7 @@
 """The one reader for every file a tool opens inside a tree it judges: by descriptor, never through a symbolic link,
 once, under a size cap, and judged from the bytes read.
 
-A set is pull-request content, so every open below the directory a command was handed is `openat` from a directory
+A set is pull-request content, so every open inside the directory a command was handed is `openat` from a directory
 descriptor with `O_NOFOLLOW`: a symbolic link at any component fails with ELOOP and is refused as `file.symlink`
 before a byte of its target is read, and a path swapped between inspection and reading does not redirect the read,
 since the read is on the descriptor the inspection used. `fstat` on the open descriptor refuses a non-regular file

@@ -8,7 +8,7 @@ and the conformance fixtures under `fixtures/` hold the two to one another.
 
 ```text
 sets/<set>/
-├── set.conf                    format, name, version, summary, licence
+├── set.conf                    format, name, version, summary, licence, requirements
 ├── CHANGELOG.md
 ├── README.md
 ├── LICENSE                     optional: the set's own licence text
@@ -24,7 +24,7 @@ sets/<set>/
 │   └── UPSTREAM.conf           a vendored skill alone
 ├── agents/<name>.md            subagents, Claude Code's format
 └── metadata/<kind>/<name>/     optional
-    ├── asset.conf              requirements and targets
+    ├── asset.conf              requirements and supported targets
     ├── UPSTREAM.conf           provenance of a vendored flat-file asset
     └── references/
 ```
@@ -88,11 +88,47 @@ file in it as a subagent.
 | `maintainers` | yes | a list of contacts, the publisher's |
 | `source` | yes | the repository the set is published from, the publisher's |
 | `requires_base` | no | the least `ai-tools-base` version |
-| `integrations` | no | a list of `integration-<name>` tokens the assets need |
+| `requires_integrations` | no | a list of `integration-<name>` tokens the assets need |
 | `requires_capabilities` | no | a list of capability tokens; an unknown one refuses the set |
+| `x_<name>` | no | a publisher's own key; accepted without a finding, read past by base |
 
 The capabilities this format defines are `skills.portable.v1`
-and `subagents.claude.v1`. An unknown key is reported and read past.
+and `subagents.claude.v1`. A key outside this table that is not
+an `x_<name>` extension key is refused.
+
+## `KEY=value` grammar
+
+`set.conf`, `publisher.conf`, `UPSTREAM.conf` and `asset.conf` are `KEY=value`
+files, read as data by the tools and by `ai-tools-base`:
+
+```text
+# a comment line
+format=1
+summary="Fixture skills and subagents"   # a comment after a value
+license='MIT'
+maintainers=[a@acme.example, b@acme.example]
+requires_capabilities=[]
+x_acme_tier=community
+```
+
+A key is letters, digits and underscores, written once; a second assignment
+is refused. Whitespace around the key, the `=` and the value is trimmed.
+A value is plain, or quoted whole in `"` or `'`: one quote layer is removed,
+the quote closes on its line, and after it only whitespace and a `#` comment
+follow. There is no escape inside quotes; a value does not carry its own quote
+character. Outside quotes, a `#` at the start of the value or after whitespace
+starts a comment.
+
+A list is `[a, b]`, or bare `a, b c`; items are split on commas and whitespace
+and an empty item (`[a,,b]`, a trailing comma) is refused. For a list key,
+`key=[]` is the explicit empty list, an absent key is not declared, and `key=`
+is refused, so the three are told apart; a required list given `[]` fails
+the required-key rule. `publisher.conf` `licenses=[]` refuses every licence.
+
+`x_<name>` -- `x_` then a key body -- is the one shape a key outside a file's
+table takes. The tools accept it without a finding and base reads past it; any
+other unknown key is refused, so a misspelt key does not pass as informational.
+A requirement never takes the `x_` form.
 
 ## The manifests and the marketplace
 
@@ -124,7 +160,8 @@ The frontmatter is the Agent Skills specification's fields:
 A skill's root holds `SKILL.md`, `scripts/`, `references/`, `assets/`,
 `tests/`, `UPSTREAM.conf`, `LICENSE` and `LICENSES/` alone. It does not hold
 a `.claude-plugin/` directory, which would make it a plugin of its own,
-and `agents/openai.yaml` is reserved. `SKILL.md` under 500 lines is a warning.
+and `agents/openai.yaml` is reserved. A `SKILL.md` over 500 lines warns
+(exactly 500 does not); longer material goes in files it links to.
 
 A script is called through its interpreter and ships every file it runs.
 A `.cs` script is a .NET file-based app: `#:package` is refused, `#:sdk` is
@@ -202,9 +239,10 @@ asset carries it under `metadata/<kind>/<name>/`. One declaration per asset.
 | `signature`, `signer` | no | reserved for asset signing |
 
 `metadata/<kind>/<name>/asset.conf` carries `format=1` and optionally
-`requires_capabilities`, `requires_integrations` (as `integration-<name>`)
-and `targets` (agent names). `<kind>` is an implemented kind id and `<name>`
-an asset the set holds. An unknown required capability refuses the asset.
+`requires_capabilities`, `requires_integrations` (as `integration-<name>`),
+`supported_targets` (agent names) and `x_<name>` keys. `<kind>` is
+an implemented kind id and `<name>` an asset the set holds. An unknown required
+capability refuses the asset.
 
 ## Licences
 
@@ -223,11 +261,33 @@ or at the repository root, and `build-set` copies it into the payload.
 Allowing a name, a field or an entry later is additive; refusing one a shipped
 set carries breaks that set, which is why each list starts narrow. `format`
 stays the integer `1` until a change a set must follow, which is `format=2`
-and a new major of the tools. An unknown informational key in `set.conf`,
-`UPSTREAM.conf` or `asset.conf` is reported and read past; a requirement
-(`requires_base`, `requires_capabilities`, `requires_integrations`, `targets`)
-is read, not skipped, and an unknown required capability refuses. An unknown
-top-level set entry fails validation; a reserved one is refused with content.
+and a new major of the tools. A publisher's own key in `set.conf`,
+`UPSTREAM.conf` or `asset.conf` is `x_<name>`, which base reads past; a key
+of another shape outside the file's table is refused, and a requirement
+(`requires_base`, `requires_capabilities`, `requires_integrations`,
+`supported_targets`) is read, not skipped, so an unknown required capability
+refuses. An unknown top-level set entry fails validation; a reserved one is
+refused with content.
+
+## Limits
+
+The validator holds a set to these bounds and stops at the first it meets,
+with one `file.size` finding at the set root, so a tree too large to read
+whole is refused rather than judged in part:
+
+| Bound | Value |
+|---|---|
+| a file | 1 MiB |
+| files in a set | 2000 |
+| directories in a set | 500 |
+| entries in one directory | 2000 |
+| directory depth | 32 |
+| bytes in a set | 64 MiB |
+| a plugin manifest | 64 KiB |
+| tokens in an SPDX expression | 64 |
+| parentheses nested in an SPDX expression | 8 |
+| `description` | 1024 characters |
+| `compatibility` | 500 characters |
 
 ## Rules
 
@@ -249,8 +309,8 @@ differ.
 | `set.conf.name` | refuses | `name` equals the set directory |
 | `set.conf.version` | refuses | `version` is a semantic version |
 | `set.conf.requires-capabilities` | refuses | every required capability is one the format defines |
-| `set.conf.integrations` | refuses | every integration is written as `integration-<name>` |
-| `set.conf.unknown-key` | warns | an unknown key is reported; base reads past it |
+| `set.conf.requires-integrations` | refuses | every required integration is written as `integration-<name>` |
+| `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<name>` extension key |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
 | `set.entry.reserved` | refuses | `jobs`, `libs` and `variants` are reserved and do not hold any content |
 | `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |
@@ -269,9 +329,9 @@ differ.
 | `skill.entry.unknown` | refuses | a skill holds `SKILL.md`, `scripts`, `references`, `assets`, `tests`, `UPSTREAM.conf`, `LICENSE` and `LICENSES` alone |
 | `skill.plugin-manifest` | refuses | a skill does not hold a `.claude-plugin` directory |
 | `skill.sidecar` | refuses | `agents/openai.yaml` is reserved inside a skill |
-| `skill.length` | warns | `SKILL.md` is under 500 lines |
+| `skill.length` | warns | `SKILL.md` over 500 lines warns; exactly 500 does not |
 | `frontmatter.missing` | refuses | `SKILL.md` and a subagent file open with a frontmatter |
-| `frontmatter.syntax` | refuses | the frontmatter is in the accepted YAML subset: a plain scalar carries no `: ` or ` #`, a double-quoted one escapes `\\` and `\"` alone, a flow list holds plain, non-empty items |
+| `frontmatter.syntax` | refuses | the frontmatter is in the accepted YAML subset: a plain scalar does not carry `: ` or ` #`, a double-quoted one escapes `\\` and `\"` alone, a flow list holds plain, non-empty items |
 | `frontmatter.type` | refuses | a field has its declared type: a string is quoted where YAML would read a number, a boolean or null; `tools`, `disallowedTools` and `skills` are string lists; `maxTurns` is an unquoted integer; `metadata` values are strings |
 | `frontmatter.required` | refuses | `name` and `description` are present and non-empty |
 | `frontmatter.refused-key` | refuses | a frontmatter key is on the kind's allowlist |
