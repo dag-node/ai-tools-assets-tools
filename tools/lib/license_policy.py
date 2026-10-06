@@ -11,17 +11,19 @@ A file outside a set is judged as REUSE 3.2 resolves it, and every expression th
 REUSE combines them: the file's own information is each `SPDX-License-Identifier` header in its first lines, or the
 headers of its `<file>.license` sidecar where one exists; the repository's `REUSE.toml` supplies annotations whose
 `path` globs are matched with REUSE's grammar (`*` and `?` stop at `/`, `**` crosses it, `\\` escapes a metacharacter),
-the last matching annotation applies, and its `precedence` decides the combination -- `closest` (the default) takes
-the file's own information where it has any, `aggregate` takes both, `override` takes the annotation alone. A
-`REUSE.toml` inside a subdirectory governs the files under it with rules this check does not read, so each of those
-files is refused rather than judged by the root's annotations.
+the last matching annotation applies -- whether or not it declares a licence -- and its `precedence` decides the
+combination: `closest` (the default) takes the file's own information where it has any, `aggregate` takes both,
+`override` takes the annotation alone. The `REUSE.toml` reader parses a bounded TOML subset and refuses the file
+whole on a line outside it, so no file is judged on an annotation it may have misread; `reuse lint` in CI is the check
+that the file is TOML. A `REUSE.toml` inside a subdirectory governs the files under it with rules this check does not
+read, so each of those files is refused rather than judged by the root's annotations.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from asset_format import DEFAULT_LICENSE_ALLOWLIST, FILE_MAX_BYTES, LICENSE_TEXTS_DIRECTORY, SPDX_HEADER, SPDX_HEADER_LINES_READ
 from findings import FindingCollector
@@ -30,7 +32,7 @@ from safe_read import RefusedRead, read_file_under, read_text_under
 from spdx_expression import SpdxValidationResult, evaluate_expression
 
 REUSE_TABLE_HEADER = re.compile(r"^\s*\[\[annotations\]\]\s*$")
-REUSE_KEY_VALUE = re.compile(r"^\s*(?P<key>[A-Za-z0-9_-]+)\s*=\s*(?P<value>.+?)\s*$")
+REUSE_KEY_VALUE = re.compile(r"^\s*(?P<key>[A-Za-z0-9_-]+)\s*=\s*(?P<value>.*?)\s*$")
 REUSE_PRECEDENCES: Tuple[str, ...] = ("closest", "aggregate", "override")
 REUSE_PRECEDENCE_DEFAULT = "closest"
 LICENSE_SIDECAR_SUFFIX = ".license"
@@ -99,11 +101,22 @@ def file_spdx_expressions(root_fd: int, relative_path: PurePath) -> List[str]:
     return expressions
 
 
+TomlValue = Union[str, Tuple[str, ...]]
+TOML_VALUE_FORMS = "a value is a \"basic\" or 'literal' string on one line, or a one-line array of them"
+
+
 def read_reuse_annotations(root_fd: int) -> Tuple[List[ReuseAnnotation], Optional[str]]:
     """The `[[annotations]]` tables of the REUSE.toml under `root_fd`, in file order, and what is wrong with the file
     where something is; an empty list when the repository has none.
 
-    A bounded reader of the TOML the project writes: one key per line, a string or an array of strings.
+    A bounded reader of a TOML subset that refuses what it does not parse rather than misreading it. Inside a table a
+    line is blank, a `#` comment, or `key = value` with a bare key and the value a `"basic"` string (`\\\\` and `\\"`
+    escapes alone), a `'literal'` string, or a one-line array of such strings. Text after a value (a `#` comment
+    included), a multi-line array or string, an inline table, a bare value, a dotted or quoted key, a table header
+    other than `[[annotations]]`, a key given twice in one table, a table without `path`, and a `precedence` outside
+    REUSE's three refuse the file whole, so the caller judges no file on a reading it cannot vouch for. The lines
+    before the first table (`version`, the package keys) are not read. An annotation that declares no licence is
+    kept with no expressions, since REUSE resolves the last matching table whether or not it names one.
     """
     try:
         text = read_text_under(root_fd, PurePath("REUSE.toml"), FILE_MAX_BYTES)
@@ -111,37 +124,95 @@ def read_reuse_annotations(root_fd: int) -> Tuple[List[ReuseAnnotation], Optiona
         return [], None
     except RefusedRead as refusal:
         return [], refusal.message
-    tables: List[Dict[str, str]] = []
-    for line in text.splitlines():
+    tables: List[Dict[str, TomlValue]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
         if REUSE_TABLE_HEADER.match(line):
             tables.append({})
             continue
+        if stripped.startswith("["):
+            return [], f"line {line_number}: `{stripped}` is a table header this reader does not read; it reads `[[annotations]]` tables alone"
+        if not tables:
+            continue
         match = REUSE_KEY_VALUE.match(line)
-        if match and tables and not line.lstrip().startswith("#"):
-            tables[-1][match.group("key")] = match.group("value")
+        if not match:
+            return [], f"line {line_number}: `{stripped}` is not `key = value` with a bare key"
+        key = match.group("key")
+        if key in tables[-1]:
+            return [], f"line {line_number}: `{key}` is given again in one table"
+        value, problem = _toml_value(match.group("value"))
+        if problem is not None:
+            return [], f"line {line_number}: `{key} =`: {problem}"
+        tables[-1][key] = value
     annotations: List[ReuseAnnotation] = []
-    for table in tables:
-        globs = tuple(_toml_strings(table.get("path", "")))
-        expressions = tuple(_toml_strings(table.get("SPDX-License-Identifier", "")))
-        precedence = _toml_strings(table.get("precedence", "")) or [REUSE_PRECEDENCE_DEFAULT]
-        if precedence[0] not in REUSE_PRECEDENCES:
-            return [], f"`precedence = {precedence[0]}` is not one of " + ", ".join(REUSE_PRECEDENCES)
-        if globs and expressions:
-            annotations.append(ReuseAnnotation(globs, expressions, precedence[0]))
+    for index, table in enumerate(tables, start=1):
+        path = table.get("path")
+        if path is None:
+            return [], f"annotations table {index} has no `path`"
+        globs = (path,) if isinstance(path, str) else path
+        if not globs:
+            return [], f"annotations table {index}: `path` is an empty array"
+        declared = table.get("SPDX-License-Identifier", ())
+        expressions = (declared,) if isinstance(declared, str) else declared
+        precedence = table.get("precedence", REUSE_PRECEDENCE_DEFAULT)
+        if not isinstance(precedence, str) or precedence not in REUSE_PRECEDENCES:
+            return [], f"`precedence = {precedence}` is not one of " + ", ".join(REUSE_PRECEDENCES)
+        annotations.append(ReuseAnnotation(tuple(globs), tuple(expressions), precedence))
     return annotations, None
 
 
-def _toml_strings(raw: str) -> List[str]:
-    """The string or the array of strings a TOML value holds; a basic string's `\\\\` and `\\"` escapes are resolved."""
-    raw = raw.strip()
-    items = [item.strip() for item in raw.strip("[]").split(",") if item.strip()] if raw.startswith("[") else ([raw] if raw else [])
-    strings: List[str] = []
-    for item in items:
-        if item.startswith('"') and item.endswith('"'):
-            strings.append(re.sub(r'\\([\\"])', r"\1", item[1:-1]))
-        else:
-            strings.append(item.strip("'"))
-    return strings
+def _toml_value(raw: str) -> Tuple[TomlValue, Optional[str]]:
+    """The string, or the tuple of strings, a one-line TOML value holds; the problem where it is outside the subset."""
+    if not raw.startswith("["):
+        value, rest, problem = _toml_string(raw)
+        if problem is None and rest.strip():
+            problem = f"`{rest.strip()}` follows the value; nothing follows a value in this subset, a comment included"
+        return value, problem
+    items: List[str] = []
+    rest = raw[1:].lstrip()
+    while not rest.startswith("]"):
+        if not rest:
+            return (), "the array does not close on its line"
+        item, rest, problem = _toml_string(rest)
+        if problem is not None:
+            return (), problem
+        items.append(item)
+        rest = rest.lstrip()
+        if rest.startswith(","):
+            rest = rest[1:].lstrip()
+        elif not rest.startswith("]"):
+            return (), "an array holds quoted strings separated by commas"
+    rest = rest[1:]
+    if rest.strip():
+        return (), f"`{rest.strip()}` follows the value; nothing follows a value in this subset, a comment included"
+    return tuple(items), None
+
+
+def _toml_string(text: str) -> Tuple[str, str, Optional[str]]:
+    """One quoted string at the start of `text`: its value, the text after its closing quote, and the problem."""
+    if not text or text[0] not in ("\"", "'"):
+        return "", text, TOML_VALUE_FORMS
+    quote = text[0]
+    if text.startswith(quote * 3):
+        return "", text, "a multi-line string is outside the subset"
+    resolved: List[str] = []
+    index = 1
+    while index < len(text):
+        character = text[index]
+        if character == quote:
+            return "".join(resolved), text[index + 1:], None
+        if quote == "\"" and character == "\\":
+            escaped = text[index + 1: index + 2]
+            if escaped not in ("\\", "\""):
+                return "", text, f"the escape `\\{escaped}` is outside the subset; `\\\\` and `\\\"` alone"
+            resolved.append(escaped)
+            index += 2
+            continue
+        resolved.append(character)
+        index += 1
+    return "", text, "the string does not close on its line"
 
 
 def reuse_glob_regex(glob: str) -> "re.Pattern[str]":
