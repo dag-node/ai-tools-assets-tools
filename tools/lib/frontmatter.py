@@ -10,10 +10,14 @@ digits, `-` and `_`. A value is a plain scalar, a `"double"` or `'single'` quote
 
 A scalar is kept with whether it was quoted, since the typing of a field (`asset_format` declares one per field, and
 `set_validation` applies it) turns on that: a plain scalar another YAML reader would type -- `true`, `no`, `null`,
-`~`, an integer, a float -- is refused in a string field with "quote it", and an integer field takes a plain integer
-alone. A plain scalar does not carry `: ` or ` #`, which another reader takes as a mapping or a comment; a double-quoted
-scalar escapes `\\` and `\"` alone; a single-quoted scalar escapes `''` alone; a flow-list item is a plain scalar with no
-YAML indicator (`* & ! { } [ ] " '`) and is not empty.
+`~`, an integer (a sexagesimal `1:20` included), a float, a date or a timestamp -- is refused in a string field with
+"quote it", and an integer field takes a plain integer alone. A key with no value, or a `#` comment alone, is an
+omitted scalar (`Scalar("")`, unquoted, which YAML reads as null) and is told apart from the quoted empty string `""`.
+One lexical check holds every plain scalar, wherever it stands -- a top-level value, a flow-list item, a sequence item,
+a map value: it opens with no indicator (`| > & * ! { ? @ ` % #`, or `-` then a space), does not carry `: ` or `:`
+then a tab, which another reader takes as a mapping, nor ` #` or a tab then `#`, which it takes as a comment; and in a
+flow list it carries no `,`, bracket, brace or quote. A double-quoted scalar escapes `\\` and `\"` alone; a
+single-quoted scalar escapes `''` alone.
 
 Refused, each with the line that carries it: a tab in indentation, a block scalar (`|`, `>`), an anchor, an alias,
 a tag, a flow map, a complex key, a multi-line plain scalar, a nesting deeper than one level, a key given twice, and
@@ -30,15 +34,21 @@ KEY_LINE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_-]*):(?:\s+(?P<value>.*))?$"
 INDENTED_KEY_LINE = re.compile(r"^(?P<indent> +)(?P<key>[A-Za-z][A-Za-z0-9_-]*):(?:\s+(?P<value>.*))?$")
 SEQUENCE_ITEM_LINE = re.compile(r"^(?P<indent> +)-\s+(?P<value>.+)$")
 FRONTMATTER_DELIMITER = re.compile(r"^---\s*$")
-REFUSED_SCALAR_OPENERS = ("|", ">", "&", "*", "!", "{", "?", "@", "`", "%")
-FLOW_ITEM_INDICATORS = "*&!{}[]\"'"
+REFUSED_SCALAR_OPENERS = ("|", ">", "&", "*", "!", "{", "?", "@", "`", "%", "#")
+FLOW_ITEM_REFUSED_CHARACTERS = ",[]{}\"'"
 # What YAML 1.1 and 1.2 readers type when the scalar is plain: booleans in every spelling and case, null, integers in
-# the decimal, octal, hex and underscore forms, and floats with an exponent, `.inf` and `.nan`.
+# the decimal, octal, hex, underscore and YAML 1.1 sexagesimal forms, floats with an exponent or a sexagesimal part,
+# `.inf` and `.nan`, and the YAML 1.1 timestamp forms, a bare date included.
 YAML_TYPED_PLAIN = re.compile(
     r"^(?:true|false|yes|no|on|off|y|n|null|~"
     r"|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0o?[0-7_]+|[-+]?0x[0-9a-fA-F_]+|[-+]?0b[01_]+"
+    r"|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+"
     r"|[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+]?[0-9]+)?|[-+]?[0-9][0-9_]*(?:\.[0-9_]*)?[eE][-+]?[0-9]+"
-    r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$", re.IGNORECASE)
+    r"|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*"
+    r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)"
+    r"|[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    r"|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9]{1,2}(?::[0-9]{2})?))?"
+    r")$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -50,8 +60,13 @@ class Scalar:
 
     @property
     def is_yaml_typed(self) -> bool:
-        """True for a plain scalar another YAML reader reads as a boolean, null, an integer or a float."""
+        """True for a plain scalar another YAML reader reads as a boolean, null, a number, a date or a timestamp."""
         return not self.quoted and bool(YAML_TYPED_PLAIN.match(self.text))
+
+    @property
+    def is_omitted(self) -> bool:
+        """True for a key given no value (or a comment alone), which YAML reads as null; `""` quoted is not omitted."""
+        return not self.quoted and self.text == ""
 
 
 FrontmatterValue = Union[Scalar, List[Scalar], Dict[str, Scalar]]
@@ -70,26 +85,44 @@ class FrontmatterDocument:
         return bool(self.errors)
 
 
+def is_omitted_value(raw_value: Optional[str]) -> bool:
+    """True for no value after the key, or a `#` comment alone: YAML's null, this subset's omitted scalar."""
+    return raw_value is None or not raw_value.strip() or raw_value.strip().startswith("#")
+
+
 def parse_scalar(raw_value: str, line_number: int, errors: List[str]) -> Optional[Scalar]:
     """One scalar on one line, plain or quoted whole; returns None after recording an error."""
     value = raw_value.strip()
-    if not value:
+    if is_omitted_value(value):
         return Scalar("")
     if value[0] in ("\"", "'"):
         return parse_quoted_scalar(value, line_number, errors)
-    if value[0] in REFUSED_SCALAR_OPENERS or value[0] == "-" and value[1:2] in (" ", ""):
-        errors.append(f"line {line_number}: a value opening with `{value[0]}` is outside the accepted subset")
-        return None
     if value.startswith("[") or value.endswith("]"):
         errors.append(f"line {line_number}: a flow list is accepted only as a whole `[a, b]` value of a top-level key")
         return None
-    if ": " in value or value.endswith(":"):
-        errors.append(f"line {line_number}: a plain scalar does not carry `: `, which a YAML reader takes as a mapping; quote it")
-        return None
-    if " #" in value or "\t#" in value:
-        errors.append(f"line {line_number}: a plain scalar does not carry ` #`, which a YAML reader takes as a comment; quote it")
+    if not check_plain_lexeme(value, line_number, errors):
         return None
     return Scalar(value)
+
+
+def check_plain_lexeme(text: str, line_number: int, errors: List[str], flow: bool = False) -> bool:
+    """True when `text` is a plain scalar this subset reads, wherever it stands; False after recording why another
+    YAML reader would read it as something else -- an opening indicator, a mapping separator, a comment, and in a flow
+    list a `,`, a bracket, a brace or a quote anywhere."""
+    opener = text[0]
+    if opener in REFUSED_SCALAR_OPENERS or (opener == "-" and text[1:2] in (" ", "\t", "")):
+        errors.append(f"line {line_number}: a value opening with `{opener}` is outside the accepted subset")
+        return False
+    if ": " in text or ":\t" in text or text.endswith(":"):
+        errors.append(f"line {line_number}: a plain scalar does not carry `: ` (or `:` then a tab), which a YAML reader takes as a mapping; quote it")
+        return False
+    if " #" in text or "\t#" in text:
+        errors.append(f"line {line_number}: a plain scalar does not carry ` #` (or a tab then `#`), which a YAML reader takes as a comment; quote it")
+        return False
+    if flow and any(character in text for character in FLOW_ITEM_REFUSED_CHARACTERS):
+        errors.append(f"line {line_number}: a flow list holds plain items alone; `{text}` carries a `,`, a bracket, a brace or a quote")
+        return False
+    return True
 
 
 def parse_quoted_scalar(value: str, line_number: int, errors: List[str]) -> Optional[Scalar]:
@@ -140,7 +173,7 @@ def find_closing_quote(value: str, quote: str) -> Optional[int]:
 
 
 def parse_flow_list(raw_value: str, line_number: int, errors: List[str]) -> Optional[List[Scalar]]:
-    """`[a, b]` of plain items without a YAML indicator, a `: ` or an empty item; None after recording an error."""
+    """`[a, b]` of plain, non-empty items each passing the plain-lexeme check in flow context; None after an error."""
     inner = raw_value.strip()[1:-1]
     if not inner.strip():
         return []
@@ -150,11 +183,7 @@ def parse_flow_list(raw_value: str, line_number: int, errors: List[str]) -> Opti
         if not item:
             errors.append(f"line {line_number}: an empty item in a flow list")
             return None
-        if item[0] in FLOW_ITEM_INDICATORS or any(character in item for character in "[]{}\"'"):
-            errors.append(f"line {line_number}: a flow list holds plain items alone; `{item}` opens with or carries a YAML indicator")
-            return None
-        if ": " in item or item.endswith(":") or " #" in item:
-            errors.append(f"line {line_number}: a flow list item does not carry `: ` or ` #`")
+        if not check_plain_lexeme(item, line_number, errors, flow=True):
             return None
         items.append(Scalar(item))
     return items
@@ -191,8 +220,8 @@ def parse_frontmatter(text: str) -> FrontmatterDocument:
             if key in document.values:
                 document.errors.append(f"line {line_number}: key `{key}` is given again; a key is written once")
             current_key, current_indent = None, None
-            if raw_value is None or not raw_value.strip() or raw_value.strip().startswith("#"):
-                document.values[key] = Scalar("")
+            if is_omitted_value(raw_value):
+                document.values[key] = Scalar("")  # omitted, unless the lines under it make it a map or a sequence
                 current_key = key
             elif raw_value.strip().startswith("[") and raw_value.strip().endswith("]"):
                 items = parse_flow_list(raw_value, line_number, document.errors)
@@ -226,12 +255,9 @@ def parse_frontmatter(text: str) -> FrontmatterDocument:
                 map_key = nested_key.group("key")
                 if map_key in existing:
                     document.errors.append(f"line {line_number}: `{current_key}.{map_key}` is given again")
-                raw_value = nested_key.group("value")
-                if raw_value is None or not raw_value.strip():
-                    document.errors.append(f"line {line_number}: `{current_key}.{map_key}` has no value; one level is read")
-                else:
-                    scalar = parse_scalar(raw_value, line_number, document.errors)
-                    existing[map_key] = scalar if scalar is not None else Scalar("")
+                # An omitted map value is kept as one; a line indented deeper under it is the indentation error.
+                scalar = parse_scalar(nested_key.group("value") or "", line_number, document.errors)
+                existing[map_key] = scalar if scalar is not None else Scalar("")
         else:
             if existing == Scalar(""):
                 existing = []

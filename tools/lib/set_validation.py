@@ -610,6 +610,9 @@ class _SetValidator:
                 why = refused_why.get(key, "is not on the allowlist for this kind; propose it in an issue with the asset that needs it")
                 self.refuse(relative_path, "frontmatter.refused-key", f"`{key}` {why}")
                 continue
+            if key in required and isinstance(value, Scalar) and value.is_omitted:
+                self.refuse(relative_path, "frontmatter.required", f"`{key}` is missing or empty")
+                continue
             result = self.typed_field(relative_path, key, value, types[key])
             if result is not None:
                 typed[key] = result
@@ -640,8 +643,11 @@ class _SetValidator:
                 self.refuse(relative_path, "frontmatter.metadata", f"`{key}` is a map of string values")
                 return None
             for map_key, scalar in value.items():
+                if scalar.is_omitted:
+                    self.refuse(relative_path, "frontmatter.type", f"`{key}.{map_key}:` has no value, which YAML reads as null; quote an empty string, or leave the key out")
+                    return None
                 if scalar.is_yaml_typed:
-                    self.refuse(relative_path, "frontmatter.type", f"`{key}.{map_key}: {scalar.text}` reads as a number, a boolean or null in YAML; quote it")
+                    self.refuse(relative_path, "frontmatter.type", f"`{key}.{map_key}: {scalar.text}` reads as a number, a boolean, null or a date in YAML; quote it")
                     return None
             return {map_key: scalar.text for map_key, scalar in value.items()}
         if field_type == fmt.FIELD_STRING_LIST:
@@ -665,8 +671,11 @@ class _SetValidator:
                 self.refuse(relative_path, "frontmatter.type", f"`{key}: {value.text}` is not an unquoted positive integer")
                 return None
             return value.text
+        if value.is_omitted:
+            self.refuse(relative_path, "frontmatter.type", f"`{key}:` has no value, which YAML reads as null; quote an empty string, or omit the key")
+            return None
         if value.is_yaml_typed:
-            self.refuse(relative_path, "frontmatter.type", f"`{key}: {value.text}` reads as a number, a boolean or null in YAML; quote it")
+            self.refuse(relative_path, "frontmatter.type", f"`{key}: {value.text}` reads as a number, a boolean, null or a date in YAML; quote it")
             return None
         return value.text
 
