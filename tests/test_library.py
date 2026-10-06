@@ -18,7 +18,7 @@ import asset_format as fmt  # noqa: E402
 import safe_read  # noqa: E402
 import set_validation  # noqa: E402
 from findings import FindingCollector  # noqa: E402
-from frontmatter import split_frontmatter  # noqa: E402
+from frontmatter import Scalar, split_frontmatter  # noqa: E402
 from key_value_config import parse_key_value_text, parse_list_value  # noqa: E402
 from spdx_expression import evaluate_expression  # noqa: E402
 
@@ -48,12 +48,13 @@ class KeyValueGrammar(unittest.TestCase):
 
 class FrontmatterSubset(unittest.TestCase):
     def test_reads_scalars_maps_and_lists(self):
-        document, body = split_frontmatter('---\nname: pdf\ndescription: "Extract text. Use when x."\nmetadata:\n  ai-tools-libs: python\ntools: [Read, Grep]\nskills:\n  - a\n---\n# Body\n')
+        document, body = split_frontmatter('---\nname: pdf\ndescription: "Extract text. Use when: x."\nmetadata:\n  ai-tools-libs: python\ntools: [Read, Grep]\nskills:\n  - a\nmaxTurns: 3\n---\n# Body\n')
         self.assertEqual(document.errors, [])
-        self.assertEqual(document.values["description"], "Extract text. Use when x.")
-        self.assertEqual(document.values["metadata"], {"ai-tools-libs": "python"})
-        self.assertEqual(document.values["tools"], ["Read", "Grep"])
-        self.assertEqual(document.values["skills"], ["a"])
+        self.assertEqual(document.values["description"], Scalar("Extract text. Use when: x.", quoted=True))
+        self.assertEqual(document.values["metadata"], {"ai-tools-libs": Scalar("python")})
+        self.assertEqual(document.values["tools"], [Scalar("Read"), Scalar("Grep")])
+        self.assertEqual(document.values["skills"], [Scalar("a")])
+        self.assertEqual(document.values["maxTurns"], Scalar("3"))
         self.assertEqual(body, "# Body\n")
 
     def test_refuses_what_is_outside_the_subset(self):
@@ -61,6 +62,34 @@ class FrontmatterSubset(unittest.TestCase):
         joined = "\n".join(document.errors)
         for fragment in ("given again", "opening with `|`", "tab in the indentation", "has no value", "does not close"):
             self.assertIn(fragment, joined)
+
+    def test_refuses_the_ambiguous_scalars_other_readers_type_differently(self):
+        cases = {
+            "description: a: b\n": "does not carry `: `",
+            "description: a #b\n": "does not carry ` #`",
+            'description: "a\\qb"\n': "is not an escape this subset reads",
+            "description: 'unclosed\n": "does not close",
+            'description: "a" b\n': "text follows the closing quote",
+            "tools: [*alias, Grep]\n": "YAML indicator",
+            "tools: [a,,b]\n": "empty item",
+            "tools: [a: b]\n": "does not carry `: `",
+        }
+        for line, fragment in cases.items():
+            document, _ = split_frontmatter(f"---\nname: x\n{line}---\n")
+            self.assertTrue(any(fragment in error for error in document.errors), (line, document.errors))
+
+    def test_quoting_resolves_escapes_and_marks_the_scalar(self):
+        document, _ = split_frontmatter('---\na: "say \\"hi\\" \\\\ now"\nb: \'it\'\'s\'\nc: plain\nd: true\ne: "true"\n---\n')
+        self.assertEqual(document.errors, [])
+        self.assertEqual(document.values["a"], Scalar('say "hi" \\ now', quoted=True))
+        self.assertEqual(document.values["b"], Scalar("it's", quoted=True))
+        self.assertEqual(document.values["c"], Scalar("plain"))
+        self.assertTrue(document.values["d"].is_yaml_typed)
+        self.assertFalse(document.values["e"].is_yaml_typed)
+        for text in ("true", "No", "ON", "null", "~", "12", "-3", "0x1F", "1_000", "1.5", "1e3", ".inf", ".NaN", "0o17"):
+            self.assertTrue(Scalar(text).is_yaml_typed, text)
+        for text in ("Read", "python3.12", "1.2.3", "v1", "none", "nope", "1-2", "a1"):
+            self.assertFalse(Scalar(text).is_yaml_typed, text)
 
     def test_absent_frontmatter(self):
         document, body = split_frontmatter("# Title\n")
