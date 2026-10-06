@@ -13,6 +13,19 @@ the inventory does not cover, or a workflow that exposes a release secret
 to a job a pull request controls. Include the tool, its version or commit,
 the input, and what it accepted or ran.
 
+## Release signing keys
+
+A release is published by `.github/workflows/release.yml` from a tag signed
+by a maintainer's personal key, and its archive is signed by the dag-node
+package-signing key. Both keys are pinned in that file by the fingerprint
+of their primary key, so a tag or an archive signed by any other key fails
+the release step, and the job does not publish a release or an archive.
+Rotating either key is a pull request that changes the pinned fingerprint
+(and, for the tag key, the URL it is fetched from); a consumer that verifies
+the archive moves its own pin the same way. The pull request is reviewed
+on `develop` like any other, so a rotation is a reviewed change, not
+a workflow edit on its own.
+
 ## Supported versions
 
 Only the latest release is supported for security updates. A publisher
