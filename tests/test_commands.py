@@ -224,6 +224,62 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertTrue((target / "acme-pdf-processing" / "SKILL.md").is_file())
         self.assertFalse((target / "acme-pdf-processing").is_symlink())
+        record = (target / ".ai-tools-assets-acme.links").read_text(encoding="utf-8").splitlines()
+        copied = [line for line in record if line.startswith("acme-pdf-processing\t")]
+        name, mode, identity = copied[0].split("\t")
+        self.assertEqual((name, mode, len(identity)), ("acme-pdf-processing", "copy", 64))
+        self.assertIn("pdftext\tlink\t", "\n".join(record), "the entry the removal left stays recorded")
+
+    def test_link_set_removes_what_still_matches_its_record_alone(self):
+        target = self.root.parent / "home" / ".claude" / "skills"
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target))
+        self.assertEqual(status, 0, stderr)
+        record = target / ".ai-tools-assets-acme.links"
+        lines = record.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([line.split("\t")[:2] for line in lines], [["acme-pdf-processing", "link"], ["pdftext", "link"]])
+        self.assertEqual(lines[1].split("\t")[2], str(self.root / "sets" / "acme" / "skills" / "pdftext"))
+        # A replaced entry: a real directory where the link was, and a link retargeted elsewhere.
+        (target / "acme-pdf-processing").unlink()
+        (target / "acme-pdf-processing").mkdir()
+        (target / "acme-pdf-processing" / "SKILL.md").write_text("mine\n", encoding="utf-8")
+        elsewhere = self.root.parent / "elsewhere"
+        elsewhere.mkdir()
+        (target / "pdftext").unlink()
+        (target / "pdftext").symlink_to(elsewhere, target_is_directory=True)
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target), "--remove")
+        self.assertEqual(status, 1)
+        self.assertEqual(stderr.count("name.collision"), 2, stderr)
+        self.assertTrue((target / "acme-pdf-processing" / "SKILL.md").is_file(), "the replacement is left")
+        self.assertTrue((target / "pdftext").is_symlink() and elsewhere.is_dir(), "the retargeted link and its target are left")
+        self.assertEqual(len(record.read_text(encoding="utf-8").splitlines()), 2, "the entries stay recorded")
+
+    def test_link_set_refuses_a_tampered_record_and_leaves_a_modified_copy(self):
+        target = self.root.parent / "home" / ".claude" / "skills"
+        unrelated = self.root.parent / "home" / ".claude" / "unrelated"
+        unrelated.mkdir(parents=True)
+        target.mkdir()
+        (unrelated / "SKILL.md").write_text("mine\n", encoding="utf-8")
+        record = target / ".ai-tools-assets-acme.links"
+        for line in ("../unrelated\tcopy\n", "../unrelated\tcopy\tx\n", "pdftext\tmove\tx\n", "pdftext\tlink\n"):
+            record.write_text(line, encoding="utf-8")
+            status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target), "--remove")
+            self.assertEqual(status, 1, line)
+            self.assertIn("refused whole", stderr)
+            self.assertTrue((unrelated / "SKILL.md").is_file())
+        record.unlink()
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target), "--copy", "--only", "pdftext")
+        self.assertEqual(status, 0, stderr)
+        (target / "pdftext" / "SKILL.md").write_text("edited\n", encoding="utf-8")
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target), "--remove")
+        self.assertEqual(status, 1)
+        self.assertIn("pdftext: name.collision: is not the copy", stderr)
+        self.assertEqual((target / "pdftext" / "SKILL.md").read_text(encoding="utf-8"), "edited\n")
+        status, _, stderr = run("link-set", "..", "--root", str(self.root), "--target", str(target))
+        self.assertEqual(status, 1)
+        self.assertIn("name.grammar", stderr)
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target), "--only", "../x")
+        self.assertEqual(status, 1)
+        self.assertIn("name.grammar", stderr)
 
 
 class LicenseCheck(unittest.TestCase):
