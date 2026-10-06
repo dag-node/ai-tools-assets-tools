@@ -5,13 +5,21 @@ The default list is the GPLv3-compatible permissive set; `publisher.conf` `licen
 list refuses every licence, and an explicitly empty list refuses every licence too, which is the less-access reading
 of a list a publisher wrote and got wrong. Three places declare a licence for set content -- `set.conf`, a skill's
 `license` field and a vendored asset's `UPSTREAM.conf` -- and each is held to the same list; `UPSTREAM.conf` records
-upstream terms and does not exempt the asset. A file outside a set is read for its own SPDX header, with the
-repository's `REUSE.toml` annotations as the fallback REUSE applies, so `check-licenses` judges the whole tree.
+upstream terms and does not exempt the asset.
+
+A file outside a set is judged as REUSE 3.2 resolves it, and every expression that applies is held to the list, since
+REUSE combines them: the file's own information is each `SPDX-License-Identifier` header in its first lines, or the
+headers of its `<file>.license` sidecar where one exists; the repository's `REUSE.toml` supplies annotations whose
+`path` globs are matched with REUSE's grammar (`*` and `?` stop at `/`, `**` crosses it, `\\` escapes a metacharacter),
+the last matching annotation applies, and its `precedence` decides the combination -- `closest` (the default) takes
+the file's own information where it has any, `aggregate` takes both, `override` takes the annotation alone. A
+`REUSE.toml` below the root governs the files under it with rules this check does not read, so each of those files is
+refused rather than judged by the root's annotations.
 """
 from __future__ import annotations
 
-import fnmatch
 import re
+from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -23,8 +31,20 @@ from spdx_expression import SpdxEvaluation, evaluate_expression
 
 REUSE_TABLE_HEADER = re.compile(r"^\s*\[\[annotations\]\]\s*$")
 REUSE_KEY_VALUE = re.compile(r"^\s*(?P<key>[A-Za-z0-9_-]+)\s*=\s*(?P<value>.+?)\s*$")
+REUSE_PRECEDENCES: Tuple[str, ...] = ("closest", "aggregate", "override")
+REUSE_PRECEDENCE_DEFAULT = "closest"
+LICENSE_SIDECAR_SUFFIX = ".license"
 # A licence header sits in a file's first lines; this many bytes hold them, and a longer file is read no further.
 SPDX_HEADER_BYTES_READ = 64 * 1024
+
+
+@dataclass(frozen=True)
+class ReuseAnnotation:
+    """One `[[annotations]]` table: its path globs, the expressions it declares, and how it combines with a header."""
+
+    globs: Tuple[str, ...]
+    expressions: Tuple[str, ...]
+    precedence: str = REUSE_PRECEDENCE_DEFAULT
 
 
 def allowlist_in_force(publisher: Optional[ConfigDocument]) -> Tuple[Tuple[str, ...], Optional[str]]:
@@ -62,77 +82,130 @@ def check_license_texts(collector: FindingCollector, declaring_path: str, identi
             collector.refuse(declaring_path, "license.text", f"no `{identifier}.txt` under {searched}")
 
 
-def file_spdx_expression(root_fd: int, relative_path: PurePath) -> Optional[str]:
-    """The expression of an SPDX licence header in the first lines of the file under `root_fd`, or None.
+def file_spdx_expressions(root_fd: int, relative_path: PurePath) -> List[str]:
+    """Every expression of an SPDX licence header in the first lines of the file under `root_fd`, in file order.
 
     A file that is not a regular file, or cannot be read, has no header of its own and falls to the annotations.
     """
     try:
         read = read_file_under(root_fd, relative_path, SPDX_HEADER_BYTES_READ)
     except (RefusedRead, OSError):
-        return None
+        return []
+    expressions: List[str] = []
     for line in read.data.decode("utf-8", errors="replace").splitlines()[:SPDX_HEADER_LINES_READ]:
         match = SPDX_HEADER.search(line)
         if match:
-            return match.group("expression").strip()
-    return None
+            expressions.append(match.group("expression").strip())
+    return expressions
 
 
-def read_reuse_annotations(root_fd: int) -> List[Tuple[str, str]]:
-    """The `(path glob, SPDX-License-Identifier)` of each `[[annotations]]` table in the REUSE.toml under `root_fd`,
-    in file order; an empty list when the repository has none.
+def read_reuse_annotations(root_fd: int) -> Tuple[List[ReuseAnnotation], Optional[str]]:
+    """The `[[annotations]]` tables of the REUSE.toml under `root_fd`, in file order, and what is wrong with the file
+    where something is; an empty list when the repository has none.
 
-    A bounded reader of the TOML the project writes: one key per line, a string or an array of strings. REUSE applies
-    the last matching annotation, and a file's own header takes priority under `precedence = "closest"`.
+    A bounded reader of the TOML the project writes: one key per line, a string or an array of strings.
     """
     try:
         text = read_text_under(root_fd, PurePath("REUSE.toml"), FILE_MAX_BYTES)
     except FileNotFoundError:
-        return []
-    annotations: List[Tuple[str, str]] = []
-    current: Optional[Dict[str, str]] = None
+        return [], None
+    except RefusedRead as refusal:
+        return [], refusal.message
+    tables: List[Dict[str, str]] = []
     for line in text.splitlines():
         if REUSE_TABLE_HEADER.match(line):
-            if current is not None:
-                annotations.extend(_annotation_rows(current))
-            current = {}
+            tables.append({})
             continue
         match = REUSE_KEY_VALUE.match(line)
-        if match and current is not None and not line.lstrip().startswith("#"):
-            current[match.group("key")] = match.group("value")
-    if current is not None:
-        annotations.extend(_annotation_rows(current))
-    return annotations
-
-
-def _annotation_rows(table: Dict[str, str]) -> List[Tuple[str, str]]:
-    paths = _toml_strings(table.get("path", ""))
-    expression = _toml_strings(table.get("SPDX-License-Identifier", ""))
-    if not paths or not expression:
-        return []
-    return [(glob, expression[0]) for glob in paths]
+        if match and tables and not line.lstrip().startswith("#"):
+            tables[-1][match.group("key")] = match.group("value")
+    annotations: List[ReuseAnnotation] = []
+    for table in tables:
+        globs = tuple(_toml_strings(table.get("path", "")))
+        expressions = tuple(_toml_strings(table.get("SPDX-License-Identifier", "")))
+        precedence = _toml_strings(table.get("precedence", "")) or [REUSE_PRECEDENCE_DEFAULT]
+        if precedence[0] not in REUSE_PRECEDENCES:
+            return [], f"`precedence = {precedence[0]}` is not one of " + ", ".join(REUSE_PRECEDENCES)
+        if globs and expressions:
+            annotations.append(ReuseAnnotation(globs, expressions, precedence[0]))
+    return annotations, None
 
 
 def _toml_strings(raw: str) -> List[str]:
+    """The string or the array of strings a TOML value holds; a basic string's `\\\\` and `\\"` escapes are resolved."""
     raw = raw.strip()
-    if raw.startswith("["):
-        raw = raw.strip("[]")
-        return [item.strip().strip("\"'") for item in raw.split(",") if item.strip()]
-    return [raw.strip("\"'")] if raw else []
+    items = [item.strip() for item in raw.strip("[]").split(",") if item.strip()] if raw.startswith("[") else ([raw] if raw else [])
+    strings: List[str] = []
+    for item in items:
+        if item.startswith('"') and item.endswith('"'):
+            strings.append(re.sub(r'\\([\\"])', r"\1", item[1:-1]))
+        else:
+            strings.append(item.strip("'"))
+    return strings
 
 
-def annotation_for(relative_path: str, annotations: Sequence[Tuple[str, str]]) -> Optional[str]:
-    """The expression of the last annotation whose glob matches `relative_path`."""
-    expression: Optional[str] = None
-    for glob, candidate in annotations:
-        if fnmatch.fnmatchcase(relative_path, glob) or fnmatch.fnmatchcase(relative_path, glob.replace("**/", "")):
-            expression = candidate
-    return expression
+def reuse_glob_regex(glob: str) -> "re.Pattern[str]":
+    """REUSE's glob as a regular expression over a `/`-joined relative path: `*` and `?` stop at `/`, `**` crosses
+    it (`**/` matches zero directories too, `dir/**` everything below `dir`), and `\\` escapes the character after it."""
+    parts: List[str] = []
+    index = 0
+    while index < len(glob):
+        character = glob[index]
+        if character == "\\" and index + 1 < len(glob):
+            parts.append(re.escape(glob[index + 1]))
+            index += 2
+        elif glob.startswith("**/", index):
+            parts.append("(?:.*/)?")
+            index += 3
+        elif glob.startswith("/**", index) and index + 3 == len(glob):
+            parts.append("/.*")
+            index += 3
+        elif glob.startswith("**", index):
+            parts.append(".*")
+            index += 2
+        elif character == "*":
+            parts.append("[^/]*")
+            index += 1
+        elif character == "?":
+            parts.append("[^/]")
+            index += 1
+        else:
+            parts.append(re.escape(character))
+            index += 1
+    return re.compile("^" + "".join(parts) + "$")
+
+
+def matches_reuse_glob(relative_path: str, glob: str) -> bool:
+    return bool(reuse_glob_regex(glob).match(relative_path))
+
+
+def resolve_reuse_annotation(relative_path: str, annotations: Sequence[ReuseAnnotation]) -> Optional[ReuseAnnotation]:
+    """The last annotation one of whose globs matches `relative_path`, as REUSE resolves it."""
+    resolved: Optional[ReuseAnnotation] = None
+    for annotation in annotations:
+        if any(matches_reuse_glob(relative_path, glob) for glob in annotation.globs):
+            resolved = annotation
+    return resolved
+
+
+def applicable_expressions(root_fd: int, relative_path: PurePath, tracked: Set[str], annotations: Sequence[ReuseAnnotation]) -> List[str]:
+    """Every expression REUSE applies to the file: its own (the sidecar's headers where `<file>.license` is tracked,
+    else its headers), combined with the resolved annotation's under that annotation's precedence."""
+    sidecar = PurePath(str(relative_path) + LICENSE_SIDECAR_SUFFIX)
+    own = file_spdx_expressions(root_fd, sidecar if str(sidecar) in tracked else relative_path)
+    annotation = resolve_reuse_annotation(relative_path.as_posix(), annotations)
+    if annotation is None:
+        return own
+    if annotation.precedence == "override":
+        return list(annotation.expressions)
+    if annotation.precedence == "aggregate":
+        return own + list(annotation.expressions)
+    return own or list(annotation.expressions)
 
 
 def exception_for(relative_path: str, exceptions: Sequence[Tuple[str, str]]) -> Optional[str]:
-    """The identifier an `--exception GLOB=ID` admits for `relative_path`, or None."""
+    """The identifier an `--exception GLOB=ID` admits for `relative_path`, under the REUSE glob grammar, or None."""
     for glob, identifier in exceptions:
-        if fnmatch.fnmatchcase(relative_path, glob):
+        if matches_reuse_glob(relative_path, glob):
             return identifier
     return None
