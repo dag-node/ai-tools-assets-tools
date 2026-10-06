@@ -20,3 +20,6 @@ A fixture is one set directory beside a `fixture.conf` naming the outcome
 and where the licence texts are. A failing fixture fails on its rule alone,
 so the suite reads a validator's output rule by rule, and a consumer
 that implements the same rules runs its own validator over the same trees.
+The three `file.binary.*` fixtures that carry a bidi control or a byte order
+mark do so on purpose, as the input the rule refuses; GitHub shows its
+hidden-Unicode warning on those files for that reason.
