@@ -17,11 +17,11 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import asset_format as fmt
 from findings import FindingCollector
-from frontmatter import FrontmatterDocument, split_frontmatter
+from frontmatter import FrontmatterDocument, FrontmatterValue, Scalar, split_frontmatter
 from key_value_config import ConfigDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
 from safe_read import RefusedRead, open_directory, open_root, read_file
@@ -29,6 +29,7 @@ from safe_read import RefusedRead, open_directory, open_root, read_file
 PROFILE_SOURCE = "source"
 PROFILE_RELEASE = "release"
 PROFILES: Tuple[str, ...] = (PROFILE_SOURCE, PROFILE_RELEASE)
+TypedValue = Union[str, List[str], Dict[str, str]]
 TEXT_SUFFIXES_KEPT: Tuple[str, ...] = (".md", ".conf", ".json", ".cs", ".txt", ".yaml", ".yml")
 SHA256SUMS_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64}) [ *](?P<path>.+)$")
 
@@ -532,20 +533,19 @@ class _SetValidator:
         if line_count > fmt.SKILL_MD_LINES_WARN:
             self.warn(entry_file, "skill.length", f"is {line_count} lines; the specification's guidance is under {fmt.SKILL_MD_LINES_WARN}, with longer material in files it links to")
         document, body = split_frontmatter(record.text)
-        self.check_frontmatter(entry_file, document, name, fmt.SKILL_FRONTMATTER_REQUIRED, fmt.SKILL_FRONTMATTER_ALLOWED,
-                               fmt.SKILL_FRONTMATTER_REFUSED_WHY)
-        if document.present and not document.has_errors():
-            compatibility = document.values.get("compatibility")
-            if isinstance(compatibility, str) and len(compatibility) > fmt.COMPATIBILITY_MAX_LENGTH:
-                self.refuse(entry_file, "frontmatter.length", f"`compatibility` is {len(compatibility)} characters; at most {fmt.COMPATIBILITY_MAX_LENGTH}")
-            license_field = document.values.get("license")
-            if isinstance(license_field, str) and license_field:
-                evaluation = check_declared_license(self.collector, self.display(entry_file), license_field,
-                                                    self.options.license_allowlist, "the skill's licence")
-                if evaluation.is_allowed:
-                    self.summary.declared_licenses.update(evaluation.identifiers)
-                    check_license_texts(self.collector, self.display(entry_file), evaluation.identifiers,
-                                        self.carried_license_texts(skill_root), self.options.license_text_directories)
+        typed = self.check_frontmatter(entry_file, document, name, fmt.SKILL_FRONTMATTER_REQUIRED, fmt.SKILL_FRONTMATTER_TYPES,
+                                       fmt.SKILL_FRONTMATTER_REFUSED_WHY)
+        compatibility = typed.get("compatibility")
+        if isinstance(compatibility, str) and len(compatibility) > fmt.COMPATIBILITY_MAX_LENGTH:
+            self.refuse(entry_file, "frontmatter.length", f"`compatibility` is {len(compatibility)} characters; at most {fmt.COMPATIBILITY_MAX_LENGTH}")
+        license_field = typed.get("license")
+        if isinstance(license_field, str) and license_field:
+            evaluation = check_declared_license(self.collector, self.display(entry_file), license_field,
+                                                self.options.license_allowlist, "the skill's licence")
+            if evaluation.is_allowed:
+                self.summary.declared_licenses.update(evaluation.identifiers)
+                check_license_texts(self.collector, self.display(entry_file), evaluation.identifiers,
+                                    self.carried_license_texts(skill_root), self.options.license_text_directories)
         self.check_body(entry_file, body, inject=True)
         for relative_path, other in self.files_by_path.items():
             if relative_path != entry_file and relative_path.suffix in fmt.PROSE_FILE_SUFFIXES and other.text is not None \
@@ -553,37 +553,80 @@ class _SetValidator:
                 self.check_body(relative_path, other.text, inject=False)
 
     def check_frontmatter(self, relative_path: Path, document: FrontmatterDocument, expected_name: str,
-                          required: Sequence[str], allowed: Set[str], refused_why: Dict[str, str]) -> None:
+                          required: Sequence[str], types: Dict[str, str], refused_why: Dict[str, str]) -> Dict[str, TypedValue]:
+        """Apply the kind's schema and return the typed fields; a field that failed its type is left out."""
+        typed: Dict[str, TypedValue] = {}
         if not document.present:
             self.refuse(relative_path, "frontmatter.missing", "opens with a `---` frontmatter carrying name and description")
-            return
+            return typed
         for error in document.errors:
             self.refuse(relative_path, "frontmatter.syntax", error)
         if document.has_errors():
-            return
+            return typed
+        for key, value in document.values.items():
+            if key not in types:
+                why = refused_why.get(key, "is not on the allowlist for this kind; propose it in an issue with the asset that needs it")
+                self.refuse(relative_path, "frontmatter.refused-key", f"`{key}` {why}")
+                continue
+            result = self.typed_field(relative_path, key, value, types[key])
+            if result is not None:
+                typed[key] = result
         for key in required:
-            value = document.values.get(key)
+            value = typed.get(key)
+            if key in document.values and key not in typed:
+                continue  # its type was refused above
             if not isinstance(value, str) or not value.strip():
                 self.refuse(relative_path, "frontmatter.required", f"`{key}` is missing or empty")
-        for key in document.values:
-            if key in allowed:
-                continue
-            why = refused_why.get(key, "is not on the allowlist for this kind; propose it in an issue with the asset that needs it")
-            self.refuse(relative_path, "frontmatter.refused-key", f"`{key}` {why}")
-        name_value = document.values.get("name")
+        name_value = typed.get("name")
         if isinstance(name_value, str) and name_value and name_value != expected_name:
             self.refuse(relative_path, "name.frontmatter", f"frontmatter `name: {name_value}` differs from `{expected_name}`")
-        description = document.values.get("description")
+        description = typed.get("description")
         if isinstance(description, str) and len(description) > fmt.DESCRIPTION_MAX_LENGTH:
             self.refuse(relative_path, "frontmatter.length", f"`description` is {len(description)} characters; at most {fmt.DESCRIPTION_MAX_LENGTH}")
-        metadata = document.values.get("metadata")
-        if metadata is not None:
-            if not isinstance(metadata, dict):
-                self.refuse(relative_path, "frontmatter.metadata", "`metadata` is a map of string values")
-            else:
-                for key in metadata:
-                    if not key.startswith(fmt.METADATA_KEY_PREFIX):
-                        self.warn(relative_path, "frontmatter.metadata-prefix", f"`metadata.{key}`: a key this format reads starts with `{fmt.METADATA_KEY_PREFIX}`; another is left to its reader")
+        metadata = typed.get("metadata")
+        if isinstance(metadata, dict):
+            for key in metadata:
+                if not key.startswith(fmt.METADATA_KEY_PREFIX):
+                    self.warn(relative_path, "frontmatter.metadata-prefix", f"`metadata.{key}`: a key this format reads starts with `{fmt.METADATA_KEY_PREFIX}`; another is left to its reader")
+        return typed
+
+    def typed_field(self, relative_path: Path, key: str, value: FrontmatterValue, field_type: str) -> Optional[TypedValue]:
+        """The field's value under its declared type, or None after refusing it under `frontmatter.type` (the shape
+        of `metadata` under `frontmatter.metadata`, the rule that names it)."""
+        if field_type == fmt.FIELD_STRING_MAP:
+            if not isinstance(value, dict):
+                self.refuse(relative_path, "frontmatter.metadata", f"`{key}` is a map of string values")
+                return None
+            for map_key, scalar in value.items():
+                if scalar.is_yaml_typed:
+                    self.refuse(relative_path, "frontmatter.type", f"`{key}.{map_key}: {scalar.text}` reads as a number, a boolean or null in YAML; quote it")
+                    return None
+            return {map_key: scalar.text for map_key, scalar in value.items()}
+        if field_type == fmt.FIELD_STRING_LIST:
+            if isinstance(value, dict):
+                self.refuse(relative_path, "frontmatter.type", f"`{key}` is a list of strings, not a map")
+                return None
+            items = value if isinstance(value, list) else [Scalar(item.strip(), value.quoted) for item in value.text.split(",")] if value.text.strip() else []
+            for item in items:
+                if not item.text:
+                    self.refuse(relative_path, "frontmatter.type", f"`{key}` carries an empty item")
+                    return None
+                if item.is_yaml_typed:
+                    self.refuse(relative_path, "frontmatter.type", f"`{key}` item `{item.text}` reads as a number, a boolean or null in YAML")
+                    return None
+            return [item.text for item in items]
+        if not isinstance(value, Scalar):
+            self.refuse(relative_path, "frontmatter.type", f"`{key}` is a {field_type}, not a " + ("list" if isinstance(value, list) else "map"))
+            return None
+        if field_type == fmt.FIELD_INTEGER:
+            if value.quoted or not fmt.INTEGER_PATTERN.match(value.text):
+                self.refuse(relative_path, "frontmatter.type", f"`{key}: {value.text}` is not an unquoted positive integer")
+                return None
+            return value.text
+        if value.is_yaml_typed:
+            self.refuse(relative_path, "frontmatter.type", f"`{key}: {value.text}` reads as a number, a boolean or null in YAML; quote it")
+            return None
+        return value.text
 
     def check_body(self, relative_path: Path, body: str, inject: bool) -> None:
         for line_number, line in enumerate(body.split("\n"), start=1):
@@ -644,7 +687,7 @@ class _SetValidator:
                 continue
             document, body = split_frontmatter(text)
             self.check_frontmatter(file_path, document, name, fmt.SUBAGENT_FRONTMATTER_REQUIRED,
-                                   fmt.SUBAGENT_FRONTMATTER_ALLOWED, fmt.SUBAGENT_FRONTMATTER_REFUSED_WHY)
+                                   fmt.SUBAGENT_FRONTMATTER_TYPES, fmt.SUBAGENT_FRONTMATTER_REFUSED_WHY)
             self.check_body(file_path, body, inject=True)
         return subagents
 

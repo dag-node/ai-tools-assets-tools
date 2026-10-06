@@ -234,6 +234,7 @@ FAIL_FIXTURES: List[Tuple[str, str, Mutation]] = [
     ("frontmatter.refused-key", "fail", lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "allowed-tools: Bash")),
     ("frontmatter.length", "fail", lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "Use when a task reads or edits a PDF.", "Use when a task reads or edits a PDF. " + "x" * 1024)),
     ("frontmatter.metadata", "fail", lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "metadata:\n  ai-tools-libs: python/pdftext", "metadata: python/pdftext")),
+    ("frontmatter.type", "fail", lambda tree: replace_in(tree, "skills/pdftext/SKILL.md", "license: CC0-1.0", "license: [GPL-3.0-only]")),
     ("frontmatter.metadata-prefix", "warn", lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", "vendor-note: python/pdftext")),
     ("body.dynamic-injection", "fail", lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n!`date`\n")),
     ("body.absolute-path", "fail", lambda tree: tree.__setitem__(f"{SKILL}/references/formats.md", "# Formats\n\nSee /opt/ai-tools/skills/other/README.md.\n")),
@@ -264,6 +265,30 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
      lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n```bash!\ngit status\n```\n")),
     ("body.dynamic-injection.subagent", "body.dynamic-injection",
      lambda tree: tree.__setitem__("agents/acme-reviewer.md", tree["agents/acme-reviewer.md"] + "\nThe branch: !`git branch --show-current`\n")),
+    ("frontmatter.syntax.colon", "frontmatter.syntax",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "compatibility: Requires: python3")),
+    ("frontmatter.syntax.escape", "frontmatter.syntax",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", 'compatibility: "Requires \\qpython3."')),
+    ("frontmatter.syntax.alias-item", "frontmatter.syntax",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: [*alias, Grep]")),
+    ("frontmatter.syntax.empty-item", "frontmatter.syntax",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: [Read,,Grep]")),
+    ("frontmatter.type.metadata-boolean", "frontmatter.type",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", "ai-tools-libs: true")),
+    ("frontmatter.type.description-number", "frontmatter.type",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "compatibility: 3.12")),
+    ("frontmatter.type.max-turns", "frontmatter.type",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "model: inherit", 'maxTurns: "3"')),
+    ("frontmatter.type.tools-map", "frontmatter.type",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools:\n  read: yes")),
+]
+
+# (fixture name, mutation): a shape the format accepts beside the plain passing set, under fixtures/pass/.
+PASS_VARIANT_FIXTURES: List[Tuple[str, Mutation]] = [
+    ("acme.subagent-tools-scalar", lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: Read, Grep\nmaxTurns: 12")),
+    ("acme.quoted-typed-scalars", lambda tree: (
+        replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", 'ai-tools-libs: "true"\n  ai-tools-version: "1.0"'),
+        replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", 'compatibility: "Requires: python3 # or newer"'))),
 ]
 
 
@@ -320,6 +345,13 @@ def all_fixtures(destination: pathlib.Path) -> None:
         (directory).mkdir(parents=True, exist_ok=True)
         (directory / "fixture.conf").write_text(fixture_conf("pass", "", publisher), encoding="utf-8")
         write_tree(directory / set_name, base_tree(publisher, set_name))
+    for fixture_name, mutation in PASS_VARIANT_FIXTURES:
+        directory = destination / "pass" / fixture_name
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "fixture.conf").write_text(fixture_conf("pass", "", "acme"), encoding="utf-8")
+        tree = base_tree("acme", "acme")
+        mutation(tree)
+        write_tree(directory / "acme", tree)
     fail_fixtures = [(rule, rule, expect, mutation) for rule, expect, mutation in FAIL_FIXTURES]
     fail_fixtures += [(name, rule, "fail", mutation) for name, rule, mutation in VARIANT_FIXTURES]
     for fixture_name, rule, expect, mutation in fail_fixtures:
