@@ -27,6 +27,7 @@ from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from manifests import expected_manifest_files, stale_manifest_files  # noqa: E402
 from safe_read import RefusedRead, open_directory, read_text_under  # noqa: E402
+from safe_write import replace_file  # noqa: E402
 
 
 def read_inputs(root_fd: int, collector: FindingCollector):
@@ -107,14 +108,16 @@ def sync(root_fd: int, root: pathlib.Path, check: bool, collector: FindingCollec
             collector.refuse(str(relative_path), "set.manifest.plugin" if relative_path.name == "plugin.json" else "repo.marketplace",
                              f"{reason}; run `python3 tools/sync-manifests`")
         return collector.report()
-    for relative_path, text in expected.items():
-        path = root / relative_path
-        if path.is_file() and path.read_text(encoding="utf-8") == text:
+    # A stale copy is rewritten in place as a regular file and never through a link, on a path whose components are
+    # checked; a copy that is not a regular file is reported and left.
+    for relative_path, _ in stale_manifest_files(root_fd, expected):
+        try:
+            replace_file(root, relative_path, expected[relative_path].encode("utf-8"))
+        except RefusedRead as refusal:
+            collector.refuse(str(relative_path), refusal.rule_id, refusal.message)
             continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
         print(f"sync-manifests: wrote {relative_path}")
-    return 0
+    return collector.report()
 
 
 if __name__ == "__main__":
