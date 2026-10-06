@@ -12,16 +12,19 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from pathlib import Path, PurePath
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from asset_format import DEFAULT_LICENSE_ALLOWLIST, LICENSE_TEXTS_DIRECTORY, SPDX_HEADER, SPDX_HEADER_LINES_READ
+from asset_format import DEFAULT_LICENSE_ALLOWLIST, FILE_MAX_BYTES, LICENSE_TEXTS_DIRECTORY, SPDX_HEADER, SPDX_HEADER_LINES_READ
 from findings import FindingCollector
 from key_value_config import ConfigDocument
+from safe_read import RefusedRead, read_file_under, read_text_under
 from spdx_expression import SpdxEvaluation, evaluate_expression
 
 REUSE_TABLE_HEADER = re.compile(r"^\s*\[\[annotations\]\]\s*$")
 REUSE_KEY_VALUE = re.compile(r"^\s*(?P<key>[A-Za-z0-9_-]+)\s*=\s*(?P<value>.+?)\s*$")
+# A licence header sits in a file's first lines; this many bytes hold them, and a longer file is read no further.
+SPDX_HEADER_BYTES_READ = 64 * 1024
 
 
 def allowlist_in_force(publisher: Optional[ConfigDocument]) -> Tuple[Tuple[str, ...], Optional[str]]:
@@ -49,40 +52,46 @@ def check_declared_license(collector: FindingCollector, path: str, expression: s
     return evaluation
 
 
-def check_license_texts(collector: FindingCollector, declaring_path: str, identifiers: Iterable[str],
+def check_license_texts(collector: FindingCollector, declaring_path: str, identifiers: Iterable[str], carried: Set[str],
                         text_directories: Sequence[Path]) -> None:
-    """Report an identifier whose text `LICENSES/<identifier>.txt` is in none of `text_directories`."""
-    for identifier in sorted(set(identifiers)):
+    """Report an identifier whose text is not among `carried` (the texts a walk read inside the tree under check) and
+    is `LICENSES/<identifier>.txt` under none of `text_directories`, the operator-named directories outside it."""
+    for identifier in sorted(set(identifiers) - set(carried)):
         if not any((directory / LICENSE_TEXTS_DIRECTORY / f"{identifier}.txt").is_file() for directory in text_directories):
-            searched = ", ".join(str(directory / LICENSE_TEXTS_DIRECTORY) for directory in text_directories)
+            searched = ", ".join(str(directory / LICENSE_TEXTS_DIRECTORY) for directory in [Path("."), *text_directories])
             collector.refuse(declaring_path, "license.text", f"no `{identifier}.txt` under {searched}")
 
 
-def file_spdx_expression(path: Path) -> Optional[str]:
-    """The expression of an SPDX licence header in the file's first lines, or None."""
+def file_spdx_expression(root_fd: int, relative_path: PurePath) -> Optional[str]:
+    """The expression of an SPDX licence header in the first lines of the file under `root_fd`, or None.
+
+    A file that is not a regular file, or cannot be read, has no header of its own and falls to the annotations.
+    """
     try:
-        with path.open("r", encoding="utf-8", errors="strict") as handle:
-            for _ in range(SPDX_HEADER_LINES_READ):
-                line = handle.readline()
-                if not line:
-                    break
-                match = SPDX_HEADER.search(line)
-                if match:
-                    return match.group("expression").strip()
-    except (OSError, UnicodeDecodeError):
+        read = read_file_under(root_fd, relative_path, SPDX_HEADER_BYTES_READ)
+    except (RefusedRead, OSError):
         return None
+    for line in read.data.decode("utf-8", errors="replace").splitlines()[:SPDX_HEADER_LINES_READ]:
+        match = SPDX_HEADER.search(line)
+        if match:
+            return match.group("expression").strip()
     return None
 
 
-def read_reuse_annotations(path: Path) -> List[Tuple[str, str]]:
-    """The `(path glob, SPDX-License-Identifier)` of each `[[annotations]]` table in a REUSE.toml, in file order.
+def read_reuse_annotations(root_fd: int) -> List[Tuple[str, str]]:
+    """The `(path glob, SPDX-License-Identifier)` of each `[[annotations]]` table in the REUSE.toml under `root_fd`,
+    in file order; an empty list when the repository has none.
 
     A bounded reader of the TOML the project writes: one key per line, a string or an array of strings. REUSE applies
     the last matching annotation, and a file's own header takes priority under `precedence = "closest"`.
     """
+    try:
+        text = read_text_under(root_fd, PurePath("REUSE.toml"), FILE_MAX_BYTES)
+    except FileNotFoundError:
+        return []
     annotations: List[Tuple[str, str]] = []
     current: Optional[Dict[str, str]] = None
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if REUSE_TABLE_HEADER.match(line):
             if current is not None:
                 annotations.extend(_annotation_rows(current))

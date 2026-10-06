@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 
@@ -23,34 +24,58 @@ sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
-from key_value_config import read_key_value_file  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
 from manifests import expected_manifest_files, stale_manifest_files  # noqa: E402
+from safe_read import RefusedRead, open_directory, read_text_under  # noqa: E402
 
 
-def read_inputs(root: pathlib.Path, collector: FindingCollector):
-    """publisher.conf and every set's set.conf, or None after reporting what could not be read."""
-    publisher_path = root / "publisher.conf"
-    if not publisher_path.is_file():
-        collector.refuse("publisher.conf", "repo.layout", f"not found under {root}")
+def read_inputs(root_fd: int, collector: FindingCollector):
+    """publisher.conf and every set's set.conf, read from the root's descriptor, or None after reporting what could not be read."""
+    try:
+        publisher = parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("publisher.conf"), fmt.FILE_MAX_BYTES))
+    except FileNotFoundError:
+        collector.refuse("publisher.conf", "repo.layout", "not found; a publisher repository holds publisher.conf at its root")
         return None, []
-    publisher = read_key_value_file(publisher_path)
+    except RefusedRead as refusal:
+        collector.refuse("publisher.conf", "repo.publisher-conf", refusal.message)
+        return None, []
     missing = [key for key in fmt.PUBLISHER_CONF_REQUIRED if not publisher.get(key).strip()]
     if missing:
         collector.refuse("publisher.conf", "repo.publisher-conf", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
         return None, []
     sets = []
-    sets_root = root / "sets"
-    for set_directory in sorted(path for path in sets_root.iterdir() if path.is_dir()) if sets_root.is_dir() else []:
-        set_conf_path = set_directory / fmt.SET_CONF_FILE
-        if not set_conf_path.is_file():
-            collector.refuse(f"sets/{set_directory.name}/set.conf", "set.conf.missing", "a set directory holds set.conf")
+    try:
+        sets_fd = open_directory("sets", root_fd)
+    except FileNotFoundError:
+        return publisher, sets
+    except RefusedRead as refusal:
+        collector.refuse("sets", "repo.layout", refusal.message)
+        return None, []
+    try:
+        with os.scandir(sets_fd) as listing:
+            entries = sorted(listing, key=lambda entry: entry.name)
+    finally:
+        os.close(sets_fd)
+    for entry in entries:
+        if entry.is_symlink():
+            collector.refuse(f"sets/{entry.name}", "file.symlink", "is a symbolic link; a set is a directory under sets/")
             continue
-        set_conf = read_key_value_file(set_conf_path)
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        display = f"sets/{entry.name}/{fmt.SET_CONF_FILE}"
+        try:
+            set_conf = parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("sets", entry.name, fmt.SET_CONF_FILE), fmt.FILE_MAX_BYTES))
+        except FileNotFoundError:
+            collector.refuse(display, "set.conf.missing", "a set directory holds set.conf")
+            continue
+        except RefusedRead as refusal:
+            collector.refuse(display, refusal.rule_id, refusal.message)
+            continue
         missing = [key for key in ("name", "version", "summary", "license") if not set_conf.get(key).strip()]
         if missing:
-            collector.refuse(f"sets/{set_directory.name}/set.conf", "set.conf.required-key", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+            collector.refuse(display, "set.conf.required-key", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
             continue
-        sets.append((set_directory.name, set_conf))
+        sets.append((entry.name, set_conf))
     return publisher, sets
 
 
@@ -61,12 +86,24 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     collector = FindingCollector("sync-manifests")
-    publisher, sets = read_inputs(root, collector)
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        collector.refuse(str(root), "repo.layout", "is not a directory")
+        return collector.report()
+    try:
+        return sync(root_fd, root, args.check, collector)
+    finally:
+        os.close(root_fd)
+
+
+def sync(root_fd: int, root: pathlib.Path, check: bool, collector: FindingCollector) -> int:
+    publisher, sets = read_inputs(root_fd, collector)
     if publisher is None or collector.has_refusals():
         return collector.report()
     expected = expected_manifest_files(publisher, sets)
-    if args.check:
-        for relative_path, reason in stale_manifest_files(root, expected):
+    if check:
+        for relative_path, reason in stale_manifest_files(root_fd, expected):
             collector.refuse(str(relative_path), "set.manifest.plugin" if relative_path.name == "plugin.json" else "repo.marketplace",
                              f"{reason}; run `python3 tools/sync-manifests`")
         return collector.report()

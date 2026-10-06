@@ -1,18 +1,28 @@
 # SPDX-License-Identifier: MIT
-"""Unit tests for the readers under tools/lib: the KEY=value grammar, the frontmatter subset and SPDX expressions."""
+"""Unit tests for the readers under tools/lib: the KEY=value grammar, the frontmatter subset, SPDX expressions, and
+the walk's reads counted in-process, which a subprocess cannot show."""
 from __future__ import annotations
 
+import os
 import pathlib
+import shutil
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 REPOSITORY = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 
 import asset_format as fmt  # noqa: E402
+import safe_read  # noqa: E402
+import set_validation  # noqa: E402
+from findings import FindingCollector  # noqa: E402
 from frontmatter import split_frontmatter  # noqa: E402
 from key_value_config import parse_key_value_text, parse_list_value  # noqa: E402
 from spdx_expression import evaluate_expression  # noqa: E402
+
+FIXTURES = REPOSITORY / "fixtures"
 
 
 class KeyValueGrammar(unittest.TestCase):
@@ -78,6 +88,116 @@ class SpdxExpressions(unittest.TestCase):
     def test_malformed(self):
         for expression in ("", "(MIT AND", "MIT MIT", "AND MIT", "MIT)"):
             self.assertIsNotNone(evaluate_expression(expression, self.allowlist).syntax_error, expression)
+
+
+class SafeRead(unittest.TestCase):
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        self.root_fd = os.open(self.scratch, os.O_RDONLY | os.O_DIRECTORY)
+
+    def tearDown(self):
+        os.close(self.root_fd)
+        shutil.rmtree(self.scratch)
+
+    def test_reads_whole_and_truncated_with_the_digest_over_the_whole_alone(self):
+        (self.scratch / "small").write_bytes(b"abc")
+        (self.scratch / "large").write_bytes(b"x" * 11)
+        small = safe_read.read_file("small", self.root_fd, 10)
+        self.assertEqual((small.data, small.size, small.truncated), (b"abc", 3, False))
+        self.assertEqual(small.digest, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        large = safe_read.read_file("large", self.root_fd, 10)
+        self.assertEqual((len(large.data), large.size, large.truncated, large.digest), (10, 11, True, None))
+
+    def test_refuses_a_link_a_hard_link_and_a_special_file_by_rule(self):
+        (self.scratch / "target").write_bytes(b"t")
+        os.symlink("target", self.scratch / "link")
+        os.link(self.scratch / "target", self.scratch / "second")
+        (self.scratch / "d").mkdir()
+        os.symlink("d", self.scratch / "dlink")
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_read.read_file("link", self.root_fd, 10)
+        self.assertEqual(refused.exception.rule_id, "file.symlink")
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_read.read_file("target", self.root_fd, 10)
+        self.assertEqual(refused.exception.rule_id, "file.hardlink")
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_read.read_file("d", self.root_fd, 10)
+        self.assertEqual(refused.exception.rule_id, "file.special")
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_read.open_directory("dlink", self.root_fd)
+        self.assertEqual(refused.exception.rule_id, "file.symlink")
+        with self.assertRaises(NotADirectoryError):
+            safe_read.open_directory("target", self.root_fd)
+        with self.assertRaises(FileNotFoundError):
+            safe_read.read_file("absent", self.root_fd, 10)
+
+    def test_a_path_under_the_root_is_opened_component_by_component(self):
+        (self.scratch / "a" / "b").mkdir(parents=True)
+        (self.scratch / "a" / "b" / "f").write_text("v\n", encoding="utf-8")
+        os.symlink("a", self.scratch / "la")
+        self.assertEqual(safe_read.read_text_under(self.root_fd, pathlib.PurePath("a/b/f"), 10), "v\n")
+        with self.assertRaises(safe_read.RefusedRead):
+            safe_read.read_text_under(self.root_fd, pathlib.PurePath("la/b/f"), 10)
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_read.read_text_under(self.root_fd, pathlib.PurePath("a/b/f"), 1)
+        self.assertEqual(refused.exception.rule_id, "file.size")
+        for bad in ("/a/b/f", "a/../b", ".", ""):
+            with self.assertRaises(ValueError):
+                safe_read.read_file_under(self.root_fd, pathlib.PurePath(bad), 10)
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_read.decode_text(b"\xff\xfe")
+        self.assertEqual(refused.exception.rule_id, "file.binary")
+
+
+class WalkReadsEachFileOnce(unittest.TestCase):
+    """The validator reads a file once, from the walk, and no rule reopens it; counted by wrapping the reader."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        self.set_directory = self.scratch / "acme"
+        shutil.copytree(FIXTURES / "pass" / "acme" / "acme", self.set_directory)
+        self.options = set_validation.ValidationOptions(publisher="acme", profile="source", reserved_words=set(),
+                                                        license_allowlist=fmt.DEFAULT_LICENSE_ALLOWLIST,
+                                                        license_text_directories=[FIXTURES], display_root=self.scratch)
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def validate_counting_reads(self):
+        reads = []
+
+        def counting_read_file(name, dir_fd, max_bytes):
+            reads.append(name)
+            return safe_read.read_file(name, dir_fd, max_bytes)
+
+        collector = FindingCollector("validate")
+        with mock.patch.object(set_validation, "read_file", counting_read_file):
+            set_validation.validate_set_directory(self.set_directory, self.options, collector)
+        return reads, collector
+
+    def test_the_passing_set_is_read_once_per_file(self):
+        files = [path for path in self.set_directory.rglob("*") if path.is_file()]
+        reads, collector = self.validate_counting_reads()
+        self.assertEqual(collector.findings, [])
+        self.assertEqual(sorted(reads), sorted(path.name for path in files))
+
+    def test_an_over_size_config_file_is_read_once_and_refused_on_size_alone(self):
+        upstream = self.set_directory / "skills" / "pdftext" / "UPSTREAM.conf"
+        upstream.write_text(upstream.read_text(encoding="utf-8") + "# " + "x" * (1024 * 1024) + "\n", encoding="utf-8")
+        reads, collector = self.validate_counting_reads()
+        self.assertEqual(reads.count("UPSTREAM.conf"), 2, "the set's two UPSTREAM.conf, each once")
+        self.assertEqual({finding.rule_id for finding in collector.findings}, {"file.size"})
+        self.assertEqual(len(collector.findings), 1)
+
+    def test_a_tripped_file_budget_stops_the_reads(self):
+        references = self.set_directory / "skills" / "acme-pdf-processing" / "references"
+        for directory in range(3):
+            (references / f"part-{directory}").mkdir()
+            for index in range(800):
+                (references / f"part-{directory}" / f"page-{index}.md").write_text("# p\n", encoding="utf-8")
+        reads, collector = self.validate_counting_reads()
+        self.assertEqual(len(reads), fmt.SET_MAX_FILES, "the file after the budget is not opened")
+        self.assertEqual([finding.rule_id for finding in collector.findings], ["file.size"])
 
 
 class FormatRegistry(unittest.TestCase):
