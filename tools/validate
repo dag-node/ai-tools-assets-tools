@@ -21,9 +21,12 @@
 #
 # The root is the operator's argument and is opened by path; `sets/`, each set and every file inside them are opened from
 # that descriptor without following a symbolic link (`tools/lib/safe_read.py`), so a linked `sets/`, a linked set
-# directory or `--set-directory` naming a link is refused before a byte of the target is read, and the set walk runs
-# before `check-publisher` so no publisher check reads a file the walk has not judged. A set is read as data and no
-# file in it is executed. Standard library only.
+# directory or `--set-directory` naming a link is refused before a byte of the target is read. Reading a set once is
+# the validator's property (`tools/lib/set_validation.py`): every set-level rule judges the records one walk kept. The
+# repository-level checks that follow -- `check-publisher` in its own process, and the marketplace comparison -- are
+# descriptor reads of their own over `set.conf`, the manifests, `publisher.conf` and the marketplace, made after every
+# set has passed, so a file changed between the walk and those reads is read in its new form by them alone; they follow
+# no link either. A set is read as data and no file in it is executed. Standard library only.
 from __future__ import annotations
 
 import argparse

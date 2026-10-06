@@ -202,7 +202,8 @@ string (`""`) or leave the key out. One lexical rule holds every plain
 scalar, wherever it stands: it opens with no indicator (`| > & * ! { ? @ `
 ` % #`, or `-` then a space), does not carry `: ` or ` #` (a tab counts
 as the space), which a reader takes as a mapping or a comment, and in a flow
-list carries no `,`, bracket, brace or quote; quote the value instead.
+list does not carry a `,`, a bracket, a brace or a quote; quote the value
+instead.
 A double-quoted scalar escapes `\\` and `\"` alone, a single-quoted one `''`
 alone. A flow list holds plain items, none empty.
 
@@ -262,7 +263,23 @@ list is `MIT`, `MIT-0`, `0BSD`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`,
 `Apache-2.0`, `CC0-1.0` and `Unlicense`; `publisher.conf` `licenses=[...]`
 replaces it, and an explicitly empty list refuses every licence. The text
 of each identifier is `LICENSES/<identifier>.txt`, in the set
-or at the repository root, and `build-set` copies it into the payload.
+or at the repository root -- one regular file, not a link -- and `build-set`
+copies it into the payload.
+
+Every other tracked file of a publisher repository states its licence too,
+as REUSE 3.2 resolves it: every `SPDX-License-Identifier` header anywhere
+in the file (read whole, up to the file bound; the lines from
+`REUSE-IgnoreStart` to `REUSE-IgnoreEnd` left out) or in its `<file>.license`
+sidecar, combined with the last `REUSE.toml` annotation whose `path` glob
+matches under that annotation's `precedence`. A file over the bound is refused
+rather than judged on its first bytes. `REUSE.toml` is read as a bounded TOML
+subset: inside an `[[annotations]]` table a line is `key = "string"`,
+`key = 'string'` or `key = ["a", "b"]` on one line, or a comment. A file with a
+line outside that subset -- a comment after a value, a multi-line array,
+an inline table, a dotted key, another table header -- is refused whole,
+and no file is judged on it, since a reading the tools cannot vouch for is not
+a pass; `reuse lint` is the check that the file is TOML. A `path` glob is
+at most 256 characters, with `**` standing alone between slashes.
 
 ## Forward compatibility
 
@@ -296,6 +313,8 @@ whole is refused rather than judged in part:
 | parentheses nested in an SPDX expression | 8 |
 | `description` | 1024 characters |
 | `compatibility` | 500 characters |
+| a file read for its licence headers | 1 MiB; over it, refused unjudged |
+| a `REUSE.toml` path glob | 256 characters |
 
 ## Rules
 

@@ -18,8 +18,8 @@ and exits 1 when a finding refuses; the rule ids are
 | `new-set` | creates `sets/<set>/` with `set.conf`, `CHANGELOG.md` and `README.md`, and writes its manifests; refuses a name the format refuses |
 | `new-asset` | creates a skill (`skills/<name>/SKILL.md`) or a subagent (`agents/<name>.md`) in a set, with the set's prefix |
 | `build-set` | validates a set, stages it under `build/<set>/` with its licence texts and notices, writes `SHA256SUMS`, validates the stage under the release profile and zips it to `dist/ai-tools-assets-<set>-<version>.zip` with its `.sha256` |
-| `link-set` | links (or with `--copy` copies) a set's skills into the skills directory an agent reads, records what it placed, and removes it again with `--remove` |
-| `check-licenses` | holds every licence REUSE 3.2 applies to a tracked file (its SPDX headers or `.license` sidecar, combined with the matching `REUSE.toml` annotation under its precedence) to the list in force; `--exception GLOB=ID` admits one identifier for the files a REUSE glob matches (`dir/**`) |
+| `link-set` | validates a set, then links (or with `--copy` copies) its skills into the skills directory an agent reads, records what it placed, and removes it again with `--remove`; a set that does not validate places nothing |
+| `check-licenses` | holds every licence REUSE 3.2 applies to a tracked file (every SPDX header in the file or its `.license` sidecar, combined with the matching `REUSE.toml` annotation under its precedence) to the list in force, refusing a `REUSE.toml` outside the subset it reads rather than judging on it; `--exception GLOB=ID` admits one identifier for the files a REUSE glob matches (`dir/**`) |
 | `check-signoff` | requires an author-matching `Signed-off-by` trailer on every commit of `--range BASE..HEAD`, a pull request's own commits |
 
 The reusable workflow `.github/workflows/validate.yml` runs these commands
