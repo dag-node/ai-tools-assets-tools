@@ -71,6 +71,12 @@ jobs:
           ref: ${{ steps.tools.outputs.sha }}
           path: .ai-tools-assets-tools
 
+      # The tools checkout sits inside the workspace, which is the only place actions/checkout places a second
+      # repository; git's exclude file keeps it out of the tree under check, which reuse lint and check-licenses read
+      # through git's ignore rules.
+      - name: Keep the tools checkout out of the tree under check
+        run: echo '/.ai-tools-assets-tools/' >> .git/info/exclude
+
       - name: Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
