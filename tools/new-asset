@@ -10,6 +10,8 @@
 # A skill is `sets/<set>/skills/<name>/SKILL.md`; a subagent is `sets/<set>/agents/<name>.md`. The name is held to the
 # name rules before a file is written: the grammar, and the set's prefix (`ai-tools-` in `core`, `<set>-` elsewhere),
 # since an authored asset carries it; a vendored asset is copied in with its `UPSTREAM.conf` and is not created here.
+# The description is written as a double-quoted frontmatter scalar with `\` and `"` escaped, so any one line of text
+# -- `true`, `a: b`, a date -- validates as written; an empty one is refused, since `description` is required.
 # Standard library only.
 from __future__ import annotations
 
@@ -46,6 +48,11 @@ You are a subagent. State the role, what it reads, and what it returns.
 """
 
 
+def quoted_scalar(text: str) -> str:
+    """`text` as the double-quoted scalar of the frontmatter subset: `\\` and `"` escaped, nothing else."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a skill or a subagent in a set.")
     parser.add_argument("set", help="the set the asset joins")
@@ -76,13 +83,15 @@ def main() -> int:
     if "\n" in args.description or len(args.description) > fmt.DESCRIPTION_MAX_LENGTH:
         collector.refuse(display, "frontmatter.length",
                          f"the description is one line of at most {fmt.DESCRIPTION_MAX_LENGTH} characters")
+    elif not args.description.strip():
+        collector.refuse(display, "frontmatter.required", "the description is non-empty text")
     target = pathlib.PurePath("sets", args.set, kind_directory, args.name if args.kind == "skill" else f"{args.name}.md")
     if os.path.lexists(root / target):
         collector.refuse(display, "kind.shape", "exists already")
     if collector.has_refusals():
         return collector.report()
     title = args.name[len(prefix):].replace("-", " ") or args.name
-    values = {"name": args.name, "description": args.description, "title": title}
+    values = {"name": args.name, "description": quoted_scalar(args.description), "title": title}
     # The components under the root are checked and the file is created exclusively, so a link at `sets/`, at the
     # kind directory or dangling at the asset's own name is refused instead of written through.
     try:

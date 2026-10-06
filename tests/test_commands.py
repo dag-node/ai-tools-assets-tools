@@ -160,6 +160,27 @@ class PublisherRepository(unittest.TestCase):
         status, _, stderr = run("validate", "--root", str(self.root))
         self.assertEqual((status, stderr), (0, ""))
 
+    def test_scaffolding_quotes_a_description_and_a_summary_and_refuses_an_empty_one(self):
+        for index, description in enumerate(("true", "a: b", 'say "hi"', "back\\slash # not a comment", "2026-10-06", "1:20")):
+            for kind, name in (("skill", f"acme-s{index}"), ("subagent", f"acme-a{index}")):
+                status, _, stderr = run("new-asset", "acme", kind, name, "--root", str(self.root), "--description", description)
+                self.assertEqual(status, 0, (description, stderr))
+        self.assertIn('description: "say \\"hi\\""', (self.root / "sets" / "acme" / "agents" / "acme-a2.md").read_text(encoding="utf-8"))
+        status, _, stderr = run("new-asset", "acme", "skill", "acme-empty", "--root", str(self.root), "--description", " ")
+        self.assertEqual(status, 1)
+        self.assertIn("frontmatter.required", stderr)
+        self.assertFalse((self.root / "sets" / "acme" / "skills" / "acme-empty").exists())
+        status, _, stderr = run("new-set", "acme-quoted", "--root", str(self.root), "--summary", 'say "hi" # loudly')
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("summary='say \"hi\" # loudly'\n", (self.root / "sets" / "acme-quoted" / "set.conf").read_text(encoding="utf-8"))
+        for summary, rule in (("it's \"both\"", "set.conf.syntax"), (" ", "set.conf.required-key")):
+            status, _, stderr = run("new-set", "acme-refused", "--root", str(self.root), "--summary", summary)
+            self.assertEqual(status, 1, summary)
+            self.assertIn(rule, stderr)
+            self.assertFalse((self.root / "sets" / "acme-refused").exists())
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual((status, stderr), (0, ""), "every template written validates as written")
+
     def test_scaffolding_does_not_write_through_a_link(self):
         elsewhere = self.root.parent / "elsewhere"
         elsewhere.mkdir()
