@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/new-set -- creates sets/<name>/ with a set.conf, a CHANGELOG.md and a README.md, and writes its manifests.
+#
+# ```bash
+# python3 tools/new-set <name> [--root DIR] [--summary TEXT] [--license ID]
+# ```
+#
+# The set takes its maintainers and source from `publisher.conf`, version `0.1.0`, and the licence named (`MIT` by
+# default); the name is held to the name rules before a file is written -- the grammar, the reserved words, and the
+# publisher prefix (`<publisher>` or `<publisher>-<topic>`; `core` is dag-node's) -- so a set that would fail validation
+# is not created. `sync-manifests` then writes the two plugin manifests and the marketplace entry. Standard library
+# only.
+from __future__ import annotations
+
+import argparse
+import pathlib
+import subprocess
+import sys
+
+TOOLS = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS / "lib"))
+
+import asset_format as fmt  # noqa: E402
+from findings import FindingCollector  # noqa: E402
+from key_value_config import read_key_value_file  # noqa: E402
+from set_validation import read_reserved_words  # noqa: E402
+
+SET_CONF_TEMPLATE = """# ai-tools-assets set: {name}. Read by ai-tools-base as KEY=value
+# data; not executed. Keys: ai-tools-assets(5).
+format={format}
+name={name}
+version=0.1.0
+summary="{summary}"
+license={license}
+maintainers=[{maintainers}]
+source={source}
+"""
+
+CHANGELOG_TEMPLATE = """# Changelog: {name}
+
+Changes to the `{name}` set, released as the package `ai-tools-assets-{name}`
+and tagged `{name}/v<version>`. The format follows [Keep a
+Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Added
+
+- The set, with no assets yet.
+"""
+
+README_TEMPLATE = """# {name}
+
+{summary}
+
+Released as the package `ai-tools-assets-{name}` and the Claude Code and Codex
+plugin of the same name. A skill or subagent in this set follows the asset
+format, and its name starts with `{prefix}`.
+"""
+
+
+def check_set_name(name: str, publisher: str, collector: FindingCollector) -> None:
+    path = f"sets/{name}"
+    if not fmt.is_valid_name(name):
+        collector.refuse(path, "name.grammar", f"`{name}` is not 1-64 characters of a-z, 0-9 and single hyphens, "
+                                               "starting and ending with a letter or digit")
+        return
+    for word in fmt.CLAUDE_RESERVED_WORDS:
+        if word in name:
+            collector.refuse(path, "name.reserved-claude", f"`{name}` contains `{word}`, which Claude reserves")
+    first_word = name.split("-", 1)[0]
+    if first_word in read_reserved_words(TOOLS / "reserved-words.txt"):
+        collector.refuse(path, "name.reserved-word",
+                         f"`{name}` starts with `{first_word}`, a word in reserved-words.txt")
+    if name == fmt.UPSTREAM_SET:
+        if publisher != fmt.UPSTREAM_PUBLISHER:
+            collector.refuse(path, "name.publisher", f"`core` belongs to {fmt.UPSTREAM_PUBLISHER}; "
+                                                     f"name the set `{publisher}` or `{publisher}-<topic>`")
+    elif name != publisher and not name.startswith(publisher + "-"):
+        collector.refuse(path, "name.publisher", f"`{name}` does not start with its publisher; "
+                                                 f"name it `{publisher}` or `{publisher}-<topic>`")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Create a set directory with its set.conf, CHANGELOG.md, README.md "
+                                                 "and manifests.")
+    parser.add_argument("name", help="the set name: <publisher> or <publisher>-<topic>")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."),
+                        help="the publisher repository (default: the current directory)")
+    parser.add_argument("--summary", default="One line on what the set holds", help="set.conf summary, one line")
+    parser.add_argument("--license", default="MIT", help="set.conf license, an SPDX identifier (default: MIT)")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    collector = FindingCollector("new-set")
+    publisher_path = root / "publisher.conf"
+    if not publisher_path.is_file():
+        collector.refuse("publisher.conf", "repo.layout",
+                         f"not found under {root}; a set is created inside a publisher repository")
+        return collector.report()
+    publisher = read_key_value_file(publisher_path)
+    check_set_name(args.name, publisher.get("publisher"), collector)
+    set_directory = root / "sets" / args.name
+    if set_directory.exists():
+        collector.refuse(f"sets/{args.name}", "set.entry.unknown", "exists already")
+    if '"' in args.summary or "\n" in args.summary:
+        collector.refuse(f"sets/{args.name}/set.conf", "set.conf.syntax",
+                         "the summary is one line without a double quote")
+    if collector.has_refusals():
+        return collector.report()
+    maintainers, reason = publisher.list_value("maintainers")
+    if reason is not None:
+        collector.refuse("publisher.conf", "repo.publisher-conf", f"`maintainers` does not read as a list ({reason})")
+        return collector.report()
+    set_directory.mkdir(parents=True)
+    values = {"name": args.name, "format": fmt.FORMAT_VERSION, "summary": args.summary, "license": args.license,
+              "maintainers": ", ".join(maintainers), "source": publisher.get("source"),
+              "prefix": fmt.authored_asset_prefix(args.name)}
+    (set_directory / fmt.SET_CONF_FILE).write_text(SET_CONF_TEMPLATE.format(**values), encoding="utf-8")
+    (set_directory / "CHANGELOG.md").write_text(CHANGELOG_TEMPLATE.format(**values), encoding="utf-8")
+    (set_directory / "README.md").write_text(README_TEMPLATE.format(**values), encoding="utf-8")
+    for relative in (fmt.SET_CONF_FILE, "CHANGELOG.md", "README.md"):
+        print(f"new-set: wrote sets/{args.name}/{relative}")
+    return subprocess.run([sys.executable, str(TOOLS / "sync-manifests"), "--root", str(root)]).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

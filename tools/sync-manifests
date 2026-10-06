@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/sync-manifests -- writes each set's two plugin manifests and the repository's marketplace from set.conf and
+# publisher.conf, or with `--check` reports the committed copies that differ.
+#
+# ```bash
+# python3 tools/sync-manifests [--root DIR]            # write the three generated files
+# python3 tools/sync-manifests [--root DIR] --check    # exit 1 naming a committed copy that is absent or differs
+# ```
+#
+# The generated files are `sets/<set>/plugin.json`, `sets/<set>/.claude-plugin/plugin.json` and
+# `.claude-plugin/marketplace.json`. They are committed, since a git install reads the repository as committed, and CI
+# runs `--check` so a committed copy that drifted from `set.conf` is refused. The rendering is `tools/lib/manifests.py`.
+# Standard library only.
+from __future__ import annotations
+
+import argparse
+import pathlib
+import sys
+
+TOOLS = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS / "lib"))
+
+import asset_format as fmt  # noqa: E402
+from findings import FindingCollector  # noqa: E402
+from key_value_config import read_key_value_file  # noqa: E402
+from manifests import expected_manifest_files, stale_manifest_files  # noqa: E402
+
+
+def read_inputs(root: pathlib.Path, collector: FindingCollector):
+    """publisher.conf and every set's set.conf, or None after reporting what could not be read."""
+    publisher_path = root / "publisher.conf"
+    if not publisher_path.is_file():
+        collector.refuse("publisher.conf", "repo.layout", f"not found under {root}")
+        return None, []
+    publisher = read_key_value_file(publisher_path)
+    missing = [key for key in fmt.PUBLISHER_CONF_REQUIRED if not publisher.get(key).strip()]
+    if missing:
+        collector.refuse("publisher.conf", "repo.publisher-conf", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+        return None, []
+    sets = []
+    sets_root = root / "sets"
+    for set_directory in sorted(path for path in sets_root.iterdir() if path.is_dir()) if sets_root.is_dir() else []:
+        set_conf_path = set_directory / fmt.SET_CONF_FILE
+        if not set_conf_path.is_file():
+            collector.refuse(f"sets/{set_directory.name}/set.conf", "set.conf.missing", "a set directory holds set.conf")
+            continue
+        set_conf = read_key_value_file(set_conf_path)
+        missing = [key for key in ("name", "version", "summary", "license") if not set_conf.get(key).strip()]
+        if missing:
+            collector.refuse(f"sets/{set_directory.name}/set.conf", "set.conf.required-key", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+            continue
+        sets.append((set_directory.name, set_conf))
+    return publisher, sets
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Write the plugin manifests and the marketplace from set.conf and publisher.conf.")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the publisher repository (default: the current directory)")
+    parser.add_argument("--check", action="store_true", help="report the committed copies that differ, writing nothing")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    collector = FindingCollector("sync-manifests")
+    publisher, sets = read_inputs(root, collector)
+    if publisher is None or collector.has_refusals():
+        return collector.report()
+    expected = expected_manifest_files(publisher, sets)
+    if args.check:
+        for relative_path, reason in stale_manifest_files(root, expected):
+            collector.refuse(str(relative_path), "set.manifest.plugin" if relative_path.name == "plugin.json" else "repo.marketplace",
+                             f"{reason}; run `python3 tools/sync-manifests`")
+        return collector.report()
+    for relative_path, text in expected.items():
+        path = root / relative_path
+        if path.is_file() and path.read_text(encoding="utf-8") == text:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"sync-manifests: wrote {relative_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
