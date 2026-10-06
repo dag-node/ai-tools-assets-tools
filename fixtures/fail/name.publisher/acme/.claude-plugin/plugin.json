@@ -1,0 +1,12 @@
+{
+  "name": "ai-tools-assets-acme",
+  "version": "0.1.0",
+  "description": "Fixture skills and subagents",
+  "author": {
+    "name": "beta",
+    "email": "tools@beta.example"
+  },
+  "homepage": "https://github.com/beta/ai-tools-assets",
+  "repository": "https://github.com/beta/ai-tools-assets",
+  "license": "MIT"
+}
