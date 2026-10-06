@@ -475,6 +475,47 @@ class LicenseCheckOverATree(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("REUSE.toml: license.file: `precedence = nearest`", stderr)
 
+    def test_a_reuse_toml_outside_the_subset_refuses_the_file_whole_and_judges_none(self):
+        self.write("tool.py", "# SPDX-License-Identifier: MIT\nprint()\n")
+        outside_the_subset = (
+            'path = [\n  "tool.py",\n]\nprecedence = "override"\nSPDX-License-Identifier = "GPL-3.0-only"\n',
+            'path = "tool.py" # all tool code\nSPDX-License-Identifier = "GPL-3.0-only"\n',
+            'path = "tool.py"\nextra = { a = "b" }\n',
+            'path.glob = "tool.py"\n',
+            'path = "tool.py"\nversion = 1\n',
+            'SPDX-License-Identifier = "MIT"\n',
+            'path = "tool.py"\npath = "other.py"\n',
+            'path = "tool.py"\n[other]\nkey = "v"\n',
+            'path = "tool.py"\nSPDX-License-Identifier = """MIT"""\n',
+            'path = "a\\tb"\n',
+        )
+        for table in outside_the_subset:
+            self.write("REUSE.toml", "version = 1\n[[annotations]]\n" + table)
+            status, stderr = self.check()
+            self.assertEqual(status, 1, table)
+            self.assertIn("REUSE.toml: license.file: ", stderr, table)
+            self.assertNotIn("check-licenses: tool.py:", stderr, "no file is judged on a REUSE.toml the reader cannot vouch for")
+        self.reuse('path = ["tool.py", ]\nSPDX-License-Identifier = \'MIT\'', 'path = "lit\\\\*.txt"\nSPDX-License-Identifier = []')
+        status, stderr = self.check()
+        self.assertEqual((status, stderr), (0, ""), "a trailing comma, a literal string and an empty array are in the subset")
+
+    def test_a_copyright_only_last_table_is_the_annotation_that_applies(self):
+        self.reuse('path = "**"\nprecedence = "override"\nSPDX-License-Identifier = "MIT"',
+                   'path = "tool.py"\nSPDX-FileCopyrightText = "2026 Acme"')
+        self.write("tool.py", "# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        self.write("other.py", "# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        self.write("bare.py", "print()\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("tool.py: license.allowlist", stderr, "closest: the file's own header applies; the earlier override no longer does")
+        self.assertNotIn("other.py", stderr, "the override applies where it is the last match")
+        self.assertNotIn("bare.py", stderr)
+        self.reuse('path = "**"\nprecedence = "override"\nSPDX-License-Identifier = "MIT"',
+                   'path = "bare.py"\nprecedence = "override"\nSPDX-FileCopyrightText = "2026 Acme"')
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("bare.py: license.file: states no licence", stderr, "an override that declares none leaves the file without one")
+
     def test_the_last_matching_annotation_applies_and_a_nested_reuse_toml_refuses(self):
         self.reuse('path = "**"\nSPDX-License-Identifier = "GPL-3.0-only"', 'path = "src/**"\nSPDX-License-Identifier = "MIT"')
         self.write("src/a.py", "print()\n")
