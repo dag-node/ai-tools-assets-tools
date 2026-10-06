@@ -86,6 +86,24 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("frontmatter.missing", stderr)
 
+    def test_a_linked_repository_licence_text_is_not_counted(self):
+        outside = self.root.parent / "MIT.txt"
+        text = self.root / "LICENSES" / "MIT.txt"
+        shutil.move(str(text), str(outside))
+        text.symlink_to(outside)
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("sets/acme/set.conf: license.text: no `MIT.txt`", stderr)
+        text.unlink()
+        os.link(outside, text)
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual(status, 1, "a text with a second hard link is not counted either")
+        self.assertIn("license.text", stderr)
+        text.unlink()
+        shutil.move(str(outside), str(text))
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual((status, stderr), (0, ""))
+
     def test_the_publisher_checks_read_the_shared_key_value_grammar(self):
         set_conf = self.root / "sets" / "acme" / "set.conf"
         text = set_conf.read_text(encoding="utf-8")
