@@ -332,29 +332,115 @@ class PublisherRepository(unittest.TestCase):
 
 class LicenseCheck(unittest.TestCase):
     def test_this_repository_passes_with_the_formatters_exception(self):
-        status, _, stderr = run("check-licenses", "--root", str(REPOSITORY), "--exception", "formatters/*=AGPL-3.0-only")
+        status, _, stderr = run("check-licenses", "--root", str(REPOSITORY), "--exception", "formatters/**=AGPL-3.0-only")
         self.assertEqual((status, stderr), (0, ""))
 
-    def test_the_exception_is_needed(self):
+    def test_the_exception_is_needed_and_a_single_star_does_not_reach_a_subdirectory(self):
         status, _, stderr = run("check-licenses", "--root", str(REPOSITORY))
         self.assertEqual(status, 1)
         self.assertIn("license.allowlist", stderr)
+        status, _, stderr = run("check-licenses", "--root", str(REPOSITORY), "--exception", "formatters/*=AGPL-3.0-only")
+        self.assertEqual(status, 1)
+        self.assertIn("formatters/emacs/ai-tools-fill.el: license.allowlist", stderr)
+        self.assertNotIn("formatters/format.sh", stderr)
 
-    def test_a_file_without_a_licence_is_refused(self):
-        scratch = pathlib.Path(tempfile.mkdtemp())
-        try:
-            (scratch / "LICENSES").mkdir()
-            shutil.copy(FIXTURES / "LICENSES" / "MIT.txt", scratch / "LICENSES" / "MIT.txt")
-            (scratch / "REUSE.toml").write_text('version = 1\n[[annotations]]\npath = "docs/**"\nSPDX-License-Identifier = "MIT"\n', encoding="utf-8")
-            (scratch / "docs").mkdir()
-            (scratch / "docs" / "page.md").write_text("# page\n", encoding="utf-8")
-            (scratch / "tool.py").write_text("print()\n", encoding="utf-8")
-            status, _, stderr = run("check-licenses", "--root", str(scratch))
-            self.assertEqual(status, 1)
-            self.assertIn("tool.py: license.file", stderr)
-            self.assertNotIn("page.md", stderr)
-        finally:
-            shutil.rmtree(scratch)
+
+class LicenseCheckOverATree(unittest.TestCase):
+    """REUSE 3.2 resolution over a scratch tree: every applicable expression is judged."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        (self.scratch / "LICENSES").mkdir()
+        for identifier in ("MIT", "CC0-1.0"):
+            shutil.copy(FIXTURES / "LICENSES" / f"{identifier}.txt", self.scratch / "LICENSES" / f"{identifier}.txt")
+        (self.scratch / "LICENSES" / "GPL-3.0-only.txt").write_text("GPL text\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def write(self, relative: str, text: str) -> None:
+        path = self.scratch / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def reuse(self, *tables: str) -> None:
+        self.write("REUSE.toml", "version = 1\n" + "".join(f"[[annotations]]\n{table}\n" for table in tables))
+
+    def check(self):
+        status, _, stderr = run("check-licenses", "--root", str(self.scratch))
+        return status, stderr
+
+    def test_a_file_without_a_licence_is_refused_and_a_covered_one_is_not(self):
+        self.reuse('path = "docs/**"\nSPDX-License-Identifier = "MIT"')
+        self.write("docs/page.md", "# page\n")
+        self.write("tool.py", "print()\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("tool.py: license.file", stderr)
+        self.assertNotIn("page.md", stderr)
+
+    def test_every_declaration_is_judged(self):
+        # An annotation listing two identifiers, a file with two headers, and a sidecar.
+        self.reuse('path = "docs/**"\nSPDX-License-Identifier = ["MIT", "GPL-3.0-only"]')
+        self.write("docs/page.md", "# page\n")
+        self.write("two.py", "# SPDX-License-Identifier: MIT\n# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        self.write("data.bin.license", "SPDX-License-Identifier: GPL-3.0-only\n")
+        self.write("data.bin", "# SPDX-License-Identifier: MIT\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        for path in ("docs/page.md", "two.py", "data.bin"):
+            self.assertIn(f"{path}: license.allowlist: the file's licence `GPL-3.0-only`", stderr, path)
+        self.assertNotIn("data.bin.license:", stderr, "a sidecar is a declaration, not a judged file")
+
+    def test_precedence_decides_how_a_header_and_an_annotation_combine(self):
+        header = "# SPDX-License-Identifier: MIT\nprint()\n"
+        gpl_header = "# SPDX-License-Identifier: GPL-3.0-only\nprint()\n"
+        self.reuse('path = "closest/**"\nSPDX-License-Identifier = "GPL-3.0-only"',
+                   'path = "aggregate/**"\nprecedence = "aggregate"\nSPDX-License-Identifier = "GPL-3.0-only"',
+                   'path = "override/**"\nprecedence = "override"\nSPDX-License-Identifier = "MIT"')
+        self.write("closest/own.py", header)
+        self.write("aggregate/own.py", header)
+        self.write("override/own.py", gpl_header)
+        status, stderr = self.check()
+        self.assertEqual(status, 1, stderr)
+        self.assertNotIn("closest/own.py", stderr, "closest: the file's own header wins")
+        self.assertIn("aggregate/own.py: license.allowlist", stderr, "aggregate: the annotation's GPL applies too")
+        self.assertNotIn("override/own.py", stderr, "override: the annotation's MIT alone applies")
+        self.reuse('path = "**"\nprecedence = "nearest"\nSPDX-License-Identifier = "MIT"')
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("REUSE.toml: license.file: `precedence = nearest`", stderr)
+
+    def test_the_last_matching_annotation_applies_and_a_nested_reuse_toml_refuses(self):
+        self.reuse('path = "**"\nSPDX-License-Identifier = "GPL-3.0-only"', 'path = "src/**"\nSPDX-License-Identifier = "MIT"')
+        self.write("src/a.py", "print()\n")
+        self.write("other.py", "print()\n")
+        self.write("vendor/REUSE.toml", 'version = 1\n[[annotations]]\npath = "**"\nSPDX-License-Identifier = "MIT"\n')
+        self.write("vendor/lib.py", "print()\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertNotIn("src/a.py", stderr)
+        self.assertIn("other.py: license.allowlist", stderr)
+        self.assertIn("vendor/lib.py: license.file: lies under `vendor/REUSE.toml`", stderr)
+        self.assertIn("vendor/REUSE.toml: license.file: lies under", stderr)
+
+    def test_globs_follow_reuse(self):
+        self.reuse('path = "src/*"\nSPDX-License-Identifier = "MIT"', 'path = "docs/**/*.md"\nSPDX-License-Identifier = "MIT"',
+                   'path = "lit\\\\*.txt"\nSPDX-License-Identifier = "MIT"', 'path = "one/?.py"\nSPDX-License-Identifier = "MIT"')
+        self.write("src/x.py", "print()\n")
+        self.write("src/vendor/proprietary.py", "print()\n")
+        self.write("docs/a.md", "# a\n")
+        self.write("docs/deep/er/b.md", "# b\n")
+        self.write("lit*.txt", "literal star\n")
+        self.write("lita.txt", "not matched\n")
+        self.write("one/a.py", "print()\n")
+        self.write("one/ab.py", "print()\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        for refused in ("src/vendor/proprietary.py", "lita.txt", "one/ab.py"):
+            self.assertIn(f"{refused}: license.file", stderr, refused)
+        for covered in ("src/x.py", "docs/a.md", "docs/deep/er/b.md", "lit*.txt", "one/a.py"):
+            self.assertNotIn(covered + ":", stderr, covered)
 
 
 class SignoffCheck(unittest.TestCase):

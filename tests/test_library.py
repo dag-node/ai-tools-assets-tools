@@ -139,6 +139,21 @@ class SpdxExpressions(unittest.TestCase):
         self.assertIn("at most 64", evaluate_expression(" AND ".join(["MIT"] * 40), self.allowlist).syntax_error)
 
 
+class ReuseGlobs(unittest.TestCase):
+    def test_star_and_question_mark_stop_at_a_slash_and_double_star_crosses_it(self):
+        from license_policy import matches_reuse_glob
+        cases = [
+            ("src/*", "src/x.py", True), ("src/*", "src/vendor/x.py", False), ("src/**", "src/vendor/x.py", True),
+            ("src/**", "src", False), ("src/**/x.py", "src/x.py", True), ("src/**/x.py", "src/a/b/x.py", True),
+            ("**/x.py", "x.py", True), ("**/x.py", "a/x.py", True), ("**", "a/b/c", True), ("*.md", "a.md", True),
+            ("*.md", "d/a.md", False), ("one/?.py", "one/a.py", True), ("one/?.py", "one/ab.py", False),
+            ("one/?.py", "one//.py", False), ("lit\\*.txt", "lit*.txt", True), ("lit\\*.txt", "lita.txt", False),
+            ("a.b", "aXb", False), ("[a].py", "[a].py", True), ("[a].py", "a.py", False),
+        ]
+        for glob, path, expected in cases:
+            self.assertEqual(matches_reuse_glob(path, glob), expected, (glob, path))
+
+
 class ControlCharacters(unittest.TestCase):
     def test_the_set_is_every_cc_but_tab_lf_cr_plus_bidi_controls_and_the_bom(self):
         import unicodedata
