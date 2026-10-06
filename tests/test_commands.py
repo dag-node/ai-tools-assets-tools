@@ -562,6 +562,12 @@ class LicenseCheckOverATree(unittest.TestCase):
             self.assertIn(f"{refused}: license.file", stderr, refused)
         for covered in ("src/x.py", "docs/a.md", "docs/deep/er/b.md", "lit*.txt", "one/a.py"):
             self.assertNotIn(covered + ":", stderr, covered)
+        for glob in ("a" * 257, "src**"):
+            self.reuse(f'path = "{glob}"\nSPDX-License-Identifier = "MIT"')
+            status, stderr = self.check()
+            self.assertEqual(status, 1)
+            self.assertIn("REUSE.toml: license.file: annotations table 1: path `", stderr, "a glob outside the grammar refuses the file whole")
+            self.assertNotIn("check-licenses: src/x.py", stderr)
 # REUSE-IgnoreEnd
 
 

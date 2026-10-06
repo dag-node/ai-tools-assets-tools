@@ -12,7 +12,8 @@ REUSE combines them: the file's own information is each `SPDX-License-Identifier
 whole under the file cap and outside a `REUSE-IgnoreStart`/`REUSE-IgnoreEnd` block, or the headers of its
 `<file>.license` sidecar where one exists; a file over the cap is refused rather than judged on a prefix; the
 repository's `REUSE.toml` supplies annotations whose
-`path` globs are matched with REUSE's grammar (`*` and `?` stop at `/`, `**` crosses it, `\\` escapes a metacharacter),
+`path` globs are matched with REUSE's grammar (`*` and `?` stop at `/`, a `**` segment crosses it, `\\` escapes a
+metacharacter) by a segment-wise wildcard match whose work is bounded by the glob's and the path's lengths,
 the last matching annotation applies -- whether or not it declares a licence -- and its `precedence` decides the
 combination: `closest` (the default) takes the file's own information where it has any, `aggregate` takes both,
 `override` takes the annotation alone. The `REUSE.toml` reader parses a bounded TOML subset and refuses the file
@@ -22,12 +23,13 @@ read, so each of those files is refused rather than judged by the root's annotat
 """
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
-from asset_format import DEFAULT_LICENSE_ALLOWLIST, FILE_MAX_BYTES, LICENSE_TEXTS_DIRECTORY, SPDX_HEADER
+from asset_format import DEFAULT_LICENSE_ALLOWLIST, FILE_MAX_BYTES, LICENSE_TEXTS_DIRECTORY, REUSE_GLOB_MAX_LENGTH, SPDX_HEADER
 from findings import FindingCollector
 from key_value_config import KeyValueDocument
 from safe_read import RefusedRead, read_file_under, read_text_under
@@ -174,6 +176,10 @@ def read_reuse_annotations(root_fd: int) -> Tuple[List[ReuseAnnotation], Optiona
         precedence = table.get("precedence", REUSE_PRECEDENCE_DEFAULT)
         if not isinstance(precedence, str) or precedence not in REUSE_PRECEDENCES:
             return [], f"`precedence = {precedence}` is not one of " + ", ".join(REUSE_PRECEDENCES)
+        for glob in globs:
+            problem = reuse_glob_problem(glob)
+            if problem is not None:
+                return [], f"annotations table {index}: path `{glob}` {problem}"
         annotations.append(ReuseAnnotation(tuple(globs), tuple(expressions), precedence))
     return annotations, None
 
@@ -230,39 +236,90 @@ def _toml_string(text: str) -> Tuple[str, str, Optional[str]]:
     return "", text, "the string does not close on its line"
 
 
-def reuse_glob_regex(glob: str) -> "re.Pattern[str]":
-    """REUSE's glob as a regular expression over a `/`-joined relative path: `*` and `?` stop at `/`, `**` crosses
-    it (`**/` matches zero directories too, `dir/**` everything inside `dir`), and `\\` escapes the character after it."""
-    parts: List[str] = []
+Token = Tuple[str, str]  # (`lit`, the character), (`star`, ``) or (`qmark`, ``)
+Segment = Optional[Tuple[Token, ...]]  # None is a `**` segment
+
+
+@functools.lru_cache(maxsize=256)
+def compile_reuse_glob(glob: str) -> Tuple[Segment, ...]:
+    """REUSE's glob split on `/` into segments of tokens: `*` and `?` stop at `/`, a segment that is exactly `**`
+    spans directories, and `\\` makes the character after it a literal.
+
+    Raises ValueError for a glob this reader does not read: one over `REUSE_GLOB_MAX_LENGTH`, or with `**` beside
+    another character in a segment, whose meaning differs between readers.
+    """
+    if len(glob) > REUSE_GLOB_MAX_LENGTH:
+        raise ValueError(f"is {len(glob)} characters; a glob is at most {REUSE_GLOB_MAX_LENGTH}")
+    segments: List[Segment] = []
+    tokens: List[Token] = []
     index = 0
-    while index < len(glob):
-        character = glob[index]
-        if character == "\\" and index + 1 < len(glob):
-            parts.append(re.escape(glob[index + 1]))
-            index += 2
-        elif glob.startswith("**/", index):
-            parts.append("(?:.*/)?")
-            index += 3
-        elif glob.startswith("/**", index) and index + 3 == len(glob):
-            parts.append("/.*")
-            index += 3
-        elif glob.startswith("**", index):
-            parts.append(".*")
-            index += 2
+    while index <= len(glob):
+        character = glob[index] if index < len(glob) else "/"
+        if character == "/":
+            if tokens == [("star", ""), ("star", "")]:
+                segments.append(None)
+            elif any(first[0] == "star" == second[0] for first, second in zip(tokens, tokens[1:])):
+                raise ValueError("carries `**` beside another character; `**` stands alone between slashes in this reader")
+            else:
+                segments.append(tuple(tokens))
+            tokens = []
+        elif character == "\\" and index + 1 < len(glob):
+            index += 1
+            tokens.append(("lit", glob[index]))
         elif character == "*":
-            parts.append("[^/]*")
-            index += 1
+            tokens.append(("star", ""))
         elif character == "?":
-            parts.append("[^/]")
-            index += 1
+            tokens.append(("qmark", ""))
         else:
-            parts.append(re.escape(character))
-            index += 1
-    return re.compile("^" + "".join(parts) + "$")
+            tokens.append(("lit", character))
+        index += 1
+    return tuple(segments)
+
+
+def reuse_glob_problem(glob: str) -> Optional[str]:
+    """What keeps the glob outside this reader's grammar, or None for one it reads."""
+    try:
+        compile_reuse_glob(glob)
+    except ValueError as problem:
+        return str(problem)
+    return None
+
+
+def _segment_matches(tokens: Tuple[Token, ...], text: str) -> bool:
+    """The two-pointer wildcard match of one segment against one path part, with one backtrack point per `*`."""
+    token_index = text_index = 0
+    star_token, star_text = -1, 0
+    while text_index < len(text):
+        if token_index < len(tokens) and tokens[token_index][0] == "star":
+            star_token, star_text = token_index, text_index
+            token_index += 1
+        elif token_index < len(tokens) and (tokens[token_index][0] == "qmark" or tokens[token_index] == ("lit", text[text_index])):
+            token_index += 1
+            text_index += 1
+        elif star_token >= 0:
+            star_text += 1
+            token_index, text_index = star_token + 1, star_text
+        else:
+            return False
+    return all(token[0] == "star" for token in tokens[token_index:])
 
 
 def matches_reuse_glob(relative_path: str, glob: str) -> bool:
-    return bool(reuse_glob_regex(glob).match(relative_path))
+    """True when the glob matches the `/`-joined relative path; `dir/**` is what lies inside `dir`, `**/` matches
+    zero directories too. The work is bounded by the segment and part counts, whatever the glob."""
+    segments = compile_reuse_glob(glob)
+    parts = relative_path.split("/")
+    # matches[g][p]: segments g.. match parts p..; a `**` segment takes zero or more parts, one or more when it ends
+    # the glob (`dir/**` does not match `dir`).
+    matches = [[False] * (len(parts) + 1) for _ in range(len(segments) + 1)]
+    matches[len(segments)][len(parts)] = True
+    for g in range(len(segments) - 1, -1, -1):
+        for p in range(len(parts), -1, -1):
+            if segments[g] is None:
+                matches[g][p] = p < len(parts) if g == len(segments) - 1 else any(matches[g + 1][p:])
+            else:
+                matches[g][p] = p < len(parts) and _segment_matches(segments[g], parts[p]) and matches[g + 1][p + 1]
+    return matches[0][0]
 
 
 def resolve_reuse_annotation(relative_path: str, annotations: Sequence[ReuseAnnotation]) -> Optional[ReuseAnnotation]:
