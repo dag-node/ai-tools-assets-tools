@@ -22,7 +22,7 @@ FIXTURES = REPOSITORY / "fixtures"
 VALIDATE = REPOSITORY / "tools" / "validate"
 sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 
-from key_value_config import read_key_value_file  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
 
 
 def run_validate(set_directory: pathlib.Path, publisher: str, profile: str = "source", license_texts=None, licenses=None):
@@ -40,7 +40,7 @@ def run_validate(set_directory: pathlib.Path, publisher: str, profile: str = "so
 
 def fixture_cases():
     for conf_path in sorted(FIXTURES.glob("*/*/fixture.conf")):
-        conf = read_key_value_file(conf_path)
+        conf = parse_key_value_text(conf_path.read_text(encoding="utf-8"))
         set_directory = next(path for path in conf_path.parent.iterdir() if path.is_dir())
         yield conf_path.parent, conf, set_directory
 
@@ -111,12 +111,61 @@ class UncommittableFixtures(unittest.TestCase):
         (self.skill / "references" / "two\nlines.md").write_text("# x\n", encoding="utf-8")
         self.assert_refuses_alone("file.name")
 
-    def test_too_many_files(self):
+    def assert_one_budget_finding(self, fragment: str):
+        """A tripped budget is one `file.size` finding at the set root naming it, and no later rule reports."""
+        status, refusals, warnings = run_validate(self.set_directory, "acme")
+        self.assertEqual(status, 1)
+        self.assertEqual(len(refusals), 1, refusals[:3])
+        self.assertEqual(warnings, [])
+        self.assertIn(": acme: file.size: ", refusals[0])
+        self.assertIn(fragment, refusals[0])
+
+    def test_too_many_entries_in_one_directory(self):
         for index in range(2001):
             (self.skill / "references" / f"page-{index}.md").write_text("# p\n", encoding="utf-8")
+        self.assert_one_budget_finding("more than 2000 entries")
+
+    def test_too_many_files(self):
+        for directory in range(3):
+            (self.skill / "references" / f"part-{directory}").mkdir()
+            for index in range(800):
+                (self.skill / "references" / f"part-{directory}" / f"page-{index}.md").write_text("# p\n", encoding="utf-8")
+        self.assert_one_budget_finding("more than 2000 files")
+
+    def test_too_many_directories(self):
+        for index in range(501):
+            (self.skill / "references" / f"part-{index}").mkdir()
+        self.assert_one_budget_finding("more than 500 directories")
+
+    def test_too_deep(self):
+        deep = self.skill / "references"
+        for _ in range(40):
+            deep = deep / "d"
+        deep.mkdir(parents=True)
+        self.assert_one_budget_finding("levels deep")
+
+    def test_too_many_bytes_in_all(self):
+        for index in range(65):
+            (self.skill / "references" / f"big-{index}.md").write_bytes(b"x" * (1024 * 1024))
+        self.assert_one_budget_finding("more than 67108864 bytes")
+
+    def test_a_symlinked_set_root_is_refused(self):
+        link = self.scratch / "linked"
+        link.symlink_to(self.set_directory, target_is_directory=True)
+        status, refusals, _ = run_validate(link, "acme")
+        self.assertEqual(status, 1)
+        self.assertEqual(len(refusals), 1, refusals)
+        self.assertIn(": linked: file.symlink: ", refusals[0])
+
+    def test_a_symlinked_directory_inside_the_set_is_refused_unread(self):
+        outside = self.scratch / "outside"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("---\nname: acme-outside\ndescription: x\n---\n!`date`\n", encoding="utf-8")
+        (self.set_directory / "skills" / "acme-outside").symlink_to(outside, target_is_directory=True)
         status, refusals, _ = run_validate(self.set_directory, "acme")
         self.assertEqual(status, 1)
-        self.assertTrue(any(": file.size: " in line and "files" in line for line in refusals), refusals[:3])
+        self.assertTrue(all(": file.symlink: " in line for line in refusals), refusals)
+        self.assertFalse(any("dynamic-injection" in line for line in refusals), "the target was not read")
 
     def test_release_profile_accepts_a_correct_inventory(self):
         import hashlib

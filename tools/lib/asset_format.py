@@ -160,8 +160,14 @@ KNOWN_CAPABILITIES: FrozenSet[str] = frozenset({"skills.portable.v1", "subagents
 INTEGRATION_TOKEN_PATTERN = re.compile(r"^integration-[a-z][a-z0-9-]*$")
 
 # ── Files ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+# The budgets a walk over a set holds to. Each is a bound on the work a pull request can make the validator do; the walk
+# stops at the first one it trips, with one `file.size` finding, so a partial result is never reported as a pass.
 FILE_MAX_BYTES = 1024 * 1024
 SET_MAX_FILES = 2000
+SET_MAX_DIRECTORIES = 500
+SET_MAX_DEPTH = 32
+SET_MAX_BYTES = 64 * 1024 * 1024
+SET_MAX_DIRECTORY_ENTRIES = 2000
 # A text file: UTF-8, no NUL, no C0 control other than tab, newline and carriage return, and none of the bidi controls
 # that render text in another order than it is read.
 BIDI_CONTROLS = "".join(chr(code) for code in (*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
@@ -237,7 +243,7 @@ RULES: Dict[str, str] = {
     "file.hardlink": "a file has one link",
     "file.special": "every entry is a regular file or a directory",
     "file.binary": "every file is UTF-8 text without control or bidi characters",
-    "file.size": "a file is at most 1 MiB and a set at most 2000 files",
+    "file.size": "a file is at most 1 MiB; a set holds at most 2000 files, 500 directories, 2000 entries in one directory, 32 levels and 64 MiB in all",
     "file.reserved-name": "a reserved file name is used for its reserved purpose alone",
     "file.name": "a file name is printable and does not carry a newline",
     "cs.package": "a `.cs` script does not carry a `#:package` directive",

@@ -163,8 +163,10 @@ the same file the same way.
   to its root and another skill by name.
 - Every entry is a regular file or a directory: no symbolic link, no file
   with a second hard link, no special file. Every file is UTF-8 text without
-  control or bidi characters, at most 1 MiB, and a set holds at most 2000
-  files. A file name is printable and does not carry a newline.
+  control or bidi characters, at most 1 MiB; a set holds at most 2000 files
+  and 500 directories, 32 levels deep, 64 MiB in all, with at most 2000 entries
+  in one directory, and the validator stops at the first of these it meets.
+  A file name is printable and does not carry a newline.
 - A reserved name is used for its reserved purpose alone: `SHA256SUMS`,
   `SHA256SUMS.asc`, `SHA512SUMS*`, `*.oms.sig`, `UPSTREAM.conf`, `asset.conf`,
   `plugin.json`, a `README.md` at a kind directory, and the directories
@@ -265,7 +267,7 @@ differ.
 | `file.hardlink` | refuses | a file has one link |
 | `file.special` | refuses | every entry is a regular file or a directory |
 | `file.binary` | refuses | every file is UTF-8 text without control or bidi characters |
-| `file.size` | refuses | a file is at most 1 MiB and a set at most 2000 files |
+| `file.size` | refuses | a file is at most 1 MiB; a set holds at most 2000 files, 500 directories, 2000 entries in one directory, 32 levels and 64 MiB in all |
 | `file.reserved-name` | refuses | a reserved file name is used for its reserved purpose alone |
 | `file.name` | refuses | a file name is printable and does not carry a newline |
 | `cs.package` | refuses | a `.cs` script does not carry a `#:package` directive |

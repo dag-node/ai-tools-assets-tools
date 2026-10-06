@@ -9,18 +9,25 @@
 # python3 tools/validate --list-rules [--markdown]
 # ```
 #
-# Over a repository (the current directory, or `--root`), it reads `publisher.conf`, runs `check-publisher`, validates
-# every set under `sets/` (or the ones `--set` names), holds the committed plugin manifests and the marketplace to what
-# `sync-manifests` writes, and holds every declared licence to the SPDX list in force (`publisher.conf` `licenses=`, or
-# the default). Over one set directory -- a conformance fixture, or a set built by `build-set` under
-# `--profile release` -- it applies the set-level rules alone, with `--publisher` where the set-name rules need one and
-# `--licenses` where the list is not the default. Each finding is one line, `validate: <path>: <rule-id>: <what>`, with
-# `warning:` after the command name where the rule warns; the exit status is 1 when a refusing finding was made, 2 on a
-# usage error. The rule ids and what each requires are `--list-rules`, and `format/FORMAT.md` states them for a
-# publisher. A set is read as data and no file in it is executed. Standard library only.
+# Over a repository (the current directory, or `--root`), it reads `publisher.conf`, validates every set under `sets/`
+# (or the ones `--set` names), and once every set passed runs `check-publisher` and holds the committed plugin manifests
+# and the marketplace to what `sync-manifests` writes; every declared licence is held to the SPDX list in force
+# (`publisher.conf` `licenses=`, or the default). Over one set directory -- a conformance fixture, or a set built by
+# `build-set` under `--profile release` -- it applies the set-level rules alone, with `--publisher` where the set-name
+# rules need one and `--licenses` where the list is not the default. Each finding is one line,
+# `validate: <path>: <rule-id>: <what>`, with `warning:` after the command name where the rule warns; the exit status
+# is 1 when a refusing finding was made, 2 on a usage error. The rule ids and what each requires are `--list-rules`, and
+# `format/FORMAT.md` states them for a publisher.
+#
+# The root is the operator's argument and is opened by path; `sets/`, each set and every file below are opened from
+# that descriptor without following a symbolic link (`tools/lib/safe_read.py`), so a linked `sets/`, a linked set
+# directory or `--set-directory` naming a link is refused before a byte of the target is read, and the set walk runs
+# before `check-publisher` so no publisher check reads a file the walk has not judged. A set is read as data and no
+# file in it is executed. Standard library only.
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import subprocess
 import sys
@@ -30,9 +37,10 @@ sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
-from key_value_config import read_key_value_file  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import allowlist_in_force  # noqa: E402
 from manifests import MARKETPLACE_PATH, expected_manifest_files, stale_manifest_files  # noqa: E402
+from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
 from set_validation import PROFILE_SOURCE, PROFILES, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
 
 RESERVED_WORDS_FILE = TOOLS / "reserved-words.txt"
@@ -57,16 +65,40 @@ def rules_listing(markdown: bool) -> str:
                    for rule_id, statement in fmt.RULES.items())
 
 
+LAYOUT_MESSAGE = "a publisher repository holds publisher.conf and sets/ at its root; name it with --root, or validate one set with --set-directory"
+
+
 def validate_repository(root: pathlib.Path, profile: str, only_sets: list, collector: FindingCollector) -> None:
-    publisher_conf_path = root / "publisher.conf"
-    sets_root = root / "sets"
-    if not publisher_conf_path.is_file() or not sets_root.is_dir():
-        collector.refuse(str(root), "repo.layout", "a publisher repository holds publisher.conf and sets/ at its root; name it with --root, or validate one set with --set-directory")
+    try:
+        root_fd = open_root(root)
+    except OSError:
+        collector.refuse(str(root), "repo.layout", LAYOUT_MESSAGE)
         return
     try:
-        publisher_conf = read_key_value_file(publisher_conf_path)
-    except (OSError, UnicodeDecodeError) as error:
-        collector.refuse("publisher.conf", "repo.publisher-conf", f"cannot be read: {error}")
+        validate_repository_under(root_fd, root, profile, only_sets, collector)
+    finally:
+        os.close(root_fd)
+
+
+def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, only_sets: list, collector: FindingCollector) -> None:
+    try:
+        publisher_conf = parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("publisher.conf"), fmt.FILE_MAX_BYTES))
+    except FileNotFoundError:
+        collector.refuse(str(root), "repo.layout", LAYOUT_MESSAGE)
+        return
+    except RefusedRead as refusal:
+        collector.refuse("publisher.conf", "repo.publisher-conf", refusal.message)
+        return
+    try:
+        sets_fd = open_directory("sets", root_fd)
+    except FileNotFoundError:
+        collector.refuse(str(root), "repo.layout", LAYOUT_MESSAGE)
+        return
+    except NotADirectoryError:
+        collector.refuse("sets", "repo.layout", "is not a directory; " + LAYOUT_MESSAGE)
+        return
+    except RefusedRead as refusal:
+        collector.refuse("sets", "repo.layout", refusal.message)
         return
     for message in publisher_conf.syntax_errors():
         collector.refuse("publisher.conf", "repo.publisher-conf", message)
@@ -77,6 +109,39 @@ def validate_repository(root: pathlib.Path, profile: str, only_sets: list, colle
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
 
+    options = ValidationOptions(publisher=publisher_conf.get("publisher") or None, profile=profile,
+                                reserved_words=read_reserved_words(RESERVED_WORDS_FILE), license_allowlist=allowlist,
+                                license_text_directories=[root], display_root=root)
+    validated = []
+    try:
+        with os.scandir(sets_fd) as listing:
+            entries = sorted((entry for entry in listing if not entry.name.startswith(".")), key=lambda entry: entry.name)
+        if only_sets:
+            for name in sorted(set(only_sets) - {entry.name for entry in entries}):
+                collector.refuse(f"sets/{name}", "set.conf.missing", "no such set directory")
+            entries = [entry for entry in entries if entry.name in only_sets]
+        for entry in entries:
+            if entry.is_symlink():
+                collector.refuse(f"sets/{entry.name}", "file.symlink", "is a symbolic link; a set is a directory under sets/")
+                continue
+            if not entry.is_dir(follow_symlinks=False):
+                collector.refuse(f"sets/{entry.name}", "set.conf.missing", "is not a directory")
+                continue
+            summary = validate_set_directory(root / "sets" / entry.name, options, collector, parent_fd=sets_fd)
+            if summary.set_conf is not None:
+                validated.append((entry.name, summary.set_conf))
+    finally:
+        os.close(sets_fd)
+    if collector.has_refusals():
+        return  # the repository-level checks read manifests the set walk has judged
+    run_check_publisher(root, collector)
+    if not only_sets:
+        for relative_path, reason in stale_manifest_files(root_fd, expected_manifest_files(publisher_conf, validated)):
+            rule_id = "repo.marketplace" if relative_path == MARKETPLACE_PATH else "set.manifest.plugin"
+            collector.refuse(str(relative_path), rule_id, f"{reason}; run `python3 tools/sync-manifests`")
+
+
+def run_check_publisher(root: pathlib.Path, collector: FindingCollector) -> None:
     completed = subprocess.run([sys.executable, str(CHECK_PUBLISHER), "--root", str(root)], capture_output=True, text=True)
     for line in completed.stderr.splitlines():
         print(line, file=sys.stderr)
@@ -84,25 +149,6 @@ def validate_repository(root: pathlib.Path, profile: str, only_sets: list, colle
         collector.refuse("publisher.conf", "repo.publisher-conf", "check-publisher found the names and contacts above")
     elif completed.returncode != 0:
         collector.refuse("publisher.conf", "repo.publisher-conf", f"check-publisher exited {completed.returncode}: {completed.stderr.strip()}")
-
-    options = ValidationOptions(publisher=publisher_conf.get("publisher") or None, profile=profile,
-                                reserved_words=read_reserved_words(RESERVED_WORDS_FILE), license_allowlist=allowlist,
-                                license_text_directories=[root], display_root=root)
-    set_directories = sorted(path for path in sets_root.iterdir() if path.is_dir() and not path.name.startswith("."))
-    if only_sets:
-        set_directories = [path for path in set_directories if path.name in only_sets]
-        for name in only_sets:
-            if not (sets_root / name).is_dir():
-                collector.refuse(f"sets/{name}", "set.conf.missing", "no such set directory")
-    validated = []
-    for set_directory in set_directories:
-        summary = validate_set_directory(set_directory, options, collector)
-        if summary.set_conf is not None:
-            validated.append((set_directory.name, summary.set_conf))
-    if not only_sets and not collector.has_refusals():
-        for relative_path, reason in stale_manifest_files(root, expected_manifest_files(publisher_conf, validated)):
-            rule_id = "repo.marketplace" if relative_path == MARKETPLACE_PATH else "set.manifest.plugin"
-            collector.refuse(str(relative_path), rule_id, f"{reason}; run `python3 tools/sync-manifests`")
 
 
 def validate_one_set(set_directory: pathlib.Path, publisher: str, licenses: str, license_texts: list, profile: str,
@@ -131,7 +177,10 @@ def main() -> int:
         return list_rules(args.markdown)
     collector = FindingCollector("validate")
     if args.set_directory is not None:
-        validate_one_set(args.set_directory.resolve(), args.publisher, args.licenses, args.license_texts, args.profile, collector)
+        # The path is made absolute without resolving its last component, which the validator opens without following
+        # a link; its parent is the operator's argument.
+        validate_one_set(pathlib.Path(os.path.abspath(args.set_directory)), args.publisher, args.licenses, args.license_texts,
+                         args.profile, collector)
     else:
         validate_repository(args.root.resolve(), args.profile, args.set, collector)
     return collector.report()

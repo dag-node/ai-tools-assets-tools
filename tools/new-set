@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import subprocess
 import sys
@@ -23,7 +24,8 @@ sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
-from key_value_config import read_key_value_file  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
+from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
 from set_validation import read_reserved_words  # noqa: E402
 
 SET_CONF_TEMPLATE = """# ai-tools-assets set: {name}. Read by ai-tools-base as KEY=value
@@ -83,6 +85,24 @@ def check_set_name(name: str, publisher: str, collector: FindingCollector) -> No
                                                  f"name it `{publisher}` or `{publisher}-<topic>`")
 
 
+def read_publisher_conf(root: pathlib.Path, collector: FindingCollector):
+    """publisher.conf read from the root's descriptor, or None after a finding."""
+    try:
+        root_fd = open_root(root)
+    except OSError:
+        collector.refuse(str(root), "repo.layout", "is not a directory; a set is created inside a publisher repository")
+        return None
+    try:
+        return parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("publisher.conf"), fmt.FILE_MAX_BYTES))
+    except FileNotFoundError:
+        collector.refuse("publisher.conf", "repo.layout", f"not found under {root}; a set is created inside a publisher repository")
+    except RefusedRead as refusal:
+        collector.refuse("publisher.conf", "repo.publisher-conf", refusal.message)
+    finally:
+        os.close(root_fd)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a set directory with its set.conf, CHANGELOG.md, README.md "
                                                  "and manifests.")
@@ -94,12 +114,9 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     collector = FindingCollector("new-set")
-    publisher_path = root / "publisher.conf"
-    if not publisher_path.is_file():
-        collector.refuse("publisher.conf", "repo.layout",
-                         f"not found under {root}; a set is created inside a publisher repository")
+    publisher = read_publisher_conf(root, collector)
+    if publisher is None:
         return collector.report()
-    publisher = read_key_value_file(publisher_path)
     check_set_name(args.name, publisher.get("publisher"), collector)
     set_directory = root / "sets" / args.name
     if set_directory.exists():

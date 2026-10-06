@@ -74,6 +74,36 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("repo.layout", stderr)
 
+    def test_a_symlinked_manifest_is_refused_before_any_publisher_check_reads_it(self):
+        outside = self.root.parent / "outside.json"
+        manifest = self.root / "sets" / "acme" / "plugin.json"
+        outside.write_text(manifest.read_text(encoding="utf-8").replace("acme", "other"), encoding="utf-8")
+        manifest.unlink()
+        manifest.symlink_to(outside)
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("sets/acme/plugin.json: file.symlink: ", stderr)
+        self.assertNotIn("check-publisher:", stderr, "the publisher check does not run over a set the walk refused")
+        status, _, stderr = run("check-publisher", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("plugin.json: is a symbolic link", stderr)
+        self.assertNotIn("other", stderr, "the link's target is not read")
+
+    def test_a_symlinked_sets_directory_and_set_are_refused(self):
+        real = self.root.parent / "elsewhere"
+        shutil.move(str(self.root / "sets"), str(real))
+        (self.root / "sets").symlink_to(real, target_is_directory=True)
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("sets: repo.layout: is a symbolic link", stderr)
+        (self.root / "sets").unlink()
+        (self.root / "sets").mkdir()
+        (self.root / "sets" / "acme").symlink_to(real / "acme", target_is_directory=True)
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("sets/acme: file.symlink: ", stderr)
+        self.assertNotIn("check-publisher:", stderr)
+
     def test_scaffolding_a_set_and_its_assets_validates(self):
         status, stdout, stderr = run("new-set", "acme-dotnet", "--root", str(self.root), "--summary", "ASP.NET Core skills")
         self.assertEqual(status, 0, stderr)
