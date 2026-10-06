@@ -1,0 +1,11 @@
+# Review requests route to the maintainers team, which holds write access to
+# this repository; a code owner without write access is ignored.
+* @dag-node/ai-tools-maintainers
+
+# The format a set follows, the validators every publisher's CI runs, the
+# reserved names, the reusable workflows and .github/ itself (CI, this file,
+# the templates) need repository-owner review.
+/format/ @dag-node/ai-tools-maintainers
+/tools/ @dag-node/ai-tools-maintainers
+/formatters/ @dag-node/ai-tools-maintainers
+/.github/ @dag-node/ai-tools-maintainers
