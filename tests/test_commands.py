@@ -161,6 +161,48 @@ class PublisherRepository(unittest.TestCase):
         self.assertIn("set.entry.unknown", stderr)
         self.assertFalse((self.root / "build").exists())
 
+    def assert_source_intact(self):
+        self.assertTrue((self.root / "sets" / "acme" / "set.conf").is_file())
+        self.assertEqual([path.name for path in self.root.glob(".acme.*")] + [path.name for path in (self.root / "sets").glob(".acme.*")], [])
+
+    def test_build_set_refuses_a_path_as_the_set_and_an_output_root_over_the_source(self):
+        status, _, stderr = run("build-set", str(self.root / "sets" / "acme"), cwd=self.root)
+        self.assertEqual(status, 1)
+        self.assertIn("name.grammar", stderr)
+        for option, value in (("--build", "sets"), ("--dist", "sets/acme"), ("--build", "."), ("--dist", str(self.root.parent))):
+            status, _, stderr = run("build-set", "acme", option, value, cwd=self.root)
+            self.assertEqual(status, 1, (option, value))
+            self.assertIn("repo.layout", stderr)
+            self.assert_source_intact()
+        (self.root / "real-build").mkdir()
+        (self.root / "linked-build").symlink_to(self.root / "real-build", target_is_directory=True)
+        status, _, stderr = run("build-set", "acme", "--build", "linked-build", cwd=self.root)
+        self.assertEqual(status, 1)
+        self.assertIn("is a symbolic link", stderr)
+        self.assertEqual(list((self.root / "real-build").iterdir()), [])
+
+    def test_build_set_replaces_a_build_of_this_set_alone(self):
+        destination = self.root / "build" / "acme"
+        marker = self.root / "build" / ".acme.ai-tools-assets-build"
+        destination.mkdir(parents=True)
+        (destination / "keep.txt").write_text("not a build\n", encoding="utf-8")
+        for marker_text in (None, "ai-tools-assets-build 1\nset=other\n", "ai-tools-assets-build 2\nset=acme\n"):
+            if marker_text is not None:
+                marker.write_text(marker_text, encoding="utf-8")
+            status, _, stderr = run("build-set", "acme", cwd=self.root)
+            self.assertEqual(status, 1, marker_text)
+            self.assertIn("repo.layout", stderr)
+            self.assertTrue((destination / "keep.txt").is_file(), "the directory at the destination is left")
+            self.assertEqual([path.name for path in (self.root / "build").iterdir() if path.name.startswith(".acme.") and path.is_dir()], [],
+                             "the staging directory is removed on failure")
+        marker.write_text("ai-tools-assets-build 1\nset=acme\n", encoding="utf-8")
+        status, _, stderr = run("build-set", "acme", cwd=self.root)
+        self.assertEqual(status, 0, stderr)
+        self.assertFalse((destination / "keep.txt").exists())
+        self.assertTrue((destination / "SHA256SUMS").is_file())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "ai-tools-assets-build 1\nset=acme\n")
+        self.assertEqual(sorted(path.name for path in (self.root / "build").iterdir()), [".acme.ai-tools-assets-build", "acme"])
+
     def test_link_set_places_records_and_removes(self):
         target = self.root.parent / "home" / ".claude" / "skills"
         status, stdout, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target))
