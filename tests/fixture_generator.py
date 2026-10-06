@@ -277,6 +277,20 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
     ("file.binary.arabic-letter-mark", "file.binary", lambda tree: tree.__setitem__(f"{SKILL}/references/formats.md", "# Formats\n\n" + chr(0x061C) + "PDF 1.4.\n")),
     ("file.binary.bom-first", "file.binary", lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", chr(0xFEFF) + tree[f"{SKILL}/SKILL.md"])),
     ("file.binary.bom-inside", "file.binary", lambda tree: tree.__setitem__(f"{SKILL}/references/formats.md", "# Formats\n\nPDF " + chr(0xFEFF) + "1.4.\n")),
+    ("kind.shape.kind-root-file", "kind.shape", lambda tree: (remove_under(tree, "skills/"), tree.__setitem__("skills", "not a directory\n"))),
+    ("kind.shape.entry-file-directory", "kind.shape",
+     lambda tree: (tree.pop(f"{SKILL}/SKILL.md"), tree.__setitem__(f"{SKILL}/SKILL.md/notes.md", "# inside a directory named SKILL.md\n"))),
+    ("set.entry.unknown.licenses-file", "set.entry.unknown", lambda tree: tree.__setitem__("LICENSES", "not a directory\n")),
+    ("skill.entry.unknown.scripts-file", "skill.entry.unknown",
+     lambda tree: (remove_under(tree, f"{SKILL}/scripts/"), tree.__setitem__(f"{SKILL}/scripts", "not a directory\n"))),
+    ("metadata.entry.references-file", "metadata.entry",
+     lambda tree: tree.__setitem__("metadata/subagents/upstream-triage/references", "not a directory\n")),
+    ("cs.project.missing", "cs.project",
+     lambda tree: replace_in(tree, f"{SKILL}/scripts/report.cs", "#:property Nullable=enable", "#:project ../assets/Shared.csproj")),
+    ("cs.project.not-csproj", "cs.project",
+     lambda tree: (replace_in(tree, f"{SKILL}/scripts/report.cs", "#:property Nullable=enable", "#:project ../assets/Shared.props"),
+                   tree.__setitem__(f"{SKILL}/assets/Shared.props", "<Project />\n"))),
+    ("set.manifest.plugin.unknown-key", "set.manifest.plugin", lambda tree: with_component(tree, "futureServer")),
     ("set.conf.syntax.unclosed-quote", "set.conf.syntax", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT\n')),
     ("set.conf.syntax.text-after-quote", "set.conf.syntax", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT"garbage\n')),
     ("set.conf.syntax.empty-list-item", "set.conf.syntax",
@@ -305,6 +319,9 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
 
 # (fixture name, mutation): a shape the format accepts beside the plain passing set, under fixtures/pass/.
 PASS_VARIANT_FIXTURES: List[Tuple[str, Mutation]] = [
+    ("acme.cs-project-inside", lambda tree: (
+        replace_in(tree, f"{SKILL}/scripts/report.cs", "#:property Nullable=enable", "#:project ../assets/Shared.csproj"),
+        tree.__setitem__(f"{SKILL}/assets/Shared.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n'))),
     ("acme.explicit-empty-list", lambda tree: (
         replace_in(tree, "metadata/subagents/upstream-triage/asset.conf", "targets=[claude-code]\n", "targets=[claude-code]\nrequires_integrations=[]\n"),
         replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT" # the set\'s licence\nrequires_capabilities=[]\n'))),
@@ -326,11 +343,43 @@ class SymlinkTo(str):
 FAIL_FIXTURES.append(("file.symlink", "fail", symlink_fixture))
 
 
+def remove_under(tree: Tree, prefix: str) -> None:
+    for path in [path for path in tree if path.startswith(prefix)]:
+        del tree[path]
+
+
+def inventory_lines(tree: Tree) -> str:
+    """The `sha256sum` inventory of a tree, as build-set writes it."""
+    import hashlib
+    lines = []
+    for path in sorted(tree):
+        content = tree[path]
+        data = content.encode("utf-8") if isinstance(content, str) else content
+        lines.append(f"{hashlib.sha256(data).hexdigest()}  {path}\n")
+    return "".join(lines)
+
+
 def release_inventory_fixture(tree: Tree) -> None:
     tree["SHA256SUMS"] = "0" * 64 + "  set.conf\n"
 
 
-RELEASE_FIXTURES: List[Tuple[str, str, Mutation]] = [("release.inventory", "fail", release_inventory_fixture)]
+def duplicate_inventory_fixture(tree: Tree) -> None:
+    """A correct inventory with a second, all-zero line for set.conf ahead of the real one."""
+    tree["SHA256SUMS"] = "0" * 64 + "  set.conf\n" + inventory_lines(tree)
+
+
+# (fixture name, rule id, mutation) under the release profile.
+RELEASE_FIXTURES: List[Tuple[str, str, Mutation]] = [
+    ("release.inventory", "release.inventory", release_inventory_fixture),
+    ("release.inventory.duplicate", "release.inventory", duplicate_inventory_fixture),
+]
+
+# (fixture name, rule id, mutation) validated with `--publisher-conf fixtures/publisher.conf`, which compares each
+# manifest whole against its rendering.
+PUBLISHER_CONF_FIXTURES: List[Tuple[str, str, Mutation]] = [
+    ("set.manifest.plugin.author", "set.manifest.plugin",
+     lambda tree: tree.__setitem__("plugin.json", tree["plugin.json"].replace("tools@acme.example", "someone@elsewhere.example"))),
+]
 
 PASS_FIXTURES: List[Tuple[str, str, str]] = [("acme", "acme", "acme"), ("core", "dag-node", "core")]
 NAMED_SET_FIXTURES: List[Tuple[str, str, str, str]] = [
@@ -340,12 +389,14 @@ NAMED_SET_FIXTURES: List[Tuple[str, str, str, str]] = [
 ]
 
 
-def fixture_conf(expect: str, rule: str, publisher: str, profile: str = "source") -> str:
+def fixture_conf(expect: str, rule: str, publisher: str, profile: str = "source", publisher_conf: bool = False) -> str:
     lines = [f"expect={expect}"]
     if rule:
         lines.append(f"rule={rule}")
     # The directory whose LICENSES/ holds the texts the fixtures share: fixtures/, two levels up from the fixture.
     lines.extend([f"publisher={publisher}", f"profile={profile}", "license_texts=../.."])
+    if publisher_conf:
+        lines.append("publisher_conf=../../publisher.conf")
     return "\n".join(lines) + "\n"
 
 
@@ -362,7 +413,9 @@ def write_tree(directory: pathlib.Path, tree: Tree) -> None:
 
 
 def all_fixtures(destination: pathlib.Path) -> None:
-    """Write every fixture under `destination`/pass and `destination`/fail."""
+    """Write every fixture under `destination`/pass and `destination`/fail, and the publisher.conf some are run with."""
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "publisher.conf").write_text(PUBLISHER_CONF.format(publisher="acme"), encoding="utf-8")
     for fixture_name, publisher, set_name in PASS_FIXTURES:
         directory = destination / "pass" / fixture_name
         (directory).mkdir(parents=True, exist_ok=True)
@@ -386,10 +439,17 @@ def all_fixtures(destination: pathlib.Path) -> None:
         if not rule.startswith("set.manifest."):
             rerender_manifests(tree, "acme", "acme")
         write_tree(directory / "acme", tree)
-    for rule, expect, mutation in RELEASE_FIXTURES:
-        directory = destination / "fail" / rule
+    for fixture_name, rule, mutation in RELEASE_FIXTURES:
+        directory = destination / "fail" / fixture_name
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "fixture.conf").write_text(fixture_conf(expect, rule, "acme", profile="release"), encoding="utf-8")
+        (directory / "fixture.conf").write_text(fixture_conf("fail", rule, "acme", profile="release"), encoding="utf-8")
+        tree = base_tree("acme", "acme")
+        mutation(tree)
+        write_tree(directory / "acme", tree)
+    for fixture_name, rule, mutation in PUBLISHER_CONF_FIXTURES:
+        directory = destination / "fail" / fixture_name
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "fixture.conf").write_text(fixture_conf("fail", rule, "acme", publisher_conf=True), encoding="utf-8")
         tree = base_tree("acme", "acme")
         mutation(tree)
         write_tree(directory / "acme", tree)
@@ -405,7 +465,7 @@ def generate() -> int:
         if (FIXTURES / subdirectory).exists():
             shutil.rmtree(FIXTURES / subdirectory)
     all_fixtures(FIXTURES)
-    count = sum(1 for _ in (FIXTURES / "pass").iterdir()) + sum(1 for _ in (FIXTURES / "fail").iterdir())
+    count = sum(1 for _ in (FIXTURES / "pass").iterdir()) + sum(1 for _ in (FIXTURES / "fail").iterdir())  # fixture directories
     print(f"fixture_generator: wrote {count} fixtures under {FIXTURES}")
     return 0
 

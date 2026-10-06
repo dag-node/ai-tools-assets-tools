@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 sys.path.insert(0, str(TESTS))
 
 import asset_format as fmt  # noqa: E402
-from fixture_generator import FAIL_FIXTURES, NAMED_SET_FIXTURES, RELEASE_FIXTURES, VARIANT_FIXTURES  # noqa: E402
+from fixture_generator import FAIL_FIXTURES, NAMED_SET_FIXTURES, PUBLISHER_CONF_FIXTURES, RELEASE_FIXTURES, VARIANT_FIXTURES  # noqa: E402
 
 BEGIN_MARKER = "<!-- rules:begin -->"
 END_MARKER = "<!-- rules:end -->"
@@ -62,8 +62,9 @@ class RulesDocumented(unittest.TestCase):
 
 def fixture_rules():
     """Every rule a committed fixture names."""
-    return ({rule for rule, _, _ in FAIL_FIXTURES} | {rule for rule, _, _ in RELEASE_FIXTURES}
-            | {rule for _, rule, _, _ in NAMED_SET_FIXTURES} | {rule for _, rule, _ in VARIANT_FIXTURES})
+    return ({rule for rule, _, _ in FAIL_FIXTURES} | {rule for _, rule, _ in RELEASE_FIXTURES}
+            | {rule for _, rule, _, _ in NAMED_SET_FIXTURES} | {rule for _, rule, _ in VARIANT_FIXTURES}
+            | {rule for _, rule, _ in PUBLISHER_CONF_FIXTURES})
 
 
 if __name__ == "__main__":

@@ -79,10 +79,15 @@ IMPLEMENTED_KINDS: Tuple[KindDefinition, ...] = tuple(kind for kind in KINDS if 
 
 # ── What a set directory holds ─────────────────────────────────────────────────────────────────────────────────────
 SET_CONF_FILE = "set.conf"
-SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({
-    "set.conf", "CHANGELOG.md", "README.md", "LICENSE", "LICENSES", "plugin.json", ".claude-plugin",
-    "skills", "agents", "metadata",
-})
+# An allowed entry is a name and a type: a file where a directory is specified, or the reverse, is refused.
+ENTRY_FILE = "file"
+ENTRY_DIRECTORY = "directory"
+SET_ROOT_ENTRY_TYPES: Dict[str, str] = {
+    "set.conf": ENTRY_FILE, "CHANGELOG.md": ENTRY_FILE, "README.md": ENTRY_FILE, "LICENSE": ENTRY_FILE,
+    "LICENSES": ENTRY_DIRECTORY, "plugin.json": ENTRY_FILE, ".claude-plugin": ENTRY_DIRECTORY,
+    "skills": ENTRY_DIRECTORY, "agents": ENTRY_DIRECTORY, "metadata": ENTRY_DIRECTORY,
+}
+SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SET_ROOT_ENTRY_TYPES)
 # Reserved: named so a later format admits them without renaming; content under one is refused today.
 SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants"})
 RELEASE_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({"SHA256SUMS", "SHA256SUMS.asc"})
@@ -91,16 +96,23 @@ CLAUDE_PLUGIN_MANIFEST = "plugin.json"
 PORTABLE_PLUGIN_MANIFEST = "plugin.json"
 PORTABLE_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 PLUGIN_MANIFEST_MAX_BYTES = 64 * 1024
+# The keys a set manifest carries, and no other: sync-manifests writes these alone, so an unknown key -- a component a
+# later Claude Code adds included -- is refused by the allowlist rather than by a list of known components.
+PLUGIN_MANIFEST_ALLOWED_KEYS: FrozenSet[str] = frozenset({
+    "$schema", "name", "version", "description", "author", "homepage", "repository", "license",
+})
 # A plugin manifest does not declare a component: each agent reads skills/ and agents/ from its default place,
-# and a declared component is the shape a hook, a server or a command enters a set by.
+# and a declared component is the shape a hook, a server or a command enters a set by. Named so the finding says why.
 PLUGIN_MANIFEST_COMPONENT_KEYS: FrozenSet[str] = frozenset({
     "skills", "agents", "commands", "hooks", "mcpServers", "lspServers", "outputStyles", "monitors", "workflows",
     "settings", "themes", "bin", "components", "extensions",
 })
 
-SKILL_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({
-    "SKILL.md", "scripts", "references", "assets", "tests", "UPSTREAM.conf", "LICENSE", "LICENSES",
-})
+SKILL_ROOT_ENTRY_TYPES: Dict[str, str] = {
+    "SKILL.md": ENTRY_FILE, "scripts": ENTRY_DIRECTORY, "references": ENTRY_DIRECTORY, "assets": ENTRY_DIRECTORY,
+    "tests": ENTRY_DIRECTORY, "UPSTREAM.conf": ENTRY_FILE, "LICENSE": ENTRY_FILE, "LICENSES": ENTRY_DIRECTORY,
+}
+SKILL_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SKILL_ROOT_ENTRY_TYPES)
 # OpenAI's skill sidecar carries invocation policy and tool dependencies; reserved until a tested profile admits it.
 SKILL_SIDECAR_RESERVED_PATH = "agents/openai.yaml"
 
@@ -168,7 +180,8 @@ ASSET_CONF_REQUIRED: Tuple[str, ...] = ("format",)
 ASSET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "targets")
 ASSET_CONF_LIST_KEYS: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "targets")
 METADATA_DIRECTORY = "metadata"
-METADATA_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({ASSET_CONF_FILE, UPSTREAM_CONF_FILE, "references"})
+METADATA_ENTRY_TYPES: Dict[str, str] = {ASSET_CONF_FILE: ENTRY_FILE, UPSTREAM_CONF_FILE: ENTRY_FILE, "references": ENTRY_DIRECTORY}
+METADATA_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(METADATA_ENTRY_TYPES)
 COMMIT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
 
 # The capabilities a format-1 reader implements; an unknown required one refuses the asset, or the set at set scope.
@@ -235,7 +248,7 @@ RULES: Dict[str, str] = {
     "set.conf.unknown-key": "an unknown key is reported; base reads past it",
     "set.entry.unknown": "a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone",
     "set.entry.reserved": "`jobs`, `libs` and `variants` are reserved and do not hold any content",
-    "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence",
+    "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read",
     "set.manifest.components": "a plugin manifest does not declare a component key",
     "set.manifest.claude-plugin": "`.claude-plugin` holds `plugin.json` alone",
     "name.grammar": "a name is 1 to 64 characters of `a-z`, `0-9` and single hyphens, starting and ending with a letter or digit",
@@ -246,7 +259,7 @@ RULES: Dict[str, str] = {
     "name.frontmatter": "the frontmatter `name` equals the directory or file-stem name",
     "name.collision": "a skill and a subagent do not share a name",
     "name.composed-length": "`<plugin>:<name>` is at most 64 characters, the OpenAI submission limit",
-    "kind.shape": "an entry under `skills/` is a directory holding `SKILL.md`, and one under `agents/` a `.md` file",
+    "kind.shape": "`skills/` and `agents/` are directories; an entry under `skills/` is a directory holding a `SKILL.md` file, and one under `agents/` a `.md` file",
     "kind.reserved": "a reserved kind directory does not hold any content",
     "skill.entry.unknown": "a skill holds `SKILL.md`, `scripts`, `references`, `assets`, `tests`, `UPSTREAM.conf`, `LICENSE` and `LICENSES` alone",
     "skill.plugin-manifest": "a skill does not hold a `.claude-plugin` directory",
@@ -271,7 +284,7 @@ RULES: Dict[str, str] = {
     "file.name": "a file name is printable and does not carry a newline",
     "cs.package": "a `.cs` script does not carry a `#:package` directive",
     "cs.sdk": "a `.cs` script's `#:sdk` is `Microsoft.NET.Sdk` or `Microsoft.NET.Sdk.Web`",
-    "cs.project": "a `.cs` script's `#:project` names a `.csproj` inside the skill",
+    "cs.project": "a `.cs` script's `#:project` names, relative to the script, a `.csproj` the skill ships",
     "provenance.syntax": "`UPSTREAM.conf` reads as `KEY=value` with `source`, `path`, `revision` and `license`",
     "provenance.duplicate": "an asset has one `UPSTREAM.conf`, in the skill or under `metadata`",
     "metadata.kind": "`metadata/<kind>` is an implemented kind id",
@@ -282,7 +295,7 @@ RULES: Dict[str, str] = {
     "license.allowlist": "every identifier of a licence is on the list in force",
     "license.text": "`LICENSES/<identifier>.txt` exists for every identifier a set declares",
     "license.file": "every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation",
-    "release.inventory": "`SHA256SUMS` lists every file of the built set and matches each",
+    "release.inventory": "`SHA256SUMS` lists every file of the built set once and matches each",
 }
 RULES_WARNING: FrozenSet[str] = frozenset({
     "set.conf.unknown-key", "name.composed-length", "skill.length", "frontmatter.metadata-prefix",
