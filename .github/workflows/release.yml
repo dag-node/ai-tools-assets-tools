@@ -8,8 +8,11 @@
 # The release job alone declares `environment: release`, whose deployment policy admits tags v*.*.* and no branch, so
 # the signing key and its passphrase reach a job on a maintainer-created tag and no other ref. The tag is annotated and
 # signed by a maintainer's personal key -- p4nda's primary 225DFF22D0221D3DD68CCEFFFABAF500E7D90733, fetched over HTTPS
-# for this one check -- so a leaked CI secret cannot mint a release by itself. The RPM of the tooling and its dispatch
-# to dag-node/rpm join this workflow with the signing slice.
+# for this one check -- so a leaked CI secret cannot mint a release by itself. The tag object verified is the one
+# archived, and the remote's `refs/tags/<tag>` is compared with it immediately before the release is created, since
+# `gh release create --verify-tag` checks that the name exists, not which object it names: the repository ruleset
+# that makes `v*.*.*` tags immutable is the control that holds across the run, and that comparison confirms it is in
+# force. The RPM of the tooling and its dispatch to dag-node/rpm join this workflow with the signing slice.
 name: release
 
 on:
@@ -60,6 +63,7 @@ jobs:
             || { echo "$TAG is signed by primary ${primary:-none}, not the pinned $TAG_SIGNER_PRIMARY_FINGERPRINT" >&2; exit 1; }
           echo "$TAG verified: tag object $tag_object, commit $commit, signed by $primary"
           echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG_OBJECT=$tag_object" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -99,12 +103,15 @@ jobs:
             || { echo "the archive signature is by primary ${primary:-none}, not $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" >&2; exit 1; }
           echo "$archive.asc verified: signed by $primary"
 
-      - name: Create the release from the verified tag
+      - name: Create the release from the verified tag, once the remote still names that tag object
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          remote="$(git ls-remote origin "refs/tags/$TAG" | awk -v ref="refs/tags/$TAG" '$2 == ref { print $1 }')"
+          test "$remote" = "$RELEASE_TAG_OBJECT" \
+            || { echo "refs/tags/$TAG on the remote is ${remote:-absent}; the verified tag object is $RELEASE_TAG_OBJECT, so the tag moved and the release is not created" >&2; exit 1; }
           gh release create "$TAG" --verify-tag --title "$TAG" \
             --notes "Tooling release $TAG. Verify the archive with its .asc against the dag-node package-signing key, primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT." \
             "$archive" "$archive.sha256" "$archive.asc"
