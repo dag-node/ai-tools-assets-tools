@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 import asset_format as fmt
 from findings import FindingCollector
 from frontmatter import FrontmatterDocument, FrontmatterValue, Scalar, split_frontmatter
-from key_value_config import ConfigDocument, parse_key_value_text
+from key_value_config import KeyValueDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
 from manifests import claude_plugin_document, portable_plugin_document, render_json
 from safe_read import RefusedRead, open_directory, open_root, read_file
@@ -62,7 +62,7 @@ class SetSummary:
     """What the validator learned about a set, for the caller that renders or builds it."""
 
     set_name: str
-    set_conf: Optional[ConfigDocument] = None
+    set_conf: Optional[KeyValueDocument] = None
     assets: List[AssetRecord] = field(default_factory=list)
     files: List[FileRecord] = field(default_factory=list)
     declared_licenses: Set[str] = field(default_factory=set)
@@ -77,7 +77,7 @@ class ValidationOptions:
     license_text_directories: Sequence[Path]
     display_root: Path
     # The publisher.conf the manifests are rendered from; with one, each manifest equals that rendering whole.
-    publisher_conf: Optional[ConfigDocument] = None
+    publisher_conf: Optional[KeyValueDocument] = None
 
 
 def validate_set_directory(set_directory: Path, options: ValidationOptions, collector: FindingCollector,
@@ -362,7 +362,7 @@ class _SetValidator:
                 continue  # reported as kind.reserved
             self.refuse(entry, "set.entry.unknown", "a set directory holds " + ", ".join(sorted(fmt.SET_ROOT_ENTRIES_ALLOWED)) + " alone")
 
-    def check_set_conf(self) -> Optional[ConfigDocument]:
+    def check_set_conf(self) -> Optional[KeyValueDocument]:
         relative_path = Path(fmt.SET_CONF_FILE)
         record = self.files_by_path.get(relative_path)
         if record is None:
@@ -373,7 +373,8 @@ class _SetValidator:
         set_conf = parse_key_value_text(record.text)
         for message in set_conf.syntax_errors():
             self.refuse(relative_path, "set.conf.syntax", message)
-        # An empty list key (`maintainers=`) is the list grammar's finding below, so the two rules do not both fire.
+        # An empty list key (`maintainers=`) is the list grammar's finding in the loop over SET_CONF_LIST_KEYS, so the
+        # two rules do not both fire.
         missing = [key for key in fmt.SET_CONF_REQUIRED
                    if not set_conf.has(key) or (key not in fmt.SET_CONF_LIST_KEYS and not set_conf.get(key).strip())]
         if missing:
@@ -395,14 +396,11 @@ class _SetValidator:
                     for capability in items:
                         if capability not in fmt.KNOWN_CAPABILITIES:
                             self.refuse(relative_path, "set.conf.requires-capabilities", f"`{capability}` is not a capability this format defines; the set is refused as a whole")
-                elif key == "integrations":
+                elif key == "requires_integrations":
                     for integration in items:
                         if not fmt.INTEGRATION_TOKEN_PATTERN.match(integration):
-                            self.refuse(relative_path, "set.conf.integrations", f"`{integration}` is not written as integration-<name>")
-        known = set(fmt.SET_CONF_REQUIRED) | set(fmt.SET_CONF_OPTIONAL)
-        for key in set_conf.values:
-            if key not in known:
-                self.warn(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; base reports and ignores it")
+                            self.refuse(relative_path, "set.conf.requires-integrations", f"`{integration}` is not written as integration-<name>")
+        self.check_known_keys(relative_path, set_conf, set(fmt.SET_CONF_REQUIRED) | set(fmt.SET_CONF_OPTIONAL))
         if set_conf.has("license"):
             evaluation = check_declared_license(self.collector, self.display(relative_path), set_conf.get("license"),
                                                 self.options.license_allowlist, "the set's licence")
@@ -412,6 +410,12 @@ class _SetValidator:
                                     self.carried_license_texts(), self.options.license_text_directories)
         self.summary.set_conf = set_conf
         return set_conf
+
+    def check_known_keys(self, relative_path: Path, document: KeyValueDocument, known: Set[str]) -> None:
+        """Refuse a key outside the file's table unless it is an `x_<name>` extension key, which is read past."""
+        for key in document.values:
+            if key not in known and not fmt.EXTENSION_KEY_PATTERN.match(key):
+                self.refuse(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; a publisher's own key is `x_<name>`")
 
     def carried_license_texts(self, *scopes: Path) -> Set[str]:
         """The identifiers whose `LICENSES/<identifier>.txt` the walk read at the set root or under one of `scopes`."""
@@ -429,7 +433,7 @@ class _SetValidator:
             if sub.parent == directory:
                 self.refuse(sub, "set.manifest.claude-plugin", "`.claude-plugin/` holds plugin.json alone")
 
-    def check_plugin_manifests(self, set_conf: ConfigDocument) -> None:
+    def check_plugin_manifests(self, set_conf: KeyValueDocument) -> None:
         wanted_name = fmt.PLUGIN_NAME_PREFIX + self.set_name
         for relative_path in (Path(fmt.PORTABLE_PLUGIN_MANIFEST), Path(fmt.CLAUDE_PLUGIN_DIRECTORY) / fmt.CLAUDE_PLUGIN_MANIFEST):
             record = self.files_by_path.get(relative_path)
@@ -792,12 +796,9 @@ class _SetValidator:
                     self.refuse(relative_path, "metadata.asset-conf", f"`{item}` is not a capability this format defines; the asset is refused")
                 elif key == "requires_integrations" and not fmt.INTEGRATION_TOKEN_PATTERN.match(item):
                     self.refuse(relative_path, "metadata.asset-conf", f"`{item}` is not written as integration-<name>")
-                elif key == "targets" and not fmt.is_valid_name(item):
+                elif key == "supported_targets" and not fmt.is_valid_name(item):
                     self.refuse(relative_path, "metadata.asset-conf", f"target `{item}` is not a name")
-        known = set(fmt.ASSET_CONF_REQUIRED) | set(fmt.ASSET_CONF_OPTIONAL)
-        for key in document.values:
-            if key not in known:
-                self.warn(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; base reports and ignores it")
+        self.check_known_keys(relative_path, document, set(fmt.ASSET_CONF_REQUIRED) | set(fmt.ASSET_CONF_OPTIONAL))
 
     def check_upstream_conf(self, relative_path: Path) -> None:
         record = self.files_by_path[relative_path]
@@ -812,10 +813,7 @@ class _SetValidator:
         revision = document.get("revision").strip()
         if revision and not fmt.COMMIT_ID_PATTERN.match(revision):
             self.refuse(relative_path, "provenance.syntax", f"`revision={revision}` is not a full commit id")
-        known = set(fmt.UPSTREAM_CONF_REQUIRED) | set(fmt.UPSTREAM_CONF_OPTIONAL)
-        for key in document.values:
-            if key not in known:
-                self.warn(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; base reports and ignores it")
+        self.check_known_keys(relative_path, document, set(fmt.UPSTREAM_CONF_REQUIRED) | set(fmt.UPSTREAM_CONF_OPTIONAL))
         if document.get("license").strip():
             evaluation = check_declared_license(self.collector, self.display(relative_path), document.get("license"),
                                                 self.options.license_allowlist, "the upstream licence")

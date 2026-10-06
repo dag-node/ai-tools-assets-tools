@@ -25,7 +25,7 @@ EMPTY_LIST_REASON = "it is empty; write `key=[]` for an explicit empty list, or 
 
 
 @dataclass
-class ConfigDocument:
+class KeyValueDocument:
     """The keys of one file, with what the reader could not accept beside them."""
 
     values: Dict[str, str] = field(default_factory=dict)
@@ -111,9 +111,9 @@ def strip_inline_comment(value: str) -> str:
     return value
 
 
-def parse_key_value_text(text: str) -> ConfigDocument:
-    """Read every line of a config file's text into a ConfigDocument."""
-    document = ConfigDocument()
+def parse_key_value_text(text: str) -> KeyValueDocument:
+    """Read every line of a config file's text into a KeyValueDocument."""
+    document = KeyValueDocument()
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.lstrip()
         if not line or line.startswith("#"):

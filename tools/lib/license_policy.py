@@ -13,8 +13,8 @@ headers of its `<file>.license` sidecar where one exists; the repository's `REUS
 `path` globs are matched with REUSE's grammar (`*` and `?` stop at `/`, `**` crosses it, `\\` escapes a metacharacter),
 the last matching annotation applies, and its `precedence` decides the combination -- `closest` (the default) takes
 the file's own information where it has any, `aggregate` takes both, `override` takes the annotation alone. A
-`REUSE.toml` below the root governs the files under it with rules this check does not read, so each of those files is
-refused rather than judged by the root's annotations.
+`REUSE.toml` inside a subdirectory governs the files under it with rules this check does not read, so each of those
+files is refused rather than judged by the root's annotations.
 """
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from asset_format import DEFAULT_LICENSE_ALLOWLIST, FILE_MAX_BYTES, LICENSE_TEXTS_DIRECTORY, SPDX_HEADER, SPDX_HEADER_LINES_READ
 from findings import FindingCollector
-from key_value_config import ConfigDocument
+from key_value_config import KeyValueDocument
 from safe_read import RefusedRead, read_file_under, read_text_under
-from spdx_expression import SpdxEvaluation, evaluate_expression
+from spdx_expression import SpdxValidationResult, evaluate_expression
 
 REUSE_TABLE_HEADER = re.compile(r"^\s*\[\[annotations\]\]\s*$")
 REUSE_KEY_VALUE = re.compile(r"^\s*(?P<key>[A-Za-z0-9_-]+)\s*=\s*(?P<value>.+?)\s*$")
@@ -47,7 +47,7 @@ class ReuseAnnotation:
     precedence: str = REUSE_PRECEDENCE_DEFAULT
 
 
-def allowlist_in_force(publisher: Optional[ConfigDocument]) -> Tuple[Tuple[str, ...], Optional[str]]:
+def allowlist_in_force(publisher: Optional[KeyValueDocument]) -> Tuple[Tuple[str, ...], Optional[str]]:
     """The identifiers in force, and the reason the publisher's list is invalid where it is (the list is then empty)."""
     if publisher is None or not publisher.has("licenses"):
         return DEFAULT_LICENSE_ALLOWLIST, None
@@ -58,7 +58,7 @@ def allowlist_in_force(publisher: Optional[ConfigDocument]) -> Tuple[Tuple[str, 
 
 
 def check_declared_license(collector: FindingCollector, path: str, expression: str, allowlist: Sequence[str],
-                           what: str) -> SpdxEvaluation:
+                           what: str) -> SpdxValidationResult:
     """Hold one declared expression to the list, reporting a malformed expression apart from a policy refusal."""
     evaluation = evaluate_expression(expression, allowlist)
     if evaluation.syntax_error is not None:
@@ -146,7 +146,7 @@ def _toml_strings(raw: str) -> List[str]:
 
 def reuse_glob_regex(glob: str) -> "re.Pattern[str]":
     """REUSE's glob as a regular expression over a `/`-joined relative path: `*` and `?` stop at `/`, `**` crosses
-    it (`**/` matches zero directories too, `dir/**` everything below `dir`), and `\\` escapes the character after it."""
+    it (`**/` matches zero directories too, `dir/**` everything inside `dir`), and `\\` escapes the character after it."""
     parts: List[str] = []
     index = 0
     while index < len(glob):

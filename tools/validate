@@ -19,7 +19,7 @@
 # is 1 when a refusing finding was made, 2 on a usage error. The rule ids and what each requires are `--list-rules`, and
 # `format/FORMAT.md` states them for a publisher.
 #
-# The root is the operator's argument and is opened by path; `sets/`, each set and every file below are opened from
+# The root is the operator's argument and is opened by path; `sets/`, each set and every file inside them are opened from
 # that descriptor without following a symbolic link (`tools/lib/safe_read.py`), so a linked `sets/`, a linked set
 # directory or `--set-directory` naming a link is refused before a byte of the target is read, and the set walk runs
 # before `check-publisher` so no publisher check reads a file the walk has not judged. A set is read as data and no

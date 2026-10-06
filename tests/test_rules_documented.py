@@ -59,6 +59,19 @@ class RulesDocumented(unittest.TestCase):
         self.assertEqual(uncovered, set(), f"rules without a fixture or a named test: {sorted(uncovered)}")
         self.assertEqual(fixture_rules() & (UNCOMMITTABLE_RULES | REPOSITORY_RULES), set())
 
+    def test_a_rule_proven_by_a_test_is_named_in_that_test(self):
+        """The exception sets are not taken on trust: the test file each names asserts on the rule id."""
+        fixtures_tests = (TESTS / "test_fixtures.py").read_text(encoding="utf-8")
+        commands_tests = (TESTS / "test_commands.py").read_text(encoding="utf-8")
+        for rule in sorted(UNCOMMITTABLE_RULES):
+            self.assertIn(rule, fixtures_tests, f"{rule} has no assertion in tests/test_fixtures.py")
+        for rule in sorted(REPOSITORY_RULES):
+            self.assertIn(rule, commands_tests, f"{rule} has no assertion in tests/test_commands.py")
+
+    def test_a_variant_fixture_is_named_for_its_rule(self):
+        for name, rule, _ in VARIANT_FIXTURES + PUBLISHER_CONF_FIXTURES + RELEASE_FIXTURES:
+            self.assertTrue(name == rule or name.startswith(rule + "."), f"{name} is not <rule> or <rule>.<variant> for {rule}")
+
 
 def fixture_rules():
     """Every rule a committed fixture names."""

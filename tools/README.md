@@ -19,7 +19,7 @@ and exits 1 when a finding refuses; the rule ids are
 | `new-asset` | creates a skill (`skills/<name>/SKILL.md`) or a subagent (`agents/<name>.md`) in a set, with the set's prefix |
 | `build-set` | validates a set, stages it under `build/<set>/` with its licence texts and notices, writes `SHA256SUMS`, validates the stage under the release profile and zips it to `dist/ai-tools-assets-<set>-<version>.zip` with its `.sha256` |
 | `link-set` | links (or with `--copy` copies) a set's skills into the skills directory an agent reads, records what it placed, and removes it again with `--remove` |
-| `check-licenses` | holds every tracked file's SPDX header or `REUSE.toml` annotation to the list in force; `--exception GLOB=ID` admits one identifier for the files a glob matches |
+| `check-licenses` | holds every licence REUSE 3.2 applies to a tracked file (its SPDX headers or `.license` sidecar, combined with the matching `REUSE.toml` annotation under its precedence) to the list in force; `--exception GLOB=ID` admits one identifier for the files a REUSE glob matches (`dir/**`) |
 | `check-signoff` | requires an author-matching `Signed-off-by` trailer on every commit of `--range BASE..HEAD`, a pull request's own commits |
 
 The reusable workflow `.github/workflows/validate.yml` runs these commands

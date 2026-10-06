@@ -54,6 +54,7 @@ summary="Fixture skills and subagents"
 license=MIT
 maintainers=[maintainers@{publisher}.example]
 source=https://github.com/{publisher}/ai-tools-assets
+x_fixture_tier=community
 """
 
 SKILL_MD = """---
@@ -115,7 +116,8 @@ license=CC0-1.0
 
 ASSET_CONF = """format=1
 requires_capabilities=[subagents.claude.v1]
-targets=[claude-code]
+supported_targets=[claude-code]
+x_fixture_reviewed=2026-10
 """
 
 REPORT_CS = """#!/usr/bin/env dotnet
@@ -209,8 +211,8 @@ FAIL_FIXTURES: List[Tuple[str, str, Mutation]] = [
     ("set.conf.name", "fail", lambda tree: replace_in(tree, "set.conf", "name=acme\n", "name=acme-other\n")),
     ("set.conf.version", "fail", lambda tree: replace_in(tree, "set.conf", "version=0.1.0", "version=1.0")),
     ("set.conf.requires-capabilities", "fail", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", "license=MIT\nrequires_capabilities=[skills.future.v9]\n")),
-    ("set.conf.integrations", "fail", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", "license=MIT\nintegrations=[dotnet]\n")),
-    ("set.conf.unknown-key", "warn", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", "license=MIT\nhomepage=https://acme.example\n")),
+    ("set.conf.requires-integrations", "fail", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", "license=MIT\nrequires_integrations=[dotnet]\n")),
+    ("set.conf.unknown-key", "fail", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", "license=MIT\nhomepage=https://acme.example\n")),
     ("set.entry.unknown", "fail", lambda tree: tree.__setitem__("notes.txt", "stray\n")),
     ("set.entry.reserved", "fail", lambda tree: tree.__setitem__("libs/python/pdftext.py", "print()\n")),
     ("set.manifest.plugin", "fail", lambda tree: tree.__setitem__("plugin.json", tree["plugin.json"].replace('"0.1.0"', '"0.2.0"'))),
@@ -323,7 +325,7 @@ PASS_VARIANT_FIXTURES: List[Tuple[str, Mutation]] = [
         replace_in(tree, f"{SKILL}/scripts/report.cs", "#:property Nullable=enable", "#:project ../assets/Shared.csproj"),
         tree.__setitem__(f"{SKILL}/assets/Shared.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n'))),
     ("acme.explicit-empty-list", lambda tree: (
-        replace_in(tree, "metadata/subagents/upstream-triage/asset.conf", "targets=[claude-code]\n", "targets=[claude-code]\nrequires_integrations=[]\n"),
+        replace_in(tree, "metadata/subagents/upstream-triage/asset.conf", "supported_targets=[claude-code]\n", "supported_targets=[claude-code]\nrequires_integrations=[]\n"),
         replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT" # the set\'s licence\nrequires_capabilities=[]\n'))),
     ("acme.subagent-tools-scalar", lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: Read, Grep\nmaxTurns: 12")),
     ("acme.quoted-typed-scalars", lambda tree: (
