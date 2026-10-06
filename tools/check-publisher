@@ -11,7 +11,9 @@
 #
 # The repository checked is the current directory, or `--root`; the reserved words are read beside this file. Every file
 # under the root is read through `tools/lib/safe_read.py`, from the root's descriptor without following a symbolic
-# link, so a linked `sets/`, set directory or manifest is reported and its target is not read.
+# link, so a linked `sets/`, set directory or manifest is reported and its target is not read; publisher.conf and each
+# set.conf are read with the one `KEY=value` grammar (`tools/lib/key_value_config.py`), so a quoted value, a comment
+# after it or a bare list compares as the validator and base read it.
 # publisher.conf holds `publisher`, `contact`, `maintainers` and `source`. From them:
 #   - the marketplace in .claude-plugin/marketplace.json is named `<publisher>-ai-tools-assets`, its `owner` is
 #     the publisher and the contact, and it lists each set once as the plugin `ai-tools-assets-<set>` from
@@ -36,6 +38,7 @@ import sys
 TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
+from key_value_config import parse_key_value_text  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
 
 UPSTREAM_PUBLISHER = "dag-node"
@@ -70,27 +73,13 @@ def read_text(relative_path):
         return None
 
 
-def read_conf(text):
-    """Return the KEY=value pairs of a config file's text: `#` comments and blank lines skipped, one quote layer removed."""
-    values = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key.strip()] = value
-    return values
-
-
-def as_list(value):
-    """Return the items of a `[a, b]` list value, or the value alone, stripped, as a tuple."""
-    value = value.strip()
-    if value.startswith("[") and value.endswith("]"):
-        value = value[1:-1]
-    return tuple(item.strip().strip("\"'") for item in value.split(",") if item.strip())
+def maintainers_of(path, conf):
+    """The `maintainers` list of a config document, or None after a finding that it is not a list."""
+    items, reason = conf.list_value("maintainers")
+    if reason is not None:
+        finding(path, f"`maintainers` is not a list ({reason})")
+        return None
+    return items
 
 
 def reserved_words():
@@ -179,13 +168,15 @@ def check(reserved, repository):
         if not findings:
             finding("publisher.conf", f"not found under {ROOT}; run from the publisher repository or pass --root")
         return report()
-    conf = read_conf(publisher_text)
-    missing = [key for key in IDENTITY_KEYS if not conf.get(key)]
+    conf = parse_key_value_text(publisher_text)
+    missing = [key for key in IDENTITY_KEYS if not conf.get(key).strip()]
     if missing:
         finding("publisher.conf", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
         return report()
-    publisher, contact, source = conf["publisher"], conf["contact"], conf["source"]
-    maintainers = as_list(conf["maintainers"])
+    publisher, contact, source = conf.get("publisher"), conf.get("contact"), conf.get("source")
+    maintainers = maintainers_of("publisher.conf", conf)
+    if maintainers is None:
+        return report()
     check_name("publisher.conf", "publisher", publisher, reserved)
 
     if repository is not None:
@@ -199,7 +190,7 @@ def check(reserved, repository):
             finding("publisher.conf", f"source is `{source}`, but this repository is `{wanted_source}`")
         if publisher != UPSTREAM_PUBLISHER:
             for key in ("contact", "maintainers"):
-                if UPSTREAM_DOMAIN in conf[key].lower():
+                if UPSTREAM_DOMAIN in conf.get(key).lower():
                     finding("publisher.conf", f"`{key}` still names {UPSTREAM_PUBLISHER}'s address at "
                                               f"{UPSTREAM_DOMAIN}; set the publisher's own")
 
@@ -207,9 +198,12 @@ def check(reserved, repository):
     sets = set_names()
     for name in sets:
         conf_path = pathlib.Path("sets", name, "set.conf")
-        set_conf = read_conf(read_text(conf_path))
-        if set_conf.get("name", "") != name:
-            finding(conf_path, f"`name={set_conf.get('name', '')}` differs from the set's directory `{name}`")
+        set_conf_text = read_text(conf_path)
+        if set_conf_text is None:
+            continue
+        set_conf = parse_key_value_text(set_conf_text)
+        if set_conf.get("name") != name:
+            finding(conf_path, f"`name={set_conf.get('name')}` differs from the set's directory `{name}`")
         check_name(conf_path, "set name", name, reserved)
         if name == "core":
             if publisher != UPSTREAM_PUBLISHER:
@@ -218,8 +212,10 @@ def check(reserved, repository):
         elif name != publisher and not name.startswith(publisher + "-"):
             finding(conf_path, f"set `{name}` does not start with its publisher: name it `{publisher}` or "
                                f"`{publisher}-<topic>`")
-        expect(conf_path, "maintainers", as_list(set_conf.get("maintainers", "")), maintainers)
-        expect(conf_path, "source", set_conf.get("source", ""), source)
+        set_maintainers = maintainers_of(conf_path, set_conf)
+        if set_maintainers is not None:
+            expect(conf_path, "maintainers", set_maintainers, maintainers)
+        expect(conf_path, "source", set_conf.get("source"), source)
 
         plugin = PLUGIN_PREFIX + name
         for manifest in (pathlib.Path("sets", name, "plugin.json"),
