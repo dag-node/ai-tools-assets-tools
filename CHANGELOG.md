@@ -15,21 +15,28 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   states its `KEY=value` grammar (an empty list, an absent key and `key=[]`
   told apart; a publisher's own keys as `x_<name>`, every other unknown key
   refused), the type of every frontmatter field (a scalar YAML would read as
-  a number, a boolean or null is quoted), and the bounds a set is read under
+  a number, a boolean, null, a date or no value is quoted; one lexical rule
+  holds every plain scalar wherever it stands), the content rules over the
+  whole entry file, frontmatter included, and the bounds a set is read under
   (files, directories, depth, bytes, entries per directory, SPDX expression
   size, manifest size), at which validation stops with one finding.
 - Every command opens a repository's files by descriptor without following
   a symbolic link and reads each once, so a linked set, manifest or `sets/`
-  directory is refused before its target is read; `build-set` stages the
-  bytes the validator read and replaces only a build of the same set it made;
-  `link-set` removes an entry only while it still matches its record.
+  directory is refused before its target is read; a generated file is
+  replaced as a directory entry, never written into, so a hard link planted
+  at its name is refused; `build-set` stages the bytes the validator read
+  and replaces only a build of the same set it made; `link-set` validates
+  the set before placing a skill and removes an entry only while it still
+  matches its record.
 - The commands a publisher repository runs: `new-set`, `new-asset`,
   `sync-manifests`, `build-set` and `link-set`, beside `check-publisher`.
 - The SPDX allowlist: every licence a set declares is on the list in force,
   the GPLv3-compatible permissive default or `publisher.conf` `licenses=`,
   and `check-licenses` holds every file of a repository to it, judging each
-  declaration REUSE 3.2 applies to the file under its precedence and glob
-  grammar.
+  declaration REUSE 3.2 applies to the file -- every header in the file,
+  outside a REUSE ignore block -- under its precedence and glob grammar,
+  and refusing a `REUSE.toml` outside the TOML subset it reads rather than
+  judging any file on it.
 - `check-signoff`, the Developer Certificate of Origin check over a pull
   request's own commits.
 - The conformance fixtures under `fixtures/`: a passing set per publisher shape
@@ -41,7 +48,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   a checkout of the repository and commit that define the workflow file (a fork
   names itself in `tools-repository`; GitHub Enterprise Server runs the tools
   from a local pin), and this repository's release workflow, which verifies one
-  captured signed tag object and publishes the signed archive a consumer pins.
+  captured signed tag object, confirms the remote still names it before
+  publishing, and publishes the signed archive a consumer pins.
 - The formatters from ai-tools-base under `formatters/`, `AGPL-3.0-only`,
   taking the checker as `--checker <path>`.
 

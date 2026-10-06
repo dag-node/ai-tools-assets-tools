@@ -11,15 +11,15 @@ A file outside a set is judged as REUSE 3.2 resolves it, and every expression th
 REUSE combines them: the file's own information is each `SPDX-License-Identifier` header anywhere in the file, read
 whole under the file cap and outside a `REUSE-IgnoreStart`/`REUSE-IgnoreEnd` block, or the headers of its
 `<file>.license` sidecar where one exists; a file over the cap is refused rather than judged on a prefix; the
-repository's `REUSE.toml` supplies annotations whose
-`path` globs are matched with REUSE's grammar (`*` and `?` stop at `/`, a `**` segment crosses it, `\\` escapes a
-metacharacter) by a segment-wise wildcard match whose work is bounded by the glob's and the path's lengths,
-the last matching annotation applies -- whether or not it declares a licence -- and its `precedence` decides the
-combination: `closest` (the default) takes the file's own information where it has any, `aggregate` takes both,
-`override` takes the annotation alone. The `REUSE.toml` reader parses a bounded TOML subset and refuses the file
-whole on a line outside it, so no file is judged on an annotation it may have misread; `reuse lint` in CI is the check
-that the file is TOML. A `REUSE.toml` inside a subdirectory governs the files under it with rules this check does not
-read, so each of those files is refused rather than judged by the root's annotations.
+repository's `REUSE.toml` supplies annotations whose `path` globs are matched with REUSE's grammar (`*` and `?` stop
+at `/`, a `**` segment crosses it, `\\` escapes a metacharacter) by a segment-wise wildcard match whose work is bounded
+by the glob's and the path's lengths, the last matching annotation applies -- whether or not it declares a licence --
+and its `precedence` decides the combination: `closest` (the default) takes the file's own information where it has
+any, `aggregate` takes the file's own and the annotation's, `override` takes the annotation alone. The `REUSE.toml`
+reader parses a bounded TOML subset and refuses the file whole on a line outside it, so no file is judged on an
+annotation it may have misread; `reuse lint` in CI is the check that the file is TOML. A `REUSE.toml` inside a
+subdirectory governs the files under it with rules this check does not read, so each of those files is refused rather
+than judged by the root's annotations.
 """
 from __future__ import annotations
 
@@ -42,7 +42,8 @@ REUSE_KEY_VALUE = re.compile(r"^\s*(?P<key>[A-Za-z0-9_-]+)\s*=\s*(?P<value>.*?)\
 REUSE_PRECEDENCES: Tuple[str, ...] = ("closest", "aggregate", "override")
 REUSE_PRECEDENCE_DEFAULT = "closest"
 LICENSE_SIDECAR_SUFFIX = ".license"
-# REUSE's ignore-block markers, spelled in two halves so neither this reader nor `reuse lint` opens a block on this line.
+# REUSE's ignore-block markers, spelled in two halves so that neither this reader nor `reuse lint` opens a block on
+# this line.
 REUSE_IGNORE_START = "REUSE-Ignore" + "Start"
 REUSE_IGNORE_END = "REUSE-Ignore" + "End"
 
@@ -145,9 +146,9 @@ def read_reuse_annotations(root_fd: int) -> Tuple[List[ReuseAnnotation], Optiona
     escapes alone), a `'literal'` string, or a one-line array of such strings. Text after a value (a `#` comment
     included), a multi-line array or string, an inline table, a bare value, a dotted or quoted key, a table header
     other than `[[annotations]]`, a key given twice in one table, a table without `path`, and a `precedence` outside
-    REUSE's three refuse the file whole, so the caller judges no file on a reading it cannot vouch for. The lines
-    before the first table (`version`, the package keys) are not read. An annotation that declares no licence is
-    kept with no expressions, since REUSE resolves the last matching table whether or not it names one.
+    REUSE's three refuse the file whole, so the caller does not judge any file on a reading it cannot vouch for. The
+    lines before the first table (`version`, the package keys) are not read. An annotation that does not declare a
+    licence is kept with no expressions, since REUSE resolves the last matching table whether or not it names one.
     """
     try:
         text = read_text_under(root_fd, PurePath("REUSE.toml"), FILE_MAX_BYTES)
