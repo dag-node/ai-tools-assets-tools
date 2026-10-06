@@ -26,6 +26,7 @@ import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
+from safe_write import create_file  # noqa: E402
 from set_validation import read_reserved_words  # noqa: E402
 
 SET_CONF_TEMPLATE = """# ai-tools-assets set: {name}. Read by ai-tools-base as KEY=value
@@ -118,8 +119,8 @@ def main() -> int:
     if publisher is None:
         return collector.report()
     check_set_name(args.name, publisher.get("publisher"), collector)
-    set_directory = root / "sets" / args.name
-    if set_directory.exists():
+    set_directory = pathlib.PurePath("sets", args.name)
+    if os.path.lexists(root / set_directory):
         collector.refuse(f"sets/{args.name}", "set.entry.unknown", "exists already")
     if '"' in args.summary or "\n" in args.summary:
         collector.refuse(f"sets/{args.name}/set.conf", "set.conf.syntax",
@@ -130,15 +131,18 @@ def main() -> int:
     if reason is not None:
         collector.refuse("publisher.conf", "repo.publisher-conf", f"`maintainers` does not read as a list ({reason})")
         return collector.report()
-    set_directory.mkdir(parents=True)
     values = {"name": args.name, "format": fmt.FORMAT_VERSION, "summary": args.summary, "license": args.license,
               "maintainers": ", ".join(maintainers), "source": publisher.get("source"),
               "prefix": fmt.authored_asset_prefix(args.name)}
-    (set_directory / fmt.SET_CONF_FILE).write_text(SET_CONF_TEMPLATE.format(**values), encoding="utf-8")
-    (set_directory / "CHANGELOG.md").write_text(CHANGELOG_TEMPLATE.format(**values), encoding="utf-8")
-    (set_directory / "README.md").write_text(README_TEMPLATE.format(**values), encoding="utf-8")
-    for relative in (fmt.SET_CONF_FILE, "CHANGELOG.md", "README.md"):
-        print(f"new-set: wrote sets/{args.name}/{relative}")
+    # `sets/` is checked not to be a link and each file is created exclusively, so the set is not written through a
+    # link at `sets/` or at its own name.
+    try:
+        for relative, template in ((fmt.SET_CONF_FILE, SET_CONF_TEMPLATE), ("CHANGELOG.md", CHANGELOG_TEMPLATE), ("README.md", README_TEMPLATE)):
+            create_file(root, set_directory / relative, template.format(**values).encode("utf-8"))
+            print(f"new-set: wrote sets/{args.name}/{relative}")
+    except RefusedRead as refusal:
+        collector.refuse(f"sets/{args.name}", refusal.rule_id, refusal.message)
+        return collector.report()
     return subprocess.run([sys.executable, str(TOOLS / "sync-manifests"), "--root", str(root)]).returncode
 
 

@@ -115,6 +115,43 @@ class PublisherRepository(unittest.TestCase):
         status, _, stderr = run("validate", "--root", str(self.root))
         self.assertEqual((status, stderr), (0, ""))
 
+    def test_scaffolding_does_not_write_through_a_link(self):
+        elsewhere = self.root.parent / "elsewhere"
+        elsewhere.mkdir()
+        # A dangling link at the asset's own name.
+        (self.root / "sets" / "acme" / "agents" / "acme-new.md").symlink_to(elsewhere / "written.md")
+        status, _, stderr = run("new-asset", "acme", "subagent", "acme-new", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("kind.shape", stderr)
+        self.assertFalse((elsewhere / "written.md").exists())
+        # A linked kind directory.
+        shutil.move(str(self.root / "sets" / "acme" / "skills"), str(elsewhere / "skills"))
+        (self.root / "sets" / "acme" / "skills").symlink_to(elsewhere / "skills", target_is_directory=True)
+        status, _, stderr = run("new-asset", "acme", "skill", "acme-new", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("file.symlink", stderr)
+        self.assertFalse((elsewhere / "skills" / "acme-new").exists())
+        # A linked sets/ directory, for new-set and for sync-manifests.
+        shutil.move(str(self.root / "sets"), str(elsewhere / "sets"))
+        (self.root / "sets").symlink_to(elsewhere / "sets", target_is_directory=True)
+        status, _, stderr = run("new-set", "acme-dotnet", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("file.symlink", stderr)
+        self.assertFalse((elsewhere / "sets" / "acme-dotnet").exists())
+        status, _, stderr = run("sync-manifests", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("sets: repo.layout: is a symbolic link", stderr)
+        # A generated manifest replaced by a link is reported and left, not written through.
+        (self.root / "sets").unlink()
+        shutil.move(str(elsewhere / "sets"), str(self.root / "sets"))
+        marketplace = self.root / ".claude-plugin" / "marketplace.json"
+        marketplace.unlink()
+        marketplace.symlink_to(elsewhere / "marketplace.json")
+        status, _, stderr = run("sync-manifests", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("marketplace.json: file.symlink", stderr)
+        self.assertFalse((elsewhere / "marketplace.json").exists())
+
     def test_scaffolding_refuses_a_bad_name(self):
         status, _, stderr = run("new-set", "openai-things", "--root", str(self.root))
         self.assertEqual(status, 1)

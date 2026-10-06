@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
 import pathlib
 import shutil
@@ -43,13 +44,12 @@ from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import allowlist_in_force  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_file_under, read_text_under  # noqa: E402
+from safe_write import create_file, replace_file  # noqa: E402
 from set_validation import PROFILE_RELEASE, PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
 
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 INVENTORY_EXCLUDED = ("SHA256SUMS", "SHA256SUMS.asc")
 BUILD_MARKER_VERSION = "ai-tools-assets-build 1"
-CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
-REPLACE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def marker_text(set_name: str) -> str:
@@ -75,23 +75,6 @@ def check_output_root(root: pathlib.Path, given: pathlib.Path, what: str, collec
         except OSError:
             continue
     return output_root
-
-
-def write_new_file(path: pathlib.Path, data: bytes) -> None:
-    """Create `path` exclusively (no existing file, no link followed) and write `data`."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, CREATE_FLAGS, 0o644)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
-
-
-def replace_file(path: pathlib.Path, data: bytes) -> None:
-    """Write `data` over a regular file or a new one at `path`, never through a link."""
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise RefusedRead("repo.layout", f"`{path}` is not a regular file")
-    fd = os.open(path, REPLACE_FLAGS, 0o644)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
 
 
 def stage_license_texts(root_fd: int, set_name: str, staged: Dict[str, bytes], identifiers, collector: FindingCollector) -> None:
@@ -127,16 +110,16 @@ def inventory_text(staged: Dict[str, bytes]) -> str:
                    for relative, data in sorted(staged.items()) if relative.split("/")[-1] not in INVENTORY_EXCLUDED)
 
 
-def zip_bytes(staged: Dict[str, bytes], archive_path: pathlib.Path) -> None:
-    if archive_path.is_symlink() or (archive_path.exists() and not archive_path.is_file()):
-        raise RefusedRead("repo.layout", f"`{archive_path}` is not a regular file")
-    fd = os.open(archive_path, REPLACE_FLAGS, 0o644)
-    with os.fdopen(fd, "wb") as handle, zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+def zip_bytes(staged: Dict[str, bytes]) -> bytes:
+    """The deterministic archive of the staged files: sorted entries, fixed timestamps, the plugin root at the top."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for relative, data in sorted(staged.items()):
             info = zipfile.ZipInfo(relative, date_time=ZIP_TIMESTAMP)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
             archive.writestr(info, data)
+    return buffer.getvalue()
 
 
 def destination_is_a_build(build_root: pathlib.Path, set_name: str) -> bool:
@@ -215,7 +198,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
     try:
         staging = staging_root / set_name
         for relative, data in staged.items():
-            write_new_file(staging / relative, data)
+            create_file(staging_root, pathlib.PurePath(set_name, relative), data)
         release_options = ValidationOptions(publisher=options.publisher, profile=PROFILE_RELEASE, reserved_words=options.reserved_words,
                                             license_allowlist=allowlist, license_text_directories=[], display_root=staging_root)
         validate_set_directory(staging, release_options, collector)
@@ -231,9 +214,9 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
             shutil.rmtree(destination)
         os.rename(staging, destination)
         try:
-            replace_file(marker_path(build_root, set_name), marker_text(set_name).encode("utf-8"))
+            replace_file(build_root, pathlib.PurePath(marker_path(build_root, set_name).name), marker_text(set_name).encode("utf-8"))
         except RefusedRead as refusal:
-            collector.refuse(str(marker_path(build_root, set_name)), refusal.rule_id, refusal.message)
+            collector.refuse(str(marker_path(build_root, set_name)), "repo.layout", refusal.message)
             return collector.report()
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
@@ -241,11 +224,12 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
     dist_root.mkdir(parents=True, exist_ok=True)
     archive_path = dist_root / f"{fmt.PLUGIN_NAME_PREFIX}{set_name}-{summary.set_conf.get('version')}.zip"
     checksum_path = archive_path.with_suffix(".zip.sha256")
+    archive = zip_bytes(staged)
     try:
-        zip_bytes(staged, archive_path)
-        replace_file(checksum_path, f"{hashlib.sha256(archive_path.read_bytes()).hexdigest()}  {archive_path.name}\n".encode("utf-8"))
+        replace_file(dist_root, pathlib.PurePath(archive_path.name), archive)
+        replace_file(dist_root, pathlib.PurePath(checksum_path.name), f"{hashlib.sha256(archive).hexdigest()}  {archive_path.name}\n".encode("utf-8"))
     except RefusedRead as refusal:
-        collector.refuse(str(archive_path), refusal.rule_id, refusal.message)
+        collector.refuse(str(archive_path), "repo.layout", refusal.message)
         return collector.report()
     for written in (destination, destination / "SHA256SUMS", archive_path, checksum_path):
         print(f"build-set: wrote {written.relative_to(root) if root in written.parents else written}")

@@ -42,8 +42,9 @@ jobs:
 `reserved-words.txt` holds the words a set name does not start with; every
 command reads it beside itself. `lib/` holds the modules the commands share:
 the format registry, the descriptor-based file reader every command opens
-a repository's files through, the `KEY=value` reader, the frontmatter reader,
-the SPDX evaluator, the manifest renderer and the set validator.
+a repository's files through and the writer that creates them without following
+a link, the `KEY=value` reader, the frontmatter reader, the SPDX evaluator,
+the manifest renderer and the set validator.
 
 ```bash
 python3 tools/new-set acme-dotnet --summary "ASP.NET Core skills"
