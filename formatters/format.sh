@@ -1,41 +1,44 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# tools/formatters/format.sh -- the front door of the width policy.
+# formatters/format.sh -- the front door of the width policy.
 #
 # ```bash
-# bash tools/formatters/format.sh [--files | --all] [--width N] [--] [<file>...]
+# bash formatters/format.sh --checker <prose-check.py> [--files | --all] [--width N] \
+#     [--scope <glob>]... [--config-header <glob>]... [--skip <glob>]... [--] [<file>...]
 # ```
 #
 # It asks the checker for each file's column and kind (`prose-check.py --print-width`) and dispatches to the filler
-# for that kind -- `tools/formatters/fill-comments.sh` for a source comment or a config header,
-# `tools/formatters/fill-markdown.py` for a page -- so the formatter does not hold a copy of the rule the checker
-# resolves; a kind it has no filler for is reported and left. It closes by re-running the checker's width modes
-# over what it touched, so what it could not fix is reported, and exits 1 while any of that remains, while a filler
-# refused a file, or where the checker itself could not run -- a report that read an aborted run as a clean one would
-# exit 0 over lines it never measured.
+# for that kind -- `formatters/fill-comments.sh` for a source comment or a config header, `formatters/fill-markdown.py`
+# for a page -- so the formatter does not hold a copy of the rule the checker resolves; a kind it has no filler for is
+# reported and left. It closes by re-running the checker's width modes over what it touched, so what it could not fix is
+# reported, and exits 1 while any of that remains, while a filler refused a file, or where the checker itself could not
+# run -- a report that read an aborted run as a clean one would exit 0 over lines it never measured.
+#
+# The checker is the `prose-check.py` that `--checker` names, and the option has no default: the checker ships inside
+# the `ai-tools-technical-docs` skill, so a repository names the copy it pins rather than a path this file guesses.
+# The fillers are the ones beside this file.
 #
 # Scope: with no file, the paragraphs a diff touched -- `git diff -U0 HEAD` over the working tree and the index, each
 # filler filling only a block meeting an added line -- so the diff it produces is bounded by what was edited. `--files`
 # widens that to the whole of each changed file, `--all` to every tracked file after a warning, and a named file is
-# filled whole. The tree formatted is the repository of the current directory; the checker and the fillers are this
-# repository's, so a sibling checkout is formatted with the same tools.
+# filled whole. The tree formatted is the repository of the current directory.
 #
-# What it formats is `FORMAT_SCOPE`, a list of path patterns this repository owns: a page, a source file's comment
-# prose, a policy source's, a config header. A tracked file outside it -- a systemd unit, the spec, a Containerfile,
-# a Makefile, a filter rules file, the sudoers drop-in, a gitignore, a licence text, a signing key, a lockfile,
-# a capture or a log -- is data another program parses, and a fill would rewrap what that program reads, so every scope
-# leaves it as written: `--all` and the diff scope count what they left, and a file named on the command line is
-# reported and skipped. The checker's own kinds sit inside the scope: a man page, a binary and a generated file (one
-# carrying the ignore-file marker) pass the pattern and are left by the dispatch. A pattern matches the path
-# from the repository root, and `*` crosses a `/`.
+# What it formats is the scope: each `--scope` names a path pattern the repository owns, matched against the path
+# from the repository root with `*` crossing a `/`, and with none given the scope is a page (`*.md`) and a source file's
+# comment prose (`*.sh`, `*.py`, `*.el`). A tracked file outside it -- a unit file, a spec, a Containerfile, a Makefile,
+# a gitignore, a licence text, a signing key, a lockfile, a capture or a log -- is data another program parses,
+# and a fill would rewrap what that program reads, so every scope leaves it as written: `--all` and the diff scope count
+# what they left, and a file named on the command line is reported and skipped. The checker's own kinds sit inside
+# the scope: a man page, a binary and a generated file (one carrying the ignore-file marker) pass the pattern and are
+# left by the dispatch.
 #
-# A vendored tree sits inside those patterns and is still not this repository's: its files are a release another project
-# signs, held byte for byte to a pin (tools/generators/typesafe-client.pin), so `VENDORED` takes it out of every scope,
-# counted with the other files left as written.
+# `--skip` names a pattern inside the scope that is still not the repository's own text -- a vendored tree, held byte
+# for byte to a pin of another project's release -- and takes it out of every scope, counted with the other files left
+# as written.
 #
-# A `.conf` under `src/etc/` is a config header, read at 72 through `--config-header`: that is this repository's layout,
-# the one fact the checker cannot resolve from a path alone. The sudoers drop-in beside them is not one: its rule lines
-# are read by sudo, not wrapped.
+# `--config-header` names a pattern of config files whose header is read at 72 through the checker's `--config-header`
+# mode: where a repository keeps them is the one fact the checker cannot resolve from a path alone. A pattern given here
+# is in the scope as well.
 #
 # The body is one function, called on the last line: bash parses a function whole before running it, so this file is
 # among the files `--all` fills. Read a command at a time, a script that is rewritten under a running bash is read
@@ -43,31 +46,35 @@
 set -euo pipefail
 
 usage() {
-    printf 'usage: bash tools/formatters/format.sh [--files | --all] [--width N] [--] [<file>...]\n' >&2
+    printf 'usage: bash formatters/format.sh --checker <prose-check.py> [--files | --all] [--width N] [--scope <glob>]... [--config-header <glob>]... [--skip <glob>]... [--] [<file>...]\n' >&2
     exit 2
 }
 
-CONFIG_HEADERS='src/etc/*.conf'
-FORMAT_SCOPE=(
-    '*.md'                                         # a page, for a person or for an agent
-    '*.sh' '*.py' '*.el' '.githooks/*'             # a source file: its comment prose
-    'selinux/policy/*.te' 'selinux/policy/*.if' 'selinux/policy/*.fc'   # a policy source: the same
-    "${CONFIG_HEADERS}"                            # a config header, at 72
-)
+# The patterns the options fill in main; a page and a source file's comment prose are the scope where none is named.
+DEFAULT_SCOPE_PATTERNS=('*.md' '*.sh' '*.py' '*.el')
+scope_patterns=()
+skip_patterns=()
+config_header_patterns=()
 
-VENDORED=(
-    'src/usr/local/lib/ai-tools/typesafe/*'        # the decide command, vendored from its signed release
-)
-
-# in_scope <path>: 0 when the root-relative <path> matches a pattern in FORMAT_SCOPE and none in VENDORED.
+# in_scope <path>: 0 when the root-relative <path> matches a scope pattern and no skip pattern.
 in_scope() {
     local pattern
-    for pattern in "${VENDORED[@]}"; do
-        # shellcheck disable=SC2053  # the pattern side is the tool's own glob
+    for pattern in "${skip_patterns[@]}"; do
+        # shellcheck disable=SC2053  # the pattern side is the caller's glob
         [[ "$1" == ${pattern} ]] && return 1
     done
-    for pattern in "${FORMAT_SCOPE[@]}"; do
-        # shellcheck disable=SC2053  # the pattern side is the tool's own glob
+    for pattern in "${scope_patterns[@]}"; do
+        # shellcheck disable=SC2053  # the pattern side is the caller's glob
+        [[ "$1" == ${pattern} ]] && return 0
+    done
+    return 1
+}
+
+# is_config_header <path>: 0 when the root-relative <path> matches a `--config-header` pattern.
+is_config_header() {
+    local pattern
+    for pattern in "${config_header_patterns[@]}"; do
+        # shellcheck disable=SC2053  # the pattern side is the caller's glob
         [[ "$1" == ${pattern} ]] && return 0
     done
     return 1
@@ -83,13 +90,16 @@ added_ranges() {
 }
 
 main() {
-    local tools checker root scope=touched status=0 outside=0 f rel r header column kind
+    local tools checker="" root scope=touched status=0 outside=0 f rel r header column kind
     local -a width=() named=() files=() tracked=() changed=() untracked=() present=()
     local -a documents=() sources=() headers=() lines=()
     tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    checker="${tools}/../../src/usr/share/ai-tools/skills/ai-tools-technical-docs/prose-check.py"
     while (( $# )); do
         case "$1" in
+            --checker) [[ -n "${2:-}" ]] || usage; checker="$2"; shift 2 ;;
+            --scope) [[ -n "${2:-}" ]] || usage; scope_patterns+=("$2"); shift 2 ;;
+            --skip) [[ -n "${2:-}" ]] || usage; skip_patterns+=("$2"); shift 2 ;;
+            --config-header) [[ -n "${2:-}" ]] || usage; config_header_patterns+=("$2"); shift 2 ;;
             --files) scope=files; shift ;;
             --all) scope=all; shift ;;
             --width) [[ "${2:-}" =~ ^[0-9]+$ ]] || usage; width=(--width "$2"); shift 2 ;;
@@ -99,8 +109,14 @@ main() {
             *) named+=("$1"); shift ;;
         esac
     done
+    [[ -n "${checker}" ]] || { printf 'format: --checker <prose-check.py> is required and has no default\n' >&2; usage; }
+    (( ${#scope_patterns[@]} )) || scope_patterns=("${DEFAULT_SCOPE_PATTERNS[@]}")
+    scope_patterns+=("${config_header_patterns[@]}")
     command -v python3 >/dev/null 2>&1 || { printf 'format: python3 is not installed\n' >&2; exit 1; }
     [[ -r "${checker}" ]] || { printf 'format: the checker is not at %s\n' "${checker}" >&2; exit 1; }
+    # The scope step changes directory to the repository root, so a checker named relative to the working directory is
+    # resolved here, while that directory is still the caller's.
+    checker="$(realpath -- "${checker}")"
     root="$(git rev-parse --show-toplevel 2>/dev/null)" || { printf 'format: not inside a git repository\n' >&2; exit 1; }
 
     # ── Scope: which files, and which of their lines ──────────────────────────────────────────
@@ -161,14 +177,13 @@ main() {
     # what was read whole.
     for f in "${files[@]}"; do
         header=()
-        # shellcheck disable=SC2053  # the pattern side is the tool's own glob
-        [[ "${f}" == ${CONFIG_HEADERS} ]] && header=(--config-header)
+        is_config_header "${f}" && header=(--config-header)
         IFS=$'\t' read -r _ column kind < <(python3 "${checker}" --print-width "${header[@]}" "${width[@]}" -- "${f}" 2>/dev/null || true)
         lines=()
         [[ -n "${ranges[${f}]:-}" ]] && lines=(--lines "${ranges[${f}]}")
         case "${kind:-missing}" in
             document)
-                if python3 "${tools}/fill-markdown.py" --width "${column}" "${lines[@]}" -- "${f}"; then
+                if python3 "${tools}/fill-markdown.py" --checker "${checker}" --width "${column}" "${lines[@]}" -- "${f}"; then
                     documents+=("${f}")
                 else
                     status=1
