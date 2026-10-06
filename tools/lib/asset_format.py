@@ -168,8 +168,8 @@ SUBAGENT_FRONTMATTER_REFUSED_WHY: Dict[str, str] = {
 
 # ── Config keys ────────────────────────────────────────────────────────────────────────────────────────────────────
 SET_CONF_REQUIRED: Tuple[str, ...] = ("format", "name", "version", "summary", "license", "maintainers", "source")
-SET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_base", "integrations", "requires_capabilities")
-SET_CONF_LIST_KEYS: Tuple[str, ...] = ("maintainers", "integrations", "requires_capabilities")
+SET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_base", "requires_integrations", "requires_capabilities")
+SET_CONF_LIST_KEYS: Tuple[str, ...] = ("maintainers", "requires_integrations", "requires_capabilities")
 PUBLISHER_CONF_REQUIRED: Tuple[str, ...] = ("publisher", "contact", "maintainers", "source", "description")
 PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses",)
 UPSTREAM_CONF_REQUIRED: Tuple[str, ...] = ("source", "path", "revision", "license")
@@ -177,8 +177,11 @@ UPSTREAM_CONF_OPTIONAL: Tuple[str, ...] = ("signature", "signer")
 UPSTREAM_CONF_FILE = "UPSTREAM.conf"
 ASSET_CONF_FILE = "asset.conf"
 ASSET_CONF_REQUIRED: Tuple[str, ...] = ("format",)
-ASSET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "targets")
-ASSET_CONF_LIST_KEYS: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "targets")
+ASSET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "supported_targets")
+ASSET_CONF_LIST_KEYS: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "supported_targets")
+# An extension key, `x_` then a key body, is a publisher's own informational key: the tools accept it without a finding
+# and base reads past it, where every other key outside a file's table is refused. A requirement never takes this form.
+EXTENSION_KEY_PATTERN = re.compile(r"^x_[A-Za-z0-9_]+$")
 METADATA_DIRECTORY = "metadata"
 METADATA_ENTRY_TYPES: Dict[str, str] = {ASSET_CONF_FILE: ENTRY_FILE, UPSTREAM_CONF_FILE: ENTRY_FILE, "references": ENTRY_DIRECTORY}
 METADATA_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(METADATA_ENTRY_TYPES)
@@ -244,8 +247,8 @@ RULES: Dict[str, str] = {
     "set.conf.name": "`name` equals the set directory",
     "set.conf.version": "`version` is a semantic version",
     "set.conf.requires-capabilities": "every required capability is one the format defines",
-    "set.conf.integrations": "every integration is written as `integration-<name>`",
-    "set.conf.unknown-key": "an unknown key is reported; base reads past it",
+    "set.conf.requires-integrations": "every required integration is written as `integration-<name>`",
+    "set.conf.unknown-key": "a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<name>` extension key",
     "set.entry.unknown": "a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone",
     "set.entry.reserved": "`jobs`, `libs` and `variants` are reserved and do not hold any content",
     "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read",
@@ -264,9 +267,9 @@ RULES: Dict[str, str] = {
     "skill.entry.unknown": "a skill holds `SKILL.md`, `scripts`, `references`, `assets`, `tests`, `UPSTREAM.conf`, `LICENSE` and `LICENSES` alone",
     "skill.plugin-manifest": "a skill does not hold a `.claude-plugin` directory",
     "skill.sidecar": "`agents/openai.yaml` is reserved inside a skill",
-    "skill.length": "`SKILL.md` is under 500 lines",
+    "skill.length": "`SKILL.md` over 500 lines warns; exactly 500 does not",
     "frontmatter.missing": "`SKILL.md` and a subagent file open with a frontmatter",
-    "frontmatter.syntax": "the frontmatter is in the accepted YAML subset: a plain scalar carries no `: ` or ` #`, a double-quoted one escapes `\\\\` and `\\\"` alone, a flow list holds plain, non-empty items",
+    "frontmatter.syntax": "the frontmatter is in the accepted YAML subset: a plain scalar does not carry `: ` or ` #`, a double-quoted one escapes `\\\\` and `\\\"` alone, a flow list holds plain, non-empty items",
     "frontmatter.type": "a field has its declared type: a string is quoted where YAML would read a number, a boolean or null; `tools`, `disallowedTools` and `skills` are string lists; `maxTurns` is an unquoted integer; `metadata` values are strings",
     "frontmatter.required": "`name` and `description` are present and non-empty",
     "frontmatter.refused-key": "a frontmatter key is on the kind's allowlist",
@@ -297,9 +300,7 @@ RULES: Dict[str, str] = {
     "license.file": "every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation",
     "release.inventory": "`SHA256SUMS` lists every file of the built set once and matches each",
 }
-RULES_WARNING: FrozenSet[str] = frozenset({
-    "set.conf.unknown-key", "name.composed-length", "skill.length", "frontmatter.metadata-prefix",
-})
+RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix"})
 
 
 def is_valid_name(name: str) -> bool:

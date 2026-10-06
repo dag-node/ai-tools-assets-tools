@@ -14,7 +14,7 @@ from typing import Dict, List, Sequence, Tuple
 
 from asset_format import (CLAUDE_PLUGIN_DIRECTORY, CLAUDE_PLUGIN_MANIFEST, FILE_MAX_BYTES, MARKETPLACE_NAME_SUFFIX,
                           PLUGIN_NAME_PREFIX, PORTABLE_PLUGIN_MANIFEST, PORTABLE_PLUGIN_SCHEMA)
-from key_value_config import ConfigDocument
+from key_value_config import KeyValueDocument
 from safe_read import RefusedRead, read_text_under
 
 MARKETPLACE_PATH = Path(".claude-plugin") / "marketplace.json"
@@ -24,11 +24,11 @@ def plugin_name(set_name: str) -> str:
     return PLUGIN_NAME_PREFIX + set_name
 
 
-def author_document(publisher: ConfigDocument) -> Dict[str, str]:
+def author_document(publisher: KeyValueDocument) -> Dict[str, str]:
     return {"name": publisher.get("publisher"), "email": publisher.get("contact")}
 
 
-def portable_plugin_document(set_conf: ConfigDocument, publisher: ConfigDocument) -> Dict[str, object]:
+def portable_plugin_document(set_conf: KeyValueDocument, publisher: KeyValueDocument) -> Dict[str, object]:
     return {
         "$schema": PORTABLE_PLUGIN_SCHEMA,
         "name": plugin_name(set_conf.get("name")),
@@ -41,13 +41,13 @@ def portable_plugin_document(set_conf: ConfigDocument, publisher: ConfigDocument
     }
 
 
-def claude_plugin_document(set_conf: ConfigDocument, publisher: ConfigDocument) -> Dict[str, object]:
+def claude_plugin_document(set_conf: KeyValueDocument, publisher: KeyValueDocument) -> Dict[str, object]:
     document = portable_plugin_document(set_conf, publisher)
     del document["$schema"]
     return document
 
 
-def marketplace_document(publisher: ConfigDocument, sets: Sequence[Tuple[str, ConfigDocument]]) -> Dict[str, object]:
+def marketplace_document(publisher: KeyValueDocument, sets: Sequence[Tuple[str, KeyValueDocument]]) -> Dict[str, object]:
     return {
         "name": publisher.get("publisher") + MARKETPLACE_NAME_SUFFIX,
         "owner": author_document(publisher),
@@ -68,7 +68,7 @@ def render_json(document: Dict[str, object]) -> str:
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
 
 
-def expected_manifest_files(publisher: ConfigDocument, sets: Sequence[Tuple[str, ConfigDocument]]) -> Dict[Path, str]:
+def expected_manifest_files(publisher: KeyValueDocument, sets: Sequence[Tuple[str, KeyValueDocument]]) -> Dict[Path, str]:
     """Every generated file of a repository, keyed by its path relative to the repository root."""
     files: Dict[Path, str] = {MARKETPLACE_PATH: render_json(marketplace_document(publisher, sets))}
     for set_name, set_conf in sets:

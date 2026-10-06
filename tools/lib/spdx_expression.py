@@ -23,7 +23,7 @@ MAX_NESTING = 8
 
 
 @dataclass
-class SpdxEvaluation:
+class SpdxValidationResult:
     """What the parser and the policy said about one expression."""
 
     expression: str
@@ -41,7 +41,7 @@ class SpdxEvaluation:
         return self.is_well_formed and not self.outside_allowlist
 
 
-class _Parser:
+class _SpdxExpressionParser:
     def __init__(self, tokens: List[str]) -> None:
         self.tokens = tokens
         self.position = 0
@@ -116,9 +116,9 @@ def tokenize(expression: str) -> List[str]:
     return tokens
 
 
-def evaluate_expression(expression: str, allowlist: Iterable[str]) -> SpdxEvaluation:
+def evaluate_expression(expression: str, allowlist: Iterable[str]) -> SpdxValidationResult:
     """Parse `expression` and judge every identifier against `allowlist`."""
-    evaluation = SpdxEvaluation(expression=expression)
+    evaluation = SpdxValidationResult(expression=expression)
     stripped = expression.strip()
     if not stripped:
         evaluation.syntax_error = "the licence is empty"
@@ -127,7 +127,7 @@ def evaluate_expression(expression: str, allowlist: Iterable[str]) -> SpdxEvalua
         tokens = tokenize(stripped)
         if len(tokens) > MAX_TOKENS:
             raise ValueError(f"has {len(tokens)} tokens; an expression has at most {MAX_TOKENS}")
-        parser = _Parser(tokens)
+        parser = _SpdxExpressionParser(tokens)
         parser.parse_expression()
         if parser.peek() is not None:
             raise ValueError(f"`{parser.peek()}` follows a complete expression")

@@ -13,8 +13,8 @@
 # or the GPLv3-compatible permissive default, plus each `--allow` -- and has its text under `LICENSES/`. An `--exception`
 # admits one identifier for the files its glob (REUSE's grammar: `**` crosses `/`, `*` does not) matches alone, which is
 # how this repository carries its `AGPL-3.0-only` `formatters/` beside an MIT tree. `LICENSE`, `LICENSES/`, `REUSE.toml`
-# and a `.license` sidecar are not judged: they are the texts and the declarations themselves. A `REUSE.toml` below the
-# root is not read, and every file under it is reported. Standard library only.
+# and a `.license` sidecar are not judged: they are the texts and the declarations themselves. A `REUSE.toml` inside
+# a subdirectory is not read, and every file under it is reported. Standard library only.
 from __future__ import annotations
 
 import argparse
