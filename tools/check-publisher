@@ -119,8 +119,8 @@ def load_json(relative_path):
         return None
     try:
         return json.loads(text)
-    except ValueError as error:
-        finding(relative_path, f"cannot be read as JSON: {error}")
+    except (ValueError, RecursionError) as error:
+        finding(relative_path, f"cannot be read as JSON: {error if isinstance(error, ValueError) else 'nests too deep'}")
         return None
 
 

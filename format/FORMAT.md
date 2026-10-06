@@ -177,7 +177,9 @@ none empty and none opening with a YAML indicator.
   to its root and another skill by name.
 - Every entry is a regular file or a directory: no symbolic link, no file
   with a second hard link, no special file. Every file is UTF-8 text without
-  control or bidi characters, at most 1 MiB; a set holds at most 2000 files
+  a control character (every `Cc` code point other than tab, LF and CR, the C1
+  range included), a `Bidi_Control` code point or a byte order mark anywhere
+  in it, at most 1 MiB; a set holds at most 2000 files
   and 500 directories, 32 levels deep, 64 MiB in all, with at most 2000 entries
   in one directory, and the validator stops at the first of these it meets.
   A file name is printable and does not carry a newline.
@@ -281,7 +283,7 @@ differ.
 | `file.symlink` | refuses | a set does not hold a symbolic link |
 | `file.hardlink` | refuses | a file has one link |
 | `file.special` | refuses | every entry is a regular file or a directory |
-| `file.binary` | refuses | every file is UTF-8 text without control or bidi characters |
+| `file.binary` | refuses | every file is UTF-8 text without a control character (C0, DEL, C1, other than tab, LF and CR), a bidi control or a byte order mark |
 | `file.size` | refuses | a file is at most 1 MiB; a set holds at most 2000 files, 500 directories, 2000 entries in one directory, 32 levels and 64 MiB in all |
 | `file.reserved-name` | refuses | a reserved file name is used for its reserved purpose alone |
 | `file.name` | refuses | a file name is printable and does not carry a newline |

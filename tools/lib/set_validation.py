@@ -416,10 +416,13 @@ class _SetValidator:
                 continue
             if record.text is None:
                 continue
+            if record.size > fmt.PLUGIN_MANIFEST_MAX_BYTES:
+                self.refuse(relative_path, "set.manifest.plugin", f"is {record.size} bytes; a manifest is at most {fmt.PLUGIN_MANIFEST_MAX_BYTES}")
+                continue
             try:
                 document = json.loads(record.text)
-            except ValueError as error:
-                self.refuse(relative_path, "set.manifest.plugin", f"cannot be read as JSON: {error}")
+            except (ValueError, RecursionError) as error:
+                self.refuse(relative_path, "set.manifest.plugin", f"cannot be read as JSON: {error if isinstance(error, ValueError) else 'nests too deep'}")
                 continue
             if not isinstance(document, dict):
                 self.refuse(relative_path, "set.manifest.plugin", "is not a JSON object")

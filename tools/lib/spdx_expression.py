@@ -5,7 +5,9 @@ An expression is identifiers joined by `AND` and `OR`, with parentheses. The pol
 states: every identifier under `AND` and under `OR` is on the list in force, so `MIT OR GPL-3.0-only` is refused despite
 its MIT option. `WITH` exceptions, `LicenseRef-` and `DocumentRef-` references, a `+` suffix, `NONE`, `NOASSERTION`, an
 empty value and a malformed expression are refused; which of these it is, is reported apart from a policy refusal, so a
-publisher reads whether the expression is wrong or merely outside the list.
+publisher reads whether the expression is wrong or merely outside the list. The grammar is bounded before it is parsed:
+an expression has at most `MAX_TOKENS` tokens and nests at most `MAX_NESTING` parentheses deep, so the recursive parser
+runs on a bounded input and a longer expression is a syntax finding, not a recursion limit.
 """
 from __future__ import annotations
 
@@ -16,6 +18,8 @@ from typing import FrozenSet, Iterable, List, Optional
 TOKEN = re.compile(r"\s*(?:(?P<open>\()|(?P<close>\))|(?P<word>[A-Za-z0-9.+:-]+))")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9.-]+$")
 OPERATORS = ("AND", "OR", "WITH")
+MAX_TOKENS = 64
+MAX_NESTING = 8
 
 
 @dataclass
@@ -41,6 +45,7 @@ class _Parser:
     def __init__(self, tokens: List[str]) -> None:
         self.tokens = tokens
         self.position = 0
+        self.depth = 0
         self.identifiers: List[str] = []
         self.unsupported: List[str] = []
 
@@ -64,10 +69,14 @@ class _Parser:
             raise ValueError("an operator has no right-hand side")
         if token == "(":
             self.take()
+            self.depth += 1
+            if self.depth > MAX_NESTING:
+                raise ValueError(f"nests more than {MAX_NESTING} parentheses deep")
             self.parse_expression()
             if self.peek() != ")":
                 raise ValueError("a `(` is not closed")
             self.take()
+            self.depth -= 1
         elif token in OPERATORS or token == ")":
             raise ValueError(f"`{token}` where a licence identifier is expected")
         else:
@@ -116,6 +125,8 @@ def evaluate_expression(expression: str, allowlist: Iterable[str]) -> SpdxEvalua
         return evaluation
     try:
         tokens = tokenize(stripped)
+        if len(tokens) > MAX_TOKENS:
+            raise ValueError(f"has {len(tokens)} tokens; an expression has at most {MAX_TOKENS}")
         parser = _Parser(tokens)
         parser.parse_expression()
         if parser.peek() is not None:

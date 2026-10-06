@@ -90,6 +90,7 @@ CLAUDE_PLUGIN_DIRECTORY = ".claude-plugin"
 CLAUDE_PLUGIN_MANIFEST = "plugin.json"
 PORTABLE_PLUGIN_MANIFEST = "plugin.json"
 PORTABLE_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+PLUGIN_MANIFEST_MAX_BYTES = 64 * 1024
 # A plugin manifest does not declare a component: each agent reads skills/ and agents/ from its default place,
 # and a declared component is the shape a hook, a server or a command enters a set by.
 PLUGIN_MANIFEST_COMPONENT_KEYS: FrozenSet[str] = frozenset({
@@ -183,10 +184,13 @@ SET_MAX_DIRECTORIES = 500
 SET_MAX_DEPTH = 32
 SET_MAX_BYTES = 64 * 1024 * 1024
 SET_MAX_DIRECTORY_ENTRIES = 2000
-# A text file: UTF-8, no NUL, no C0 control other than tab, newline and carriage return, and none of the bidi controls
-# that render text in another order than it is read.
-BIDI_CONTROLS = "".join(chr(code) for code in (*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
-CONTROL_CHARACTERS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f" + BIDI_CONTROLS + "]")
+# A text file: UTF-8, and none of these code points -- every Unicode `Cc` control (C0, DEL and the C1 range) other than
+# tab, newline and carriage return; the `Bidi_Control` set, which renders text in another order than it is read; and
+# the byte order mark, anywhere in the file, its first byte included. The source stays ASCII by naming code points.
+CONTROL_CODE_POINTS: Tuple[int, ...] = (*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), *range(0x7F, 0xA0))
+BIDI_CONTROL_CODE_POINTS: Tuple[int, ...] = (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+BYTE_ORDER_MARK = 0xFEFF
+CONTROL_CHARACTERS = re.compile("[" + "".join(re.escape(chr(code)) for code in (*CONTROL_CODE_POINTS, *BIDI_CONTROL_CODE_POINTS, BYTE_ORDER_MARK)) + "]")
 # Dynamic context injection: text Claude Code runs as a shell command when the asset loads, before anyone reads it.
 # The inline form is !`command` at the start of a line or after whitespace, anywhere in a line; the fence form is a
 # fence opener whose info string's first word carries `!` (```! and ```bash! alike, so a liberal loader is covered).
@@ -261,7 +265,7 @@ RULES: Dict[str, str] = {
     "file.symlink": "a set does not hold a symbolic link",
     "file.hardlink": "a file has one link",
     "file.special": "every entry is a regular file or a directory",
-    "file.binary": "every file is UTF-8 text without control or bidi characters",
+    "file.binary": "every file is UTF-8 text without a control character (C0, DEL, C1, other than tab, LF and CR), a bidi control or a byte order mark",
     "file.size": "a file is at most 1 MiB; a set holds at most 2000 files, 500 directories, 2000 entries in one directory, 32 levels and 64 MiB in all",
     "file.reserved-name": "a reserved file name is used for its reserved purpose alone",
     "file.name": "a file name is printable and does not carry a newline",

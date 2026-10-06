@@ -130,6 +130,26 @@ class SpdxExpressions(unittest.TestCase):
         for expression in ("", "(MIT AND", "MIT MIT", "AND MIT", "MIT)"):
             self.assertIsNotNone(evaluate_expression(expression, self.allowlist).syntax_error, expression)
 
+    def test_bounded_before_it_is_parsed(self):
+        deep = "(" * 600 + "MIT" + ")" * 600
+        self.assertIn("at most 64", evaluate_expression(deep, self.allowlist).syntax_error)
+        nested = "(" * 9 + "MIT" + ")" * 9
+        self.assertIn("more than 8 parentheses", evaluate_expression(nested, self.allowlist).syntax_error)
+        self.assertTrue(evaluate_expression("(" * 8 + "MIT" + ")" * 8, self.allowlist).is_allowed)
+        self.assertIn("at most 64", evaluate_expression(" AND ".join(["MIT"] * 40), self.allowlist).syntax_error)
+
+
+class ControlCharacters(unittest.TestCase):
+    def test_the_set_is_every_cc_but_tab_lf_cr_plus_bidi_controls_and_the_bom(self):
+        import unicodedata
+        expected = {code for code in range(0x110000) if unicodedata.category(chr(code)) == "Cc"} - {0x09, 0x0A, 0x0D}
+        expected |= {0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A), 0xFEFF}
+        self.assertEqual(set(fmt.CONTROL_CODE_POINTS) | set(fmt.BIDI_CONTROL_CODE_POINTS) | {fmt.BYTE_ORDER_MARK}, expected)
+        for code in sorted(expected):
+            self.assertIsNotNone(fmt.CONTROL_CHARACTERS.search("a" + chr(code) + "b"), hex(code))
+        for text in ("plain\ttab\r\nline", "caf" + chr(0xE9), chr(0x2014) + "dash", chr(0x200B) + "a zero-width space is not a bidi control"):
+            self.assertIsNone(fmt.CONTROL_CHARACTERS.search(text), ascii(text))
+
 
 class SafeRead(unittest.TestCase):
     def setUp(self):
