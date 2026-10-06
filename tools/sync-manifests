@@ -108,8 +108,8 @@ def sync(root_fd: int, root: pathlib.Path, check: bool, collector: FindingCollec
             collector.refuse(str(relative_path), "set.manifest.plugin" if relative_path.name == "plugin.json" else "repo.marketplace",
                              f"{reason}; run `python3 tools/sync-manifests`")
         return collector.report()
-    # A stale copy is rewritten in place as a regular file and never through a link, on a path whose components are
-    # checked; a copy that is not a regular file is reported and left.
+    # A stale copy is replaced as a directory entry, never written through a link or into an inode a second hard link
+    # names, on a path whose components are checked; a copy that is not one regular file is reported and left.
     for relative_path, _ in stale_manifest_files(root_fd, expected):
         try:
             replace_file(root, relative_path, expected[relative_path].encode("utf-8"))
