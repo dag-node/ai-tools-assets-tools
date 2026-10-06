@@ -6,10 +6,11 @@ A command that writes under a publisher repository walks a tree a pull request m
 components are `lstat`ed before a write and a symbolic link among them refuses (`file.symlink`); a directory is created
 with `mkdir`, which does not follow a link at its name; a new file is opened with `O_CREAT|O_EXCL|O_NOFOLLOW`, so a
 dangling link or any other entry at the name fails with EEXIST instead of being written through; and a generated file
-that is rewritten is replaced as a directory entry, never written into: the entry is `lstat`ed, one that is not a
-regular file (`file.symlink`) or has a second hard link (`file.hardlink`, since the other name may lie outside the
-tree) refuses, the bytes go to `.<name>.<random>` beside it, created exclusively, and that name is renamed over the
-entry. Every refusal is a `safe_read.RefusedRead`, so a command reports it under the rule the caller names.
+that is rewritten is replaced as a directory entry, never written into: the entry is `lstat`ed, a link, a directory or
+a special file at the name (`file.symlink`) or a regular file with a second hard link (`file.hardlink`, since the other
+name may lie outside the tree) refuses, the bytes go to `.<name>.<random>` beside it, created exclusively, and that
+name is renamed over the entry. Every refusal is a `safe_read.RefusedRead`, so a command reports it under the rule the
+caller names.
 """
 from __future__ import annotations
 

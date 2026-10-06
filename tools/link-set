@@ -13,8 +13,8 @@
 # set, so an update is a `--remove` and a new run.
 #
 # The set is validated first, through the validator's own descriptor chain from the root (`tools/lib/safe_read.py`),
-# and a set that does not validate places nothing: the validator refuses every symbolic link inside a set, so the
-# skills placed are the ones it recorded, and a copy is taken from a tree that held no link when it was judged. A
+# and no skill of a set that does not validate is placed: the validator refuses every symbolic link inside a set, so
+# the skills placed are the ones it recorded, and a copy is taken from a tree that held no link when it was judged. A
 # linked `sets/` or set directory is refused the same way, before a byte of its target is read.
 #
 # What was placed is recorded in `<target>/.ai-tools-assets-<set>.links`, one `<name>\t<mode>\t<identity>` line each:
