@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ai-tools-assets-core",
+  "version": "0.1.0",
+  "description": "Fixture skills and subagents",
+  "author": {
+    "name": "dag-node",
+    "email": "tools@dag-node.example"
+  },
+  "homepage": "https://github.com/dag-node/ai-tools-assets",
+  "repository": "https://github.com/dag-node/ai-tools-assets",
+  "license": "MIT"
+}
