@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/validate -- applies the asset format (format 1) to a publisher repository, or to one set directory.
+#
+# ```bash
+# python3 tools/validate [--root DIR] [--profile source|release] [--set NAME]...
+# python3 tools/validate --set-directory DIR [--publisher NAME] [--licenses ID,...] [--license-texts DIR]... \
+#                        [--profile source|release]
+# python3 tools/validate --list-rules [--markdown]
+# ```
+#
+# Over a repository (the current directory, or `--root`), it reads `publisher.conf`, runs `check-publisher`, validates
+# every set under `sets/` (or the ones `--set` names), holds the committed plugin manifests and the marketplace to what
+# `sync-manifests` writes, and holds every declared licence to the SPDX list in force (`publisher.conf` `licenses=`, or
+# the default). Over one set directory -- a conformance fixture, or a set built by `build-set` under
+# `--profile release` -- it applies the set-level rules alone, with `--publisher` where the set-name rules need one and
+# `--licenses` where the list is not the default. Each finding is one line, `validate: <path>: <rule-id>: <what>`, with
+# `warning:` after the command name where the rule warns; the exit status is 1 when a refusing finding was made, 2 on a
+# usage error. The rule ids and what each requires are `--list-rules`, and `format/FORMAT.md` states them for a
+# publisher. A set is read as data and no file in it is executed. Standard library only.
+from __future__ import annotations
+
+import argparse
+import pathlib
+import subprocess
+import sys
+
+TOOLS = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS / "lib"))
+
+import asset_format as fmt  # noqa: E402
+from findings import FindingCollector  # noqa: E402
+from key_value_config import read_key_value_file  # noqa: E402
+from license_policy import allowlist_in_force  # noqa: E402
+from manifests import MARKETPLACE_PATH, expected_manifest_files, stale_manifest_files  # noqa: E402
+from set_validation import PROFILE_SOURCE, PROFILES, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
+
+RESERVED_WORDS_FILE = TOOLS / "reserved-words.txt"
+CHECK_PUBLISHER = TOOLS / "check-publisher"
+
+
+def list_rules(markdown: bool) -> int:
+    print(rules_listing(markdown), end="")
+    return 0
+
+
+def rules_listing(markdown: bool) -> str:
+    """Every rule id, whether it refuses or warns, and what it requires; as a Markdown table with `--markdown`."""
+    if markdown:
+        lines = ["| Rule | Outcome | Requires |", "|---|---|---|"]
+        for rule_id, statement in fmt.RULES.items():
+            outcome = "warns" if rule_id in fmt.RULES_WARNING else "refuses"
+            lines.append(f"| `{rule_id}` | {outcome} | {statement} |")
+        return "\n".join(lines) + "\n"
+    width = max(len(rule_id) for rule_id in fmt.RULES)
+    return "".join(f"{rule_id:<{width}}  {'warns  ' if rule_id in fmt.RULES_WARNING else 'refuses'}  {statement}\n"
+                   for rule_id, statement in fmt.RULES.items())
+
+
+def validate_repository(root: pathlib.Path, profile: str, only_sets: list, collector: FindingCollector) -> None:
+    publisher_conf_path = root / "publisher.conf"
+    sets_root = root / "sets"
+    if not publisher_conf_path.is_file() or not sets_root.is_dir():
+        collector.refuse(str(root), "repo.layout", "a publisher repository holds publisher.conf and sets/ at its root; name it with --root, or validate one set with --set-directory")
+        return
+    try:
+        publisher_conf = read_key_value_file(publisher_conf_path)
+    except (OSError, UnicodeDecodeError) as error:
+        collector.refuse("publisher.conf", "repo.publisher-conf", f"cannot be read: {error}")
+        return
+    for message in publisher_conf.syntax_errors():
+        collector.refuse("publisher.conf", "repo.publisher-conf", message)
+    missing = [key for key in fmt.PUBLISHER_CONF_REQUIRED if not publisher_conf.get(key).strip()]
+    if missing:
+        collector.refuse("publisher.conf", "repo.publisher-conf", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+    allowlist, allowlist_error = allowlist_in_force(publisher_conf)
+    if allowlist_error:
+        collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
+
+    completed = subprocess.run([sys.executable, str(CHECK_PUBLISHER), "--root", str(root)], capture_output=True, text=True)
+    for line in completed.stderr.splitlines():
+        print(line, file=sys.stderr)
+    if completed.returncode == 1:
+        collector.refuse("publisher.conf", "repo.publisher-conf", "check-publisher found the names and contacts above")
+    elif completed.returncode != 0:
+        collector.refuse("publisher.conf", "repo.publisher-conf", f"check-publisher exited {completed.returncode}: {completed.stderr.strip()}")
+
+    options = ValidationOptions(publisher=publisher_conf.get("publisher") or None, profile=profile,
+                                reserved_words=read_reserved_words(RESERVED_WORDS_FILE), license_allowlist=allowlist,
+                                license_text_directories=[root], display_root=root)
+    set_directories = sorted(path for path in sets_root.iterdir() if path.is_dir() and not path.name.startswith("."))
+    if only_sets:
+        set_directories = [path for path in set_directories if path.name in only_sets]
+        for name in only_sets:
+            if not (sets_root / name).is_dir():
+                collector.refuse(f"sets/{name}", "set.conf.missing", "no such set directory")
+    validated = []
+    for set_directory in set_directories:
+        summary = validate_set_directory(set_directory, options, collector)
+        if summary.set_conf is not None:
+            validated.append((set_directory.name, summary.set_conf))
+    if not only_sets and not collector.has_refusals():
+        for relative_path, reason in stale_manifest_files(root, expected_manifest_files(publisher_conf, validated)):
+            rule_id = "repo.marketplace" if relative_path == MARKETPLACE_PATH else "set.manifest.plugin"
+            collector.refuse(str(relative_path), rule_id, f"{reason}; run `python3 tools/sync-manifests`")
+
+
+def validate_one_set(set_directory: pathlib.Path, publisher: str, licenses: str, license_texts: list, profile: str,
+                     collector: FindingCollector) -> None:
+    allowlist = tuple(item for item in licenses.replace(",", " ").split() if item) if licenses is not None else fmt.DEFAULT_LICENSE_ALLOWLIST
+    options = ValidationOptions(publisher=publisher, profile=profile, reserved_words=read_reserved_words(RESERVED_WORDS_FILE),
+                                license_allowlist=allowlist, license_text_directories=[path.resolve() for path in license_texts],
+                                display_root=set_directory.parent)
+    validate_set_directory(set_directory, options, collector)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Apply the asset format to a publisher repository or one set.")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the publisher repository (default: the current directory)")
+    parser.add_argument("--profile", choices=PROFILES, default=PROFILE_SOURCE, help="source (committed tree) or release (a built set with SHA256SUMS)")
+    parser.add_argument("--set", action="append", default=[], metavar="NAME", help="validate this set alone; repeatable")
+    parser.add_argument("--set-directory", type=pathlib.Path, metavar="DIR", help="validate one set directory instead of a repository")
+    parser.add_argument("--publisher", metavar="NAME", help="with --set-directory: the publisher the set-name rules read")
+    parser.add_argument("--licenses", metavar="ID,...", help="with --set-directory: the SPDX allowlist in force")
+    parser.add_argument("--license-texts", action="append", default=[], type=pathlib.Path, metavar="DIR",
+                        help="with --set-directory: a directory whose LICENSES/ holds the texts the set does not carry; repeatable")
+    parser.add_argument("--list-rules", action="store_true", help="print every rule id with what it requires")
+    parser.add_argument("--markdown", action="store_true", help="with --list-rules: as the table format/FORMAT.md embeds")
+    args = parser.parse_args()
+    if args.list_rules:
+        return list_rules(args.markdown)
+    collector = FindingCollector("validate")
+    if args.set_directory is not None:
+        validate_one_set(args.set_directory.resolve(), args.publisher, args.licenses, args.license_texts, args.profile, collector)
+    else:
+        validate_repository(args.root.resolve(), args.profile, args.set, collector)
+    return collector.report()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
