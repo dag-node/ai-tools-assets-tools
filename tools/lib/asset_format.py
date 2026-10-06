@@ -172,9 +172,12 @@ SET_MAX_DIRECTORY_ENTRIES = 2000
 # that render text in another order than it is read.
 BIDI_CONTROLS = "".join(chr(code) for code in (*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
 CONTROL_CHARACTERS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f" + BIDI_CONTROLS + "]")
-# Dynamic context injection: a line Claude Code runs as a shell command when the skill loads.
-DYNAMIC_INJECTION_LINE = re.compile(r"^\s*!`")
-DYNAMIC_INJECTION_FENCE = re.compile(r"^\s*(`{3,}|~{3,})!")
+# Dynamic context injection: text Claude Code runs as a shell command when the asset loads, before anyone reads it.
+# The inline form is !`command` at the start of a line or after whitespace, anywhere in a line; the fence form is a
+# fence opener whose info string's first word carries `!` (```! and ```bash! alike, so a liberal loader is covered).
+# Both are read in SKILL.md and a subagent file alone: a script runs through its interpreter and is not expanded.
+DYNAMIC_INJECTION_INLINE = re.compile(r"(?:^|\s)!`")
+DYNAMIC_INJECTION_FENCE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*\S*!")
 ABSOLUTE_PATH_REFUSED = re.compile(r"(?<![A-Za-z0-9_.-])/(?:opt/ai-tools|usr/share|usr/local/share)(?:/|\b)")
 PROSE_FILE_SUFFIXES: FrozenSet[str] = frozenset({".md"})
 

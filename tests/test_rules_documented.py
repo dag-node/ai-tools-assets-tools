@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 sys.path.insert(0, str(TESTS))
 
 import asset_format as fmt  # noqa: E402
-from fixture_generator import FAIL_FIXTURES, NAMED_SET_FIXTURES, RELEASE_FIXTURES  # noqa: E402
+from fixture_generator import FAIL_FIXTURES, NAMED_SET_FIXTURES, RELEASE_FIXTURES, VARIANT_FIXTURES  # noqa: E402
 
 BEGIN_MARKER = "<!-- rules:begin -->"
 END_MARKER = "<!-- rules:end -->"
@@ -50,14 +50,20 @@ class RulesDocumented(unittest.TestCase):
         self.assertEqual(embedded, expected, "run `python3 tools/validate --list-rules --markdown` and paste the table between the markers")
 
     def test_every_fixture_rule_is_a_rule(self):
-        fixture_rules = {rule for rule, _, _ in FAIL_FIXTURES} | {rule for rule, _, _ in RELEASE_FIXTURES} | {rule for _, rule, _, _ in NAMED_SET_FIXTURES}
-        self.assertTrue(fixture_rules <= set(fmt.RULES), fixture_rules - set(fmt.RULES))
+        self.assertTrue(fixture_rules() <= set(fmt.RULES), fixture_rules() - set(fmt.RULES))
+        self.assertTrue({rule for _, rule, _ in VARIANT_FIXTURES} <= {rule for rule, _, _ in FAIL_FIXTURES},
+                        "a variant fixture follows its rule's first fixture")
 
     def test_every_rule_has_a_proof(self):
-        fixture_rules = {rule for rule, _, _ in FAIL_FIXTURES} | {rule for rule, _, _ in RELEASE_FIXTURES} | {rule for _, rule, _, _ in NAMED_SET_FIXTURES}
-        uncovered = set(fmt.RULES) - fixture_rules - UNCOMMITTABLE_RULES - REPOSITORY_RULES
+        uncovered = set(fmt.RULES) - fixture_rules() - UNCOMMITTABLE_RULES - REPOSITORY_RULES
         self.assertEqual(uncovered, set(), f"rules without a fixture or a named test: {sorted(uncovered)}")
-        self.assertEqual(fixture_rules & (UNCOMMITTABLE_RULES | REPOSITORY_RULES), set())
+        self.assertEqual(fixture_rules() & (UNCOMMITTABLE_RULES | REPOSITORY_RULES), set())
+
+
+def fixture_rules():
+    """Every rule a committed fixture names."""
+    return ({rule for rule, _, _ in FAIL_FIXTURES} | {rule for rule, _, _ in RELEASE_FIXTURES}
+            | {rule for _, rule, _, _ in NAMED_SET_FIXTURES} | {rule for _, rule, _ in VARIANT_FIXTURES})
 
 
 if __name__ == "__main__":

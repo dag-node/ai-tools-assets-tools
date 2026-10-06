@@ -156,8 +156,12 @@ the same file the same way.
 
 ## Bodies and files
 
-- No line runs a command when the asset loads: a `` !`command` `` line
-  and a ` ```! ` block are refused in `SKILL.md` and in a subagent file.
+- No line runs a command when the asset loads: `` !`command` `` at the start
+  of a line or after whitespace, anywhere in a line, and a fence whose info
+  string's first word carries `!` (` ```! `, ` ```bash! `) are refused
+  in `SKILL.md` and in a subagent file. `scripts/` and `references/` are not
+  scanned for them: a script runs through its interpreter, and a reference is
+  read, not loaded.
 - No `.md` file of an asset names an absolute path into `/opt/ai-tools`,
   `/usr/share` or `/usr/local/share`; a skill names its own files relative
   to its root and another skill by name.
