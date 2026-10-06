@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/check-signoff -- requires an author-matching Signed-off-by trailer on every commit of a range.
+#
+# ```bash
+# python3 tools/check-signoff --range <base>..<head> [--repo DIR]
+# ```
+#
+# The Developer Certificate of Origin check the validate workflow runs over a pull request's own commits,
+# `base.sha..head.sha`: each commit's trailers are read with `git interpret-trailers --parse`, and one of them is
+# `Signed-off-by: <author name> <author email>`, the email compared case-insensitively. A phrase in the body is not a
+# trailer. There is no exemption for a bot, an import or a merge commit; a change that needs another certification gets
+# an explicit policy before it is accepted. A range git cannot read, or an empty one, fails the check, since a check
+# that could not look at the commits has not passed them. Standard library only.
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+
+
+def git(repo: str, *arguments: str) -> str:
+    completed = subprocess.run(["git", "-C", repo, *arguments], capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or f"git {' '.join(arguments)} exited {completed.returncode}")
+    return completed.stdout
+
+
+def trailers_of(repo: str, commit: str):
+    message = git(repo, "log", "-1", "--format=%B", commit)
+    completed = subprocess.run(["git", "-C", repo, "interpret-trailers", "--parse"], input=message, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip())
+    for line in completed.stdout.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            yield key.strip(), value.strip()
+
+
+def signed_off_by_author(repo: str, commit: str) -> bool:
+    author = git(repo, "log", "-1", "--format=%an%x00%ae", commit).strip("\n").split("\x00")
+    author_name, author_email = author[0], author[1].lower()
+    for key, value in trailers_of(repo, commit):
+        if key.lower() != "signed-off-by":
+            continue
+        if "<" in value and value.endswith(">"):
+            name, email = value[: value.rindex("<")].strip(), value[value.rindex("<") + 1:-1].strip().lower()
+            if name == author_name and email == author_email:
+                return True
+    return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Require an author-matching Signed-off-by on every commit of a range.")
+    parser.add_argument("--range", required=True, metavar="BASE..HEAD", help="the commits to check, a pull request's base.sha..head.sha")
+    parser.add_argument("--repo", default=".", help="the repository (default: the current directory)")
+    args = parser.parse_args()
+    try:
+        commits = git(args.repo, "rev-list", "--reverse", args.range).split()
+        if not commits:
+            print(f"check-signoff: {args.range} holds no commit; a range with commits is required", file=sys.stderr)
+            return 1
+        missing = []
+        for commit in commits:
+            if not signed_off_by_author(args.repo, commit):
+                author = git(args.repo, "log", "-1", "--format=%an <%ae>", commit).strip()
+                subject = git(args.repo, "log", "-1", "--format=%s", commit).strip()
+                missing.append(f"check-signoff: {commit[:12]} ({subject}): no Signed-off-by matching the author {author}; "
+                               f"add it with `git commit --amend -s` or `git rebase --exec 'git commit --amend --no-edit -s'`")
+    except (RuntimeError, OSError) as error:
+        print(f"check-signoff: cannot read {args.range}: {error}", file=sys.stderr)
+        return 2
+    for line in missing:
+        print(line, file=sys.stderr)
+    if not missing:
+        print(f"check-signoff: {len(commits)} commit(s) in {args.range} carry an author-matching Signed-off-by")
+    return 1 if missing else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/build-set -- validates a set, stages it with its licence texts and notices, writes SHA256SUMS, and zips it.
+#
+# ```bash
+# python3 tools/build-set <set> [--root DIR] [--build DIR] [--dist DIR]
+# ```
+#
+# The staged set lands under `build/<set>/` (replaced on each run), holding every committed file of the set plus
+# `LICENSES/<identifier>.txt` for each identifier the set, its skills and its vendored assets declare -- copied from
+# the set's own `LICENSES/` or the repository's -- and the repository's `LICENSE` where the set has none, so every
+# payload carries its notices. `SHA256SUMS` at the staged root lists every file in `sha256sum` format, paths relative
+# to the set root, itself and its signature excluded. The zip, `dist/ai-tools-assets-<set>-<version>.zip`, holds the
+# staged set with the plugin root at the top of the archive (Claude Code's `archive` source reads it so), with fixed
+# timestamps and sorted entries so the same tree gives the same bytes; its SHA-256 is written beside it. The staged set
+# is validated again under the release profile before the zip is written, so what ships is what passed. The release
+# workflow signs `SHA256SUMS` and the zip; this command does not sign a file. Standard library only.
+from __future__ import annotations
+
+import argparse
+import hashlib
+import pathlib
+import shutil
+import sys
+import zipfile
+
+TOOLS = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS / "lib"))
+
+import asset_format as fmt  # noqa: E402
+from findings import FindingCollector  # noqa: E402
+from key_value_config import read_key_value_file  # noqa: E402
+from license_policy import allowlist_in_force  # noqa: E402
+from set_validation import PROFILE_RELEASE, PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
+
+ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+INVENTORY_EXCLUDED = ("SHA256SUMS", "SHA256SUMS.asc")
+
+
+def sha256_of(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 16), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def staged_files(staged_root: pathlib.Path):
+    return sorted(path for path in staged_root.rglob("*") if path.is_file())
+
+
+def write_inventory(staged_root: pathlib.Path) -> pathlib.Path:
+    lines = [f"{sha256_of(path)}  {path.relative_to(staged_root).as_posix()}"
+             for path in staged_files(staged_root) if path.name not in INVENTORY_EXCLUDED]
+    inventory = staged_root / "SHA256SUMS"
+    inventory.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return inventory
+
+
+def write_zip(staged_root: pathlib.Path, archive_path: pathlib.Path) -> None:
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in staged_files(staged_root):
+            info = zipfile.ZipInfo(path.relative_to(staged_root).as_posix(), date_time=ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, path.read_bytes())
+    archive_path.with_suffix(archive_path.suffix + ".sha256").write_text(
+        f"{sha256_of(archive_path)}  {archive_path.name}\n", encoding="utf-8")
+
+
+def copy_license_texts(root: pathlib.Path, set_directory: pathlib.Path, staged_root: pathlib.Path,
+                       identifiers, collector: FindingCollector) -> None:
+    for identifier in sorted(identifiers):
+        staged_text = staged_root / fmt.LICENSE_TEXTS_DIRECTORY / f"{identifier}.txt"
+        if staged_text.is_file():
+            continue
+        for source_root in (set_directory, root):
+            source = source_root / fmt.LICENSE_TEXTS_DIRECTORY / f"{identifier}.txt"
+            if source.is_file():
+                staged_text.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, staged_text)
+                break
+        else:
+            collector.refuse(f"sets/{set_directory.name}", "license.text", f"no `{identifier}.txt` under the set's or the repository's LICENSES/")
+    if not (staged_root / "LICENSE").is_file() and (root / "LICENSE").is_file():
+        shutil.copyfile(root / "LICENSE", staged_root / "LICENSE")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate, stage, inventory and zip a set.")
+    parser.add_argument("set", help="the set to build")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the publisher repository (default: the current directory)")
+    parser.add_argument("--build", type=pathlib.Path, default=pathlib.Path("build"), help="where the staged set lands (default: build/)")
+    parser.add_argument("--dist", type=pathlib.Path, default=pathlib.Path("dist"), help="where the zip lands (default: dist/)")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    collector = FindingCollector("build-set")
+    set_directory = root / "sets" / args.set
+    publisher_path = root / "publisher.conf"
+    if not publisher_path.is_file() or not set_directory.is_dir():
+        collector.refuse(f"sets/{args.set}", "repo.layout", f"publisher.conf and sets/{args.set}/ are read under {root}")
+        return collector.report()
+    publisher = read_key_value_file(publisher_path)
+    allowlist, allowlist_error = allowlist_in_force(publisher)
+    if allowlist_error:
+        collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
+    options = ValidationOptions(publisher=publisher.get("publisher") or None, profile=PROFILE_SOURCE,
+                                reserved_words=read_reserved_words(TOOLS / "reserved-words.txt"), license_allowlist=allowlist,
+                                license_text_directories=[root], display_root=root)
+    summary = validate_set_directory(set_directory, options, collector)
+    if collector.has_refusals() or summary.set_conf is None:
+        print("build-set: the set does not validate; nothing was built", file=sys.stderr)
+        return collector.report()
+
+    build_root = (root / args.build) if not args.build.is_absolute() else args.build
+    staged_root = build_root / args.set
+    if staged_root.exists():
+        shutil.rmtree(staged_root)
+    shutil.copytree(set_directory, staged_root, symlinks=False)
+    copy_license_texts(root, set_directory, staged_root, summary.declared_licenses, collector)
+    if collector.has_refusals():
+        return collector.report()
+    inventory = write_inventory(staged_root)
+
+    release_options = ValidationOptions(publisher=options.publisher, profile=PROFILE_RELEASE, reserved_words=options.reserved_words,
+                                        license_allowlist=allowlist, license_text_directories=[], display_root=build_root)
+    validate_set_directory(staged_root, release_options, collector)
+    if collector.has_refusals():
+        print("build-set: the staged set does not validate under the release profile; no zip was written", file=sys.stderr)
+        return collector.report()
+
+    dist_root = (root / args.dist) if not args.dist.is_absolute() else args.dist
+    archive_path = dist_root / f"{fmt.PLUGIN_NAME_PREFIX}{args.set}-{summary.set_conf.get('version')}.zip"
+    write_zip(staged_root, archive_path)
+    for written in (staged_root, inventory, archive_path, archive_path.with_suffix(".zip.sha256")):
+        print(f"build-set: wrote {written.relative_to(root) if root in written.parents else written}")
+    return collector.report()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
