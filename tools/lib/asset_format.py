@@ -232,7 +232,6 @@ LICENSE_TEXTS_DIRECTORY = "LICENSES"
 # REUSE-IgnoreStart
 SPDX_HEADER = re.compile(r"SPDX-License-Identifier:\s*(?P<expression>[^\r\n*]+?)\s*(?:-->|\*/|\*\)|\s*$)")
 # REUSE-IgnoreEnd
-SPDX_HEADER_LINES_READ = 20
 
 # ── Rules ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 # Every finding carries one of these ids. A conformance fixture under fixtures/fail/<rule-id>/ fails on that rule alone,

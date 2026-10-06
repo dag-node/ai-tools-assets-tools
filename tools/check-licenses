@@ -7,8 +7,9 @@
 # ```
 #
 # Each tracked file's licence is what REUSE 3.2 resolves for it (`tools/lib/license_policy.py`): every
-# `SPDX-License-Identifier` header in its first lines or in its `<file>.license` sidecar, combined under the matching
-# `[[annotations]]` table's `precedence` with the expressions that table declares; a file with none is reported, and
+# `SPDX-License-Identifier` header anywhere in the file (read whole, at most 1 MiB, a `REUSE-IgnoreStart` block left
+# out) or in its `<file>.license` sidecar, combined under the matching `[[annotations]]` table's `precedence` with the
+# expressions that table declares; a file with none is reported, a file over the bound is refused unjudged, and
 # every expression that applies is judged. Every identifier is on the list in force -- `publisher.conf` `licenses=`,
 # or the GPLv3-compatible permissive default, plus each `--allow` -- and has its text under `LICENSES/`. An `--exception`
 # admits one identifier for the files its glob (REUSE's grammar: `**` crosses `/`, `*` does not) matches alone, which is
@@ -97,7 +98,11 @@ def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: lis
             continue
         if relative_path.name in NOT_JUDGED or relative_path.parts[0] == fmt.LICENSE_TEXTS_DIRECTORY or relative_path.suffix == LICENSE_SIDECAR_SUFFIX:
             continue
-        expressions = applicable_expressions(root_fd, relative_path, tracked_names, annotations)
+        try:
+            expressions = applicable_expressions(root_fd, relative_path, tracked_names, annotations)
+        except RefusedRead as refusal:
+            collector.refuse(path_text, refusal.rule_id, refusal.message)
+            continue
         if not expressions:
             collector.refuse(path_text, "license.file", "states no licence: no SPDX header, no .license sidecar and no REUSE.toml annotation matches")
             continue
