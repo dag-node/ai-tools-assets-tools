@@ -8,8 +8,10 @@ of a list a publisher wrote and got wrong. Three places declare a licence for se
 upstream terms and does not exempt the asset.
 
 A file outside a set is judged as REUSE 3.2 resolves it, and every expression that applies is held to the list, since
-REUSE combines them: the file's own information is each `SPDX-License-Identifier` header in its first lines, or the
-headers of its `<file>.license` sidecar where one exists; the repository's `REUSE.toml` supplies annotations whose
+REUSE combines them: the file's own information is each `SPDX-License-Identifier` header anywhere in the file, read
+whole under the file cap and outside a `REUSE-IgnoreStart`/`REUSE-IgnoreEnd` block, or the headers of its
+`<file>.license` sidecar where one exists; a file over the cap is refused rather than judged on a prefix; the
+repository's `REUSE.toml` supplies annotations whose
 `path` globs are matched with REUSE's grammar (`*` and `?` stop at `/`, `**` crosses it, `\\` escapes a metacharacter),
 the last matching annotation applies -- whether or not it declares a licence -- and its `precedence` decides the
 combination: `closest` (the default) takes the file's own information where it has any, `aggregate` takes both,
@@ -25,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
-from asset_format import DEFAULT_LICENSE_ALLOWLIST, FILE_MAX_BYTES, LICENSE_TEXTS_DIRECTORY, SPDX_HEADER, SPDX_HEADER_LINES_READ
+from asset_format import DEFAULT_LICENSE_ALLOWLIST, FILE_MAX_BYTES, LICENSE_TEXTS_DIRECTORY, SPDX_HEADER
 from findings import FindingCollector
 from key_value_config import KeyValueDocument
 from safe_read import RefusedRead, read_file_under, read_text_under
@@ -36,8 +38,9 @@ REUSE_KEY_VALUE = re.compile(r"^\s*(?P<key>[A-Za-z0-9_-]+)\s*=\s*(?P<value>.*?)\
 REUSE_PRECEDENCES: Tuple[str, ...] = ("closest", "aggregate", "override")
 REUSE_PRECEDENCE_DEFAULT = "closest"
 LICENSE_SIDECAR_SUFFIX = ".license"
-# A licence header sits in a file's first lines; this many bytes hold them, and a longer file is read no further.
-SPDX_HEADER_BYTES_READ = 64 * 1024
+# REUSE's ignore-block markers, spelled in two halves so neither this reader nor `reuse lint` opens a block on this line.
+REUSE_IGNORE_START = "REUSE-Ignore" + "Start"
+REUSE_IGNORE_END = "REUSE-Ignore" + "End"
 
 
 @dataclass(frozen=True)
@@ -85,16 +88,28 @@ def check_license_texts(collector: FindingCollector, declaring_path: str, identi
 
 
 def file_spdx_expressions(root_fd: int, relative_path: PurePath) -> List[str]:
-    """Every expression of an SPDX licence header in the first lines of the file under `root_fd`, in file order.
+    """Every expression of an SPDX licence header anywhere in the file under `root_fd`, in file order, the lines
+    from a `REUSE-IgnoreStart` marker to the next `REUSE-IgnoreEnd` (or the file's end) left out, as REUSE reads them.
 
-    A file that is not a regular file, or cannot be read, has no header of its own and falls to the annotations.
+    The file is read whole up to `FILE_MAX_BYTES`; one over that raises RefusedRead(`license.file`), since a prefix
+    cannot show that no later header declares another licence. A file that is not a regular file, or cannot be read,
+    has no header of its own and falls to the annotations.
     """
     try:
-        read = read_file_under(root_fd, relative_path, SPDX_HEADER_BYTES_READ)
+        read = read_file_under(root_fd, relative_path, FILE_MAX_BYTES)
     except (RefusedRead, OSError):
         return []
+    if read.truncated:
+        raise RefusedRead("license.file", f"is {read.size} bytes, over the {FILE_MAX_BYTES} this check reads whole; a header past the bound would go unread")
     expressions: List[str] = []
-    for line in read.data.decode("utf-8", errors="replace").splitlines()[:SPDX_HEADER_LINES_READ]:
+    ignoring = False
+    for line in read.data.decode("utf-8", errors="replace").splitlines():
+        if ignoring:
+            ignoring = REUSE_IGNORE_END not in line
+            continue
+        if REUSE_IGNORE_START in line:
+            ignoring = True
+            continue
         match = SPDX_HEADER.search(line)
         if match:
             expressions.append(match.group("expression").strip())

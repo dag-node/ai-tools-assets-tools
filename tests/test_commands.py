@@ -499,6 +499,22 @@ class LicenseCheckOverATree(unittest.TestCase):
         status, stderr = self.check()
         self.assertEqual((status, stderr), (0, ""), "a trailing comma, a literal string and an empty array are in the subset")
 
+    def test_every_header_in_the_file_is_read_and_an_ignore_block_is_not(self):
+        self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')
+        self.write("late.py", "# SPDX-License-Identifier: MIT\n" + "# comment\n" * 19 + "# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        start, end = "REUSE-Ignore" + "Start", "REUSE-Ignore" + "End"
+        self.write("blocked.py", f"# SPDX-License-Identifier: MIT\n# {start}\n# SPDX-License-Identifier: GPL-3.0-only\n# {end}\nprint()\n")
+        self.write("unterminated.py", f"# SPDX-License-Identifier: MIT\n# {start}\n# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        self.write("after.py", f"# {start}\n# {end}\n# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        self.write("big.py", "# SPDX-License-Identifier: MIT\n" + "#" * (1024 * 1024) + "\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("late.py: license.allowlist: the file's licence `GPL-3.0-only`", stderr, "a header on line 21 is a declaration")
+        self.assertNotIn("blocked.py", stderr)
+        self.assertNotIn("unterminated.py", stderr, "an unterminated block runs to the file's end")
+        self.assertIn("after.py: license.allowlist", stderr, "a header after the block is read")
+        self.assertIn("big.py: license.file: is 1048608 bytes, over the 1048576", stderr, "a file over the bound is refused, not passed on its prefix")
+
     def test_a_copyright_only_last_table_is_the_annotation_that_applies(self):
         self.reuse('path = "**"\nprecedence = "override"\nSPDX-License-Identifier = "MIT"',
                    'path = "tool.py"\nSPDX-FileCopyrightText = "2026 Acme"')
