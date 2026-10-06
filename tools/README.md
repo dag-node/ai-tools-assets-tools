@@ -22,6 +22,23 @@ and exits 1 when a finding refuses; the rule ids are
 | `check-licenses` | holds every tracked file's SPDX header or `REUSE.toml` annotation to the list in force; `--exception GLOB=ID` admits one identifier for the files a glob matches |
 | `check-signoff` | requires an author-matching `Signed-off-by` trailer on every commit of `--range BASE..HEAD`, a pull request's own commits |
 
+The reusable workflow `.github/workflows/validate.yml` runs these commands
+from a checkout of the repository and commit that define the workflow file
+(`job.workflow_repository` and `job.workflow_sha`), refuses a repository other
+than `dag-node/ai-tools-assets-tools` unless the caller names its fork
+in the `tools-repository` input, and refuses a file path other than its own.
+GitHub Enterprise Server does not define those fields, so a publisher on GHES
+runs the commands from a local pin of this repository instead of calling
+the workflow:
+
+```yaml
+jobs:
+  validate:
+    uses: acme/ai-tools-assets-tools/.github/workflows/validate.yml@v1
+    with:
+      tools-repository: acme/ai-tools-assets-tools
+```
+
 `reserved-words.txt` holds the words a set name does not start with; every
 command reads it beside itself. `lib/` holds the modules the commands share:
 the format registry, the `KEY=value` reader, the frontmatter reader, the SPDX

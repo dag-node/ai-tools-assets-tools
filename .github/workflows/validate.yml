@@ -8,13 +8,19 @@
 #       with:
 #         license-exceptions: ''          # space-separated GLOB=ID pairs check-licenses admits
 #         enforce-signoff: false          # true once the repository requires a DCO sign-off on every commit
+#         tools-repository: ''            # a fork of this repository the tools are checked out from, as <owner>/<repo>
 #
 # The job name `validate` is the status check a ruleset requires on main; renaming it leaves the requirement waiting
-# for a check that no longer runs. The tools run from a checkout of this repository at the commit of the called
-# workflow (github.workflow_sha), never from a default branch, so a caller pinned at a tag runs that tag's tools; a
-# run whose workflow ref or sha is empty stops before the checkout. Over a repository with no publisher.conf (this one)
-# the set checks are skipped and the tree checks run. The sign-off check reads a pull request's own range,
-# base.sha..head.sha, and reports without failing the job until enforce-signoff is true.
+# for a check that no longer runs. The tools run from a checkout of the repository and commit that define this
+# workflow file -- job.workflow_repository, job.workflow_sha and job.workflow_file_path, which name the reusable
+# workflow's own file in a called job where the github.* context names the caller's -- so a caller pinned at a tag runs
+# that tag's tools and a caller's own tree is never the tools. The resolve step refuses a repository other than
+# dag-node/ai-tools-assets-tools unless the caller names its fork in tools-repository, and a file path other than
+# .github/workflows/validate.yml, so a copy of this file in another repository does not become the tools source. The
+# job.* fields are absent on GitHub Enterprise Server, where the step stops before the checkout: a publisher on GHES
+# runs the tools from a local pin instead. Over a repository with no publisher.conf (this one) the set checks are
+# skipped and the tree checks run. The sign-off check reads a pull request's own range, base.sha..head.sha, and reports
+# without failing the job until enforce-signoff is true.
 name: validate
 
 on:
@@ -30,6 +36,11 @@ on:
         type: boolean
         required: false
         default: false
+      tools-repository:
+        description: the fork of dag-node/ai-tools-assets-tools this workflow is called from, as <owner>/<repo>; the tools are checked out from it
+        type: string
+        required: false
+        default: ''
   pull_request:
   push:
     branches: [develop, main]
@@ -51,17 +62,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve the tools repository and commit from the called workflow
+      - name: Resolve the tools repository and commit from the workflow file that defines this job
         id: tools
         env:
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_FILE_PATH: ${{ job.workflow_file_path }}
+          TOOLS_REPOSITORY: ${{ inputs.tools-repository || 'dag-node/ai-tools-assets-tools' }}
         run: |
-          if [ -z "$WORKFLOW_REF" ] || [ -z "$WORKFLOW_SHA" ]; then
-            echo "the called workflow's ref or commit is empty; the tools cannot be checked out at a known commit" >&2
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ] || [ -z "$WORKFLOW_FILE_PATH" ]; then
+            echo "job.workflow_repository, job.workflow_sha or job.workflow_file_path is empty (GitHub Enterprise Server does not define them); the tools cannot be checked out at a known commit. Run them from a local pin instead" >&2
             exit 1
           fi
-          echo "repository=${WORKFLOW_REF%%/.github/*}" >> "$GITHUB_OUTPUT"
+          # GitHub compares a repository name case-insensitively; so does this step.
+          if [ "${WORKFLOW_REPOSITORY,,}" != "${TOOLS_REPOSITORY,,}" ]; then
+            echo "this workflow file is defined in $WORKFLOW_REPOSITORY, not in $TOOLS_REPOSITORY; a fork of the tools is named in the tools-repository input" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_FILE_PATH" != ".github/workflows/validate.yml" ]; then
+            echo "this job is defined by $WORKFLOW_FILE_PATH, not .github/workflows/validate.yml; a copy of the workflow is not the tools" >&2
+            exit 1
+          fi
+          echo "repository=$WORKFLOW_REPOSITORY" >> "$GITHUB_OUTPUT"
           echo "sha=$WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Check out the tools at that commit
@@ -113,7 +135,8 @@ jobs:
 
   tests:
     name: tests (python ${{ matrix.python }})
-    if: github.repository == 'dag-node/ai-tools-assets-tools' && github.event_name != 'workflow_call'
+    # github.repository is the caller's in a called job, so this test alone keeps the suite to this repository's runs.
+    if: github.repository == 'dag-node/ai-tools-assets-tools'
     runs-on: ubuntu-24.04
     strategy:
       matrix:
