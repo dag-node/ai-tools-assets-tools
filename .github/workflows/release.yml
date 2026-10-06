@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: MIT
+# Releases this repository's tooling for a tag v<semver>: verifies the tag's signature against the maintainer's pinned
+# key, runs the suite, writes the source archive with its SHA-256 and a detached signature by the org package-signing
+# key, re-verifies that signature on the runner, and creates the GitHub release the archive is read from. A consumer
+# (ai-tools-base's CI, a publisher's tools.pin) pins the tag and verifies the archive against the org key's primary,
+# 67F42DC18BF764B42D82F14256D2F802CF9832E4.
+#
+# The release job alone declares `environment: release`, whose deployment policy admits tags v*.*.* and no branch, so
+# the signing key and its passphrase reach a job on a maintainer-created tag and no other ref. The tag is annotated and
+# signed by a maintainer's personal key -- p4nda's primary 225DFF22D0221D3DD68CCEFFFABAF500E7D90733, fetched over HTTPS
+# for this one check -- so a leaked CI secret cannot mint a release by itself. The RPM of the tooling and its dispatch
+# to dag-node/rpm join this workflow with the signing slice.
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+env:
+  TAG_SIGNER_PRIMARY_FINGERPRINT: 225DFF22D0221D3DD68CCEFFFABAF500E7D90733
+  TAG_SIGNER_KEY_URL: https://github.com/p4nda.gpg
+  ARTIFACT_SIGNER_PRIMARY_FINGERPRINT: 67F42DC18BF764B42D82F14256D2F802CF9832E4
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: The tag is annotated and signed by the pinned maintainer key
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git cat-file -t "refs/tags/$TAG")" = tag || { echo "$TAG is not an annotated tag" >&2; exit 1; }
+          export GNUPGHOME="$(mktemp -d)"
+          curl -sSf "$TAG_SIGNER_KEY_URL" | gpg --batch --import
+          status="$(git verify-tag --raw "$TAG" 2>&1)" || { echo "$status" >&2; exit 1; }
+          primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF }')"
+          test "$primary" = "$TAG_SIGNER_PRIMARY_FINGERPRINT" \
+            || { echo "$TAG is signed by primary ${primary:-none}, not the pinned $TAG_SIGNER_PRIMARY_FINGERPRINT" >&2; exit 1; }
+          echo "$TAG verified: signed by $primary"
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.9'
+
+      - name: The suite passes at the tag
+        run: python3 -m unittest discover -s tests
+
+      - name: Write the archive and its SHA-256
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          archive="dist/ai-tools-assets-tools-${TAG#v}.tar.gz"
+          git archive --format=tar.gz --prefix="ai-tools-assets-tools-${TAG#v}/" -o "$archive" "refs/tags/$TAG"
+          (cd dist && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
+          echo "archive=$archive" >> "$GITHUB_ENV"
+
+      - name: Sign the archive with the org package-signing key and re-verify
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          test -n "$GPG_SIGNING_KEY" && test -n "$GPG_SIGNING_PASSPHRASE" \
+            || { echo "the release environment holds no signing key or passphrase" >&2; exit 1; }
+          export GNUPGHOME="$(mktemp -d)"
+          printf '%s' "$GPG_SIGNING_KEY" | gpg --batch --import
+          printf '%s' "$GPG_SIGNING_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --armor --detach-sign --output "$archive.asc" "$archive"
+          status="$(gpg --batch --status-fd 1 --verify "$archive.asc" "$archive" 2>/dev/null)"
+          primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF }')"
+          test "$primary" = "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" \
+            || { echo "the archive signature is by primary ${primary:-none}, not $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" >&2; exit 1; }
+          echo "$archive.asc verified: signed by $primary"
+
+      - name: Create the release from the verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --verify-tag --title "$TAG" \
+            --notes "Tooling release $TAG. Verify the archive with its .asc against the dag-node package-signing key, primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT." \
+            "$archive" "$archive.sha256" "$archive.asc"
