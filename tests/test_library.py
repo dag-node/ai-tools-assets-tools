@@ -153,6 +153,19 @@ class ReuseGlobs(unittest.TestCase):
         for glob, path, expected in cases:
             self.assertEqual(matches_reuse_glob(path, glob), expected, (glob, path))
 
+    def test_the_match_is_bounded_by_the_lengths_and_refuses_what_it_does_not_read(self):
+        import time
+        from license_policy import matches_reuse_glob, reuse_glob_problem
+        started = time.monotonic()
+        self.assertFalse(matches_reuse_glob("a" * 40, "*a" * 28 + "b"))
+        self.assertTrue(matches_reuse_glob("a" * 40, "*a" * 28))
+        self.assertFalse(matches_reuse_glob("/".join(["a"] * 30), "/".join(["**", "*a"] * 10 + ["b"])))
+        self.assertLess(time.monotonic() - started, 1.0, "the review's backtracking input returns at once")
+        self.assertIsNone(reuse_glob_problem("**/x/**/y.py"))
+        self.assertIn("at most 256", reuse_glob_problem("a" * 257))
+        for glob in ("src**", "**.py", "a/***/b"):
+            self.assertIn("stands alone", reuse_glob_problem(glob), glob)
+
 
 class ControlCharacters(unittest.TestCase):
     def test_the_set_is_every_cc_but_tab_lf_cr_plus_bidi_controls_and_the_bom(self):
