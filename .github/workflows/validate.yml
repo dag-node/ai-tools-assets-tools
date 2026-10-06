@@ -122,8 +122,11 @@ jobs:
           python3 -m pip install --quiet --requirement "$TOOLS/.github/requirements-ci.txt"
           reuse lint
 
+      # The ubuntu runner image ships shellcheck; the install runs only where an image stops doing so.
       - name: ShellCheck
-        run: git ls-files -z -- '*.sh' | xargs -0 -r shellcheck
+        run: |
+          command -v shellcheck >/dev/null || sudo apt-get install -y --no-install-recommends shellcheck
+          git ls-files -z -- '*.sh' | xargs -0 -r shellcheck
 
       - name: Every commit of the pull request carries an author-matching Signed-off-by
         if: github.event_name == 'pull_request'
