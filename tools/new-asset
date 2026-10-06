@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 
@@ -22,6 +23,8 @@ sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
+from safe_read import RefusedRead  # noqa: E402
+from safe_write import create_file  # noqa: E402
 
 SKILL_TEMPLATE = """---
 name: {name}
@@ -73,22 +76,25 @@ def main() -> int:
     if "\n" in args.description or len(args.description) > fmt.DESCRIPTION_MAX_LENGTH:
         collector.refuse(display, "frontmatter.length",
                          f"the description is one line of at most {fmt.DESCRIPTION_MAX_LENGTH} characters")
-    target = set_directory / kind_directory / (args.name if args.kind == "skill" else f"{args.name}.md")
-    if target.exists():
+    target = pathlib.PurePath("sets", args.set, kind_directory, args.name if args.kind == "skill" else f"{args.name}.md")
+    if os.path.lexists(root / target):
         collector.refuse(display, "kind.shape", "exists already")
     if collector.has_refusals():
         return collector.report()
     title = args.name[len(prefix):].replace("-", " ") or args.name
     values = {"name": args.name, "description": args.description, "title": title}
-    if args.kind == "skill":
-        target.mkdir(parents=True)
-        (target / "SKILL.md").write_text(SKILL_TEMPLATE.format(**values), encoding="utf-8")
-        print(f"new-asset: wrote {display}/SKILL.md")
-    else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(SUBAGENT_TEMPLATE.format(**values), encoding="utf-8")
-        print(f"new-asset: wrote {display}")
-    return 0
+    # The components under the root are checked and the file is created exclusively, so a link at `sets/`, at the
+    # kind directory or dangling at the asset's own name is refused instead of written through.
+    try:
+        if args.kind == "skill":
+            create_file(root, target / "SKILL.md", SKILL_TEMPLATE.format(**values).encode("utf-8"))
+            print(f"new-asset: wrote {display}/SKILL.md")
+        else:
+            create_file(root, target, SUBAGENT_TEMPLATE.format(**values).encode("utf-8"))
+            print(f"new-asset: wrote {display}")
+    except RefusedRead as refusal:
+        collector.refuse(display, refusal.rule_id, refusal.message)
+    return collector.report()
 
 
 if __name__ == "__main__":
