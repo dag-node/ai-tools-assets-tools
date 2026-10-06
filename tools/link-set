@@ -9,18 +9,28 @@
 #
 # The target is the skills directory the agent reads (`~/.claude/skills`, `~/.agents/skills`); each skill of the set
 # becomes `<target>/<name>`, a symbolic link to the skill directory, or a copy with `--copy` for an agent that imports
-# by copying. What was placed is recorded in `<target>/.ai-tools-assets-<set>.links`, one `<name><TAB>link|copy` line
-# each, which `--remove` reads to take out the entries that still are what this command placed -- a symbolic link for a
-# `link` line, a real directory holding `SKILL.md` for a `copy` line -- and leaves every other entry where it is,
-# reported. An entry already at a name that this command did not place is refused and left as it is; a subagent is not
-# placed, since a skills directory holds skills alone. A copied skill does not follow the set, so an update is a
-# `--remove` and a new run. Standard library only.
+# by copying. A subagent is not placed, since a skills directory holds skills alone. A copied skill does not follow the
+# set, so an update is a `--remove` and a new run.
+#
+# What was placed is recorded in `<target>/.ai-tools-assets-<set>.links`, one `<name>\t<mode>\t<identity>` line each:
+# a `link` line carries the absolute skill directory the link points at, a `copy` line the SHA-256 of the copy's
+# inventory (every entry's relative path and, for a file, the SHA-256 of its content). `--remove` takes an entry out
+# only while it still is what this command placed -- a symbolic link whose target reads as recorded, a directory whose
+# inventory digests as recorded -- and leaves every other entry where it is, reported, so a replacement at a recorded
+# name is not deleted on the record's word. The set and every name in `--only` and in the record are names, and a link's
+# target is composed from the root and those names alone, so neither an argument nor a tampered record reaches a path
+# outside `<root>/sets/<set>/skills/`. A record that is not a regular file, or holds a line that is not three fields
+# of a name, `link` or `copy`, and an identity, is refused whole. Standard library only.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 import pathlib
 import shutil
+import stat
 import sys
+from typing import Dict, Optional, Tuple
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
@@ -28,54 +38,88 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 
-
 MODE_LINK = "link"
 MODE_COPY = "copy"
+MODES = (MODE_LINK, MODE_COPY)
+Record = Dict[str, Tuple[str, str]]  # name -> (mode, identity)
 
 
 def record_path(target: pathlib.Path, set_name: str) -> pathlib.Path:
     return target / f".ai-tools-assets-{set_name}.links"
 
 
-def read_record(record: pathlib.Path) -> dict:
-    """The placed names and their modes; a line without a mode is a link, the form an earlier run wrote."""
-    placed = {}
-    if record.is_file():
-        for line in record.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                name, _, mode = line.strip().partition("\t")
-                placed[name] = mode or MODE_LINK
+def read_record(record: pathlib.Path, collector: FindingCollector) -> Optional[Record]:
+    """The placed names with their mode and identity; an empty record where none exists; None after refusing one
+    that is not a regular file or holds a line outside the grammar."""
+    try:
+        status = os.lstat(record)
+    except FileNotFoundError:
+        return {}
+    if not stat.S_ISREG(status.st_mode):
+        collector.refuse(str(record), "name.collision", "the record is not a regular file; nothing is removed on its word")
+        return None
+    placed: Record = {}
+    for line_number, line in enumerate(record.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3 or not fmt.is_valid_name(fields[0]) or fields[1] not in MODES or not fields[2]:
+            collector.refuse(str(record), "name.collision", f"line {line_number} is not `<name>\\t<link|copy>\\t<identity>`; the record is refused whole")
+            return None
+        placed[fields[0]] = (fields[1], fields[2])
     return placed
 
 
-def write_record(record: pathlib.Path, placed: dict) -> None:
+def write_record(record: pathlib.Path, placed: Record) -> None:
     if placed:
-        record.write_text("".join(f"{name}\t{mode}\n" for name, mode in sorted(placed.items())), encoding="utf-8")
-    elif record.exists():
+        record.write_text("".join(f"{name}\t{mode}\t{identity}\n" for name, (mode, identity) in sorted(placed.items())), encoding="utf-8")
+    elif record.is_symlink() or record.exists():
         record.unlink()
 
 
-def is_what_was_placed(destination: pathlib.Path, mode: str, skill: pathlib.Path = None) -> bool:
-    """True when the entry at `destination` is still the link or the copy this command recorded."""
+def copy_inventory_digest(directory: pathlib.Path) -> str:
+    """The SHA-256 over every entry under `directory`: its relative path and, for a regular file, its content's digest;
+    another entry type contributes its type, so a link or a special file placed into a copy changes the digest."""
+    inventory = hashlib.sha256()
+    for current, directories, files in os.walk(directory, followlinks=False):
+        directories.sort()
+        for name in sorted(directories + files):
+            path = pathlib.Path(current) / name
+            relative = path.relative_to(directory).as_posix()
+            status = os.lstat(path)
+            if stat.S_ISREG(status.st_mode):
+                identity = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif stat.S_ISDIR(status.st_mode):
+                identity = "directory"
+            else:
+                identity = "other"
+            inventory.update(f"{relative}\0{identity}\n".encode("utf-8"))
+    return inventory.hexdigest()
+
+
+def matches_installation_record(destination: pathlib.Path, mode: str, identity: str) -> bool:
+    """True while the entry at `destination` is the link or the copy the record describes."""
     if mode == MODE_LINK:
-        return destination.is_symlink() and (skill is None or destination.resolve() == skill.resolve())
-    return destination.is_dir() and not destination.is_symlink() and (destination / "SKILL.md").is_file()
+        return destination.is_symlink() and os.readlink(destination) == identity
+    return destination.is_dir() and not destination.is_symlink() and copy_inventory_digest(destination) == identity
 
 
-def remove_links(target: pathlib.Path, set_name: str, collector: FindingCollector) -> int:
+def remove_installed_skills(target: pathlib.Path, set_name: str, collector: FindingCollector) -> int:
     record = record_path(target, set_name)
-    placed = read_record(record)
+    placed = read_record(record, collector)
+    if placed is None:
+        return collector.report()
     if not placed:
         print(f"link-set: nothing recorded for `{set_name}` under {target}")
         return 0
-    remaining = {}
-    for name, mode in sorted(placed.items()):
+    remaining: Record = {}
+    for name, (mode, identity) in sorted(placed.items()):
         destination = target / name
         if not destination.exists() and not destination.is_symlink():
             continue
-        if not is_what_was_placed(destination, mode):
+        if not matches_installation_record(destination, mode, identity):
             collector.refuse(str(destination), "name.collision", f"is not the {mode} this command placed; left as it is")
-            remaining[name] = mode
+            remaining[name] = (mode, identity)
             continue
         if mode == MODE_LINK:
             destination.unlink()
@@ -88,24 +132,30 @@ def remove_links(target: pathlib.Path, set_name: str, collector: FindingCollecto
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Link or copy a set's skills into an agent's skills directory.")
-    parser.add_argument("set", help="the set whose skills are placed")
+    parser.add_argument("set", help="the set whose skills are placed, by name")
     parser.add_argument("--target", type=pathlib.Path, required=True, help="the skills directory the agent reads")
     parser.add_argument("--copy", action="store_true", help="copy each skill instead of linking it")
     parser.add_argument("--only", metavar="NAME,...", help="place these skills alone")
     parser.add_argument("--remove", action="store_true", help="remove what an earlier run placed for this set")
     parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the publisher repository (default: the current directory)")
     args = parser.parse_args()
+    collector = FindingCollector("link-set")
+    wanted = set(item for item in args.only.replace(",", " ").split() if item) if args.only else None
+    for name in [args.set, *sorted(wanted or ())]:
+        if not fmt.is_valid_name(name):
+            collector.refuse(name, "name.grammar", "a set and a skill are named, not pathed: 1-64 characters of a-z, 0-9 and single hyphens")
+    if collector.has_refusals():
+        return collector.report()
     root = args.root.resolve()
     target = args.target.expanduser().resolve()
-    collector = FindingCollector("link-set")
     if args.remove:
-        return remove_links(target, args.set, collector)
+        return remove_installed_skills(target, args.set, collector)
     skills_root = root / "sets" / args.set / "skills"
     if not skills_root.is_dir():
         collector.refuse(f"sets/{args.set}/skills", "kind.shape", f"no skills directory under {root}")
         return collector.report()
-    wanted = set(item for item in args.only.replace(",", " ").split() if item) if args.only else None
-    skills = sorted(path for path in skills_root.iterdir() if path.is_dir() and (path / "SKILL.md").is_file())
+    skills = sorted(path for path in skills_root.iterdir()
+                    if fmt.is_valid_name(path.name) and path.is_dir() and not path.is_symlink() and (path / "SKILL.md").is_file())
     if wanted is not None:
         for name in sorted(wanted - {path.name for path in skills}):
             collector.refuse(f"sets/{args.set}/skills/{name}", "kind.shape", "no such skill")
@@ -114,21 +164,23 @@ def main() -> int:
         return collector.report()
     target.mkdir(parents=True, exist_ok=True)
     record = record_path(target, args.set)
-    placed = read_record(record)
-    mode = MODE_COPY if args.copy else MODE_LINK
+    placed = read_record(record, collector)
+    if placed is None:
+        return collector.report()
     for skill in skills:
         destination = target / skill.name
         if destination.exists() or destination.is_symlink():
-            if skill.name in placed and is_what_was_placed(destination, placed[skill.name], skill):
+            if skill.name in placed and matches_installation_record(destination, *placed[skill.name]):
                 print(f"link-set: {destination} is already placed")
                 continue
             collector.refuse(str(destination), "name.collision", "exists and is not what this command placed; left as it is")
             continue
         if args.copy:
             shutil.copytree(skill, destination, symlinks=False)
+            placed[skill.name] = (MODE_COPY, copy_inventory_digest(destination))
         else:
             destination.symlink_to(skill, target_is_directory=True)
-        placed[skill.name] = mode
+            placed[skill.name] = (MODE_LINK, str(skill))
         print(f"link-set: {'copied' if args.copy else 'linked'} {destination}")
     write_record(record, placed)
     return collector.report()
