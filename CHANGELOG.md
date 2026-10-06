@@ -19,7 +19,12 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   holds every plain scalar wherever it stands), the content rules over the
   whole entry file, frontmatter included, and the bounds a set is read under
   (files, directories, depth, bytes, entries per directory, SPDX expression
-  size, manifest size), at which validation stops with one finding.
+  size, manifest size), at which validation stops with one finding. The
+  format reserves `jobs/`, `libs/`, `variants/` and `llms.txt` at the set
+  root and states how a reserved entry is admitted: additively, by a
+  capability token a set carrying it must declare, so a reader without the
+  token refuses the set whole; `format=2` is kept for a change in what an
+  existing entry means.
 - Every command opens a repository's files by descriptor without following
   a symbolic link and reads each once, so a linked set, manifest or `sets/`
   directory is refused before its target is read; a generated file is
