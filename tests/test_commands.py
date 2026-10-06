@@ -345,6 +345,9 @@ class LicenseCheck(unittest.TestCase):
         self.assertNotIn("formatters/format.sh", stderr)
 
 
+# The scratch trees carry SPDX headers and annotations as string literals; `reuse lint` reads each as an expression
+# of this file, so the class sits in an ignored block, as the fixture generator's literals do.
+# REUSE-IgnoreStart
 class LicenseCheckOverATree(unittest.TestCase):
     """REUSE 3.2 resolution over a scratch tree: every applicable expression is judged."""
 
@@ -441,6 +444,7 @@ class LicenseCheckOverATree(unittest.TestCase):
             self.assertIn(f"{refused}: license.file", stderr, refused)
         for covered in ("src/x.py", "docs/a.md", "docs/deep/er/b.md", "lit*.txt", "one/a.py"):
             self.assertNotIn(covered + ":", stderr, covered)
+# REUSE-IgnoreEnd
 
 
 class SignoffCheck(unittest.TestCase):
