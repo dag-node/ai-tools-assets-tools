@@ -313,6 +313,32 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual((name, mode, len(identity)), ("acme-pdf-processing", "copy", 64))
         self.assertIn("pdftext\tlink\t", "\n".join(record), "the entry the removal left stays recorded")
 
+    def test_link_set_validates_the_set_before_placing_and_follows_no_link(self):
+        target = self.root.parent / "home" / ".claude" / "skills"
+        outside = self.root.parent / "leak.txt"
+        outside.write_text("OUTSIDE DATA\n", encoding="utf-8")
+        leak = self.root / "sets" / "acme" / "skills" / "acme-pdf-processing" / "references" / "leak.txt"
+        leak.symlink_to(outside)
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target), "--copy")
+        self.assertEqual(status, 1)
+        self.assertIn("references/leak.txt: file.symlink: ", stderr)
+        self.assertNotIn("OUTSIDE", stderr, "the link's target is not read")
+        self.assertFalse(target.exists(), "nothing is placed from a set that does not validate")
+        leak.unlink()
+        (self.root / "sets" / "acme" / "notes.txt").write_text("stray\n", encoding="utf-8")
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target))
+        self.assertEqual(status, 1)
+        self.assertIn("set.entry.unknown", stderr)
+        self.assertFalse(target.exists())
+        (self.root / "sets" / "acme" / "notes.txt").unlink()
+        real = self.root.parent / "elsewhere"
+        shutil.move(str(self.root / "sets"), str(real))
+        (self.root / "sets").symlink_to(real, target_is_directory=True)
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target))
+        self.assertEqual(status, 1)
+        self.assertIn("is a symbolic link", stderr)
+        self.assertFalse(target.exists())
+
     def test_link_set_removes_what_still_matches_its_record_alone(self):
         target = self.root.parent / "home" / ".claude" / "skills"
         status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target))
