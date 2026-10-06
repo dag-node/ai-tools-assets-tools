@@ -74,6 +74,17 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("repo.layout", stderr)
 
+    def test_a_set_selector_is_a_name_matched_against_the_discovered_sets(self):
+        (self.root / "sets" / "acme" / "skills" / "acme-pdf-processing" / "SKILL.md").write_text("# no frontmatter\n", encoding="utf-8")
+        for selector, rule in (("..", "name.grammar"), (str(self.root / "sets" / "acme"), "name.grammar"), ("nope", "set.conf.missing")):
+            status, _, stderr = run("validate", "--root", str(self.root), "--set", selector)
+            self.assertEqual(status, 1, selector)
+            self.assertIn(rule, stderr)
+            self.assertNotIn("frontmatter.missing", stderr, "no set was validated for a selector that names none")
+        status, _, stderr = run("validate", "--root", str(self.root), "--set", "acme")
+        self.assertEqual(status, 1)
+        self.assertIn("frontmatter.missing", stderr)
+
     def test_a_symlinked_manifest_is_refused_before_any_publisher_check_reads_it(self):
         outside = self.root.parent / "outside.json"
         manifest = self.root / "sets" / "acme" / "plugin.json"

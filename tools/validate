@@ -117,8 +117,12 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
         with os.scandir(sets_fd) as listing:
             entries = sorted((entry for entry in listing if not entry.name.startswith(".")), key=lambda entry: entry.name)
         if only_sets:
-            for name in sorted(set(only_sets) - {entry.name for entry in entries}):
-                collector.refuse(f"sets/{name}", "set.conf.missing", "no such set directory")
+            # A selector is a name, matched against the sets discovered under sets/; it is not composed into a path.
+            for name in sorted(set(only_sets)):
+                if not fmt.is_valid_name(name):
+                    collector.refuse(name, "name.grammar", "--set takes a set name: 1-64 characters of a-z, 0-9 and single hyphens")
+                elif name not in {entry.name for entry in entries}:
+                    collector.refuse(f"sets/{name}", "set.conf.missing", "no such set directory")
             entries = [entry for entry in entries if entry.name in only_sets]
         for entry in entries:
             if entry.is_symlink():
