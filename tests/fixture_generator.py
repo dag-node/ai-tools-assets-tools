@@ -321,6 +321,22 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
      lambda tree: replace_in(tree, "agents/acme-reviewer.md", "model: inherit", 'maxTurns: "3"')),
     ("frontmatter.type.tools-map", "frontmatter.type",
      lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools:\n  read: yes")),
+    ("frontmatter.syntax.colon-tab", "frontmatter.syntax",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "compatibility: Requires:\tpython3")),
+    ("frontmatter.syntax.flow-comment-item", "frontmatter.syntax",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: [#comment]")),
+    ("frontmatter.syntax.flow-reserved-indicator", "frontmatter.syntax",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: [@bad]")),
+    ("frontmatter.syntax.flow-tab-comment", "frontmatter.syntax",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: [Read\t#comment]")),
+    ("frontmatter.type.sexagesimal", "frontmatter.type",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "compatibility: 1:20")),
+    ("frontmatter.type.timestamp", "frontmatter.type",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "compatibility: 2026-10-06")),
+    ("frontmatter.type.omitted-string", "frontmatter.type",
+     lambda tree: replace_in(tree, "agents/acme-reviewer.md", "model: inherit", "model: inherit\ncolor:")),
+    ("frontmatter.type.omitted-metadata-value", "frontmatter.type",
+     lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", "ai-tools-libs: # set later")),
 ]
 
 # (fixture name, mutation): a shape the format accepts beside the plain passing set, under fixtures/pass/.
@@ -335,6 +351,9 @@ PASS_VARIANT_FIXTURES: List[Tuple[str, Mutation]] = [
     ("acme.quoted-typed-scalars", lambda tree: (
         replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", 'ai-tools-libs: "true"\n  ai-tools-version: "1.0"'),
         replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", 'compatibility: "Requires: python3 # or newer"'))),
+    ("acme.quoted-empty-and-time-scalars", lambda tree: (
+        replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", 'ai-tools-libs: ""\n  ai-tools-reviewed: "2026-10-06"\n  ai-tools-span: "1:20"'),
+        replace_in(tree, "agents/acme-reviewer.md", "model: inherit", 'model: inherit\ncolor: ""'))),
 ]
 
 

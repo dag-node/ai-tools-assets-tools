@@ -72,7 +72,7 @@ class FrontmatterSubset(unittest.TestCase):
     def test_refuses_what_is_outside_the_subset(self):
         document, _ = split_frontmatter("---\nname: x\nname: y\ndesc: |\n  block\n\tbad: tab\nnested:\n  a:\n    b: c\n")
         joined = "\n".join(document.errors)
-        for fragment in ("given again", "opening with `|`", "tab in the indentation", "has no value", "does not close"):
+        for fragment in ("given again", "opening with `|`", "tab in the indentation", "indentation changes", "does not close"):
             self.assertIn(fragment, joined)
 
     def test_refuses_the_ambiguous_scalars_other_readers_type_differently(self):
@@ -82,9 +82,16 @@ class FrontmatterSubset(unittest.TestCase):
             'description: "a\\qb"\n': "is not an escape this subset reads",
             "description: 'unclosed\n": "does not close",
             'description: "a" b\n': "text follows the closing quote",
-            "tools: [*alias, Grep]\n": "YAML indicator",
+            "tools: [*alias, Grep]\n": "opening with `*`",
             "tools: [a,,b]\n": "empty item",
             "tools: [a: b]\n": "does not carry `: `",
+            "description: hello:\tworld\n": "does not carry `: `",
+            "tools: [#comment]\n": "opening with `#`",
+            "tools: [@bad]\n": "opening with `@`",
+            "tools: [a\t#comment]\n": "does not carry ` #`",
+            "tools: [a'b]\n": "carries a `,`, a bracket, a brace or a quote",
+            "tools:\n  - - nested\n": "opening with `-`",
+            "metadata:\n  k: - x\n": "opening with `-`",
         }
         for line, fragment in cases.items():
             document, _ = split_frontmatter(f"---\nname: x\n{line}---\n")
@@ -98,10 +105,20 @@ class FrontmatterSubset(unittest.TestCase):
         self.assertEqual(document.values["c"], Scalar("plain"))
         self.assertTrue(document.values["d"].is_yaml_typed)
         self.assertFalse(document.values["e"].is_yaml_typed)
-        for text in ("true", "No", "ON", "null", "~", "12", "-3", "0x1F", "1_000", "1.5", "1e3", ".inf", ".NaN", "0o17"):
+        for text in ("true", "No", "ON", "null", "~", "12", "-3", "0x1F", "1_000", "1.5", "1e3", ".inf", ".NaN", "0o17",
+                     "1:20", "-1:20:30", "1:20.5", "2026-10-06", "2001-12-14t21:59:43.10-05:00", "2001-12-14 21:59:43.10 -5", "2001-12-14T21:59:43Z"):
             self.assertTrue(Scalar(text).is_yaml_typed, text)
-        for text in ("Read", "python3.12", "1.2.3", "v1", "none", "nope", "1-2", "a1"):
+        for text in ("Read", "python3.12", "1.2.3", "v1", "none", "nope", "1-2", "a1", "10:x", "2026-10", "0:20"):
             self.assertFalse(Scalar(text).is_yaml_typed, text)
+
+    def test_an_omitted_value_is_told_from_a_quoted_empty_string(self):
+        document, _ = split_frontmatter('---\na:\nb: # comment\nc: ""\nmetadata:\n  k:\n  m: # c\n---\n')
+        self.assertEqual(document.errors, [])
+        self.assertTrue(document.values["a"].is_omitted)
+        self.assertTrue(document.values["b"].is_omitted)
+        self.assertFalse(document.values["c"].is_omitted)
+        self.assertEqual(document.values["c"], Scalar("", quoted=True))
+        self.assertTrue(all(scalar.is_omitted for scalar in document.values["metadata"].values()))
 
     def test_absent_frontmatter(self):
         document, body = split_frontmatter("# Title\n")

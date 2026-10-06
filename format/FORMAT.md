@@ -194,12 +194,17 @@ a deeper nesting and a key written twice are refused, so every reader parses
 the same file the same way.
 
 Every field has a declared type, checked before its value. A plain scalar
-that another YAML reader types -- `true`, `no`, `null`, `~`, an integer,
-a float, in any letter case -- is refused in a string field: quote it. A plain
-scalar does not carry `: ` or ` #`, which a reader takes as a mapping
-or a comment; quote the value instead. A double-quoted scalar escapes `\\`
-and `\"` alone, a single-quoted one `''` alone. A flow list holds plain items,
-none empty and none opening with a YAML indicator.
+that another YAML reader types -- `true`, `no`, `null`, `~`, an integer
+(`1:20` included), a float, a date, a timestamp, in any letter case -- is
+refused in a string field: quote it. A key with no value, or a `#` comment
+alone, is YAML's null and is refused in a string field too: quote an empty
+string (`""`) or leave the key out. One lexical rule holds every plain
+scalar, wherever it stands: it opens with no indicator (`| > & * ! { ? @ `
+` % #`, or `-` then a space), does not carry `: ` or ` #` (a tab counts
+as the space), which a reader takes as a mapping or a comment, and in a flow
+list carries no `,`, bracket, brace or quote; quote the value instead.
+A double-quoted scalar escapes `\\` and `\"` alone, a single-quoted one `''`
+alone. A flow list holds plain items, none empty.
 
 ## Bodies and files
 
@@ -334,8 +339,8 @@ differ.
 | `skill.sidecar` | refuses | `agents/openai.yaml` is reserved inside a skill |
 | `skill.length` | warns | `SKILL.md` over 500 lines warns; exactly 500 does not |
 | `frontmatter.missing` | refuses | `SKILL.md` and a subagent file open with a frontmatter |
-| `frontmatter.syntax` | refuses | the frontmatter is in the accepted YAML subset: a plain scalar does not carry `: ` or ` #`, a double-quoted one escapes `\\` and `\"` alone, a flow list holds plain, non-empty items |
-| `frontmatter.type` | refuses | a field has its declared type: a string is quoted where YAML would read a number, a boolean or null; `tools`, `disallowedTools` and `skills` are string lists; `maxTurns` is an unquoted integer; `metadata` values are strings |
+| `frontmatter.syntax` | refuses | the frontmatter is in the accepted YAML subset: a plain scalar opens with no indicator and does not carry `: ` or ` #` (a tab counts as the space), a double-quoted one escapes `\\` and `\"` alone, a flow list holds plain, non-empty items |
+| `frontmatter.type` | refuses | a field has its declared type: a string is quoted where YAML would read a number, a boolean, null, a date or no value at all; `tools`, `disallowedTools` and `skills` are string lists; `maxTurns` is an unquoted integer; `metadata` values are strings |
 | `frontmatter.required` | refuses | `name` and `description` are present and non-empty |
 | `frontmatter.refused-key` | refuses | a frontmatter key is on the kind's allowlist |
 | `frontmatter.length` | refuses | `description` is at most 1024 characters and `compatibility` at most 500 |
