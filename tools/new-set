@@ -9,8 +9,9 @@
 # The set takes its maintainers and source from `publisher.conf`, version `0.1.0`, and the licence named (`MIT` by
 # default); the name is held to the name rules before a file is written -- the grammar, the reserved words, and the
 # publisher prefix (`<publisher>` or `<publisher>-<topic>`; `core` is dag-node's) -- so a set that would fail validation
-# is not created. `sync-manifests` then writes the two plugin manifests and the marketplace entry. Standard library
-# only.
+# is not created. The summary is written quoted in whichever quote character it does not carry, since the `KEY=value`
+# grammar has no escape; one carrying both, or empty, is refused. `sync-manifests` then writes the two plugin
+# manifests and the marketplace entry. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -34,7 +35,7 @@ SET_CONF_TEMPLATE = """# ai-tools-assets set: {name}. Read by ai-tools-base as K
 format={format}
 name={name}
 version=0.1.0
-summary="{summary}"
+summary={summary}
 license={license}
 maintainers=[{maintainers}]
 source={source}
@@ -122,16 +123,19 @@ def main() -> int:
     set_directory = pathlib.PurePath("sets", args.name)
     if os.path.lexists(root / set_directory):
         collector.refuse(f"sets/{args.name}", "set.entry.unknown", "exists already")
-    if '"' in args.summary or "\n" in args.summary:
+    quote = next((candidate for candidate in ("\"", "'") if candidate not in args.summary), None)
+    if "\n" in args.summary or not args.summary.strip():
+        collector.refuse(f"sets/{args.name}/set.conf", "set.conf.required-key", "the summary is one non-empty line")
+    elif quote is None:
         collector.refuse(f"sets/{args.name}/set.conf", "set.conf.syntax",
-                         "the summary is one line without a double quote")
+                         "the summary carries both quote characters; the KEY=value grammar has no escape, so a value carries one kind at most")
     if collector.has_refusals():
         return collector.report()
     maintainers, reason = publisher.list_value("maintainers")
     if reason is not None:
         collector.refuse("publisher.conf", "repo.publisher-conf", f"`maintainers` does not read as a list ({reason})")
         return collector.report()
-    values = {"name": args.name, "format": fmt.FORMAT_VERSION, "summary": args.summary, "license": args.license,
+    values = {"name": args.name, "format": fmt.FORMAT_VERSION, "summary": quote + args.summary + quote, "license": args.license,
               "maintainers": ", ".join(maintainers), "source": publisher.get("source"),
               "prefix": fmt.authored_asset_prefix(args.name)}
     # `sets/` is checked not to be a link and each file is created exclusively, so the set is not written through a
