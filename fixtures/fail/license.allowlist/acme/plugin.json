@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ai-tools-assets-acme",
+  "version": "0.1.0",
+  "description": "Fixture skills and subagents",
+  "author": {
+    "name": "acme",
+    "email": "tools@acme.example"
+  },
+  "homepage": "https://github.com/acme/ai-tools-assets",
+  "repository": "https://github.com/acme/ai-tools-assets",
+  "license": "GPL-3.0-only"
+}

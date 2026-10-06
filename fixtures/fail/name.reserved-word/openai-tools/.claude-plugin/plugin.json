@@ -1,0 +1,12 @@
+{
+  "name": "ai-tools-assets-openai-tools",
+  "version": "0.1.0",
+  "description": "Fixture skills and subagents",
+  "author": {
+    "name": "openai-tools",
+    "email": "tools@openai-tools.example"
+  },
+  "homepage": "https://github.com/openai-tools/ai-tools-assets",
+  "repository": "https://github.com/openai-tools/ai-tools-assets",
+  "license": "MIT"
+}
