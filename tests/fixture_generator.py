@@ -265,6 +265,14 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
      lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n```bash!\ngit status\n```\n")),
     ("body.dynamic-injection.subagent", "body.dynamic-injection",
      lambda tree: tree.__setitem__("agents/acme-reviewer.md", tree["agents/acme-reviewer.md"] + "\nThe branch: !`git branch --show-current`\n")),
+    ("set.conf.syntax.unclosed-quote", "set.conf.syntax", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT\n')),
+    ("set.conf.syntax.text-after-quote", "set.conf.syntax", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT"garbage\n')),
+    ("set.conf.syntax.empty-list-item", "set.conf.syntax",
+     lambda tree: replace_in(tree, "set.conf", "maintainers=[maintainers@acme.example]", "maintainers=[maintainers@acme.example,,other@acme.example]")),
+    ("set.conf.syntax.empty-list-value", "set.conf.syntax",
+     lambda tree: replace_in(tree, "set.conf", "maintainers=[maintainers@acme.example]", "maintainers=")),
+    ("set.conf.required-key.empty-list", "set.conf.required-key",
+     lambda tree: replace_in(tree, "set.conf", "maintainers=[maintainers@acme.example]", "maintainers=[]")),
     ("frontmatter.syntax.colon", "frontmatter.syntax",
      lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "compatibility: Requires: python3")),
     ("frontmatter.syntax.escape", "frontmatter.syntax",
@@ -285,6 +293,9 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
 
 # (fixture name, mutation): a shape the format accepts beside the plain passing set, under fixtures/pass/.
 PASS_VARIANT_FIXTURES: List[Tuple[str, Mutation]] = [
+    ("acme.explicit-empty-list", lambda tree: (
+        replace_in(tree, "metadata/subagents/upstream-triage/asset.conf", "targets=[claude-code]\n", "targets=[claude-code]\nrequires_integrations=[]\n"),
+        replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT" # the set\'s licence\nrequires_capabilities=[]\n'))),
     ("acme.subagent-tools-scalar", lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: Read, Grep\nmaxTurns: 12")),
     ("acme.quoted-typed-scalars", lambda tree: (
         replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", 'ai-tools-libs: "true"\n  ai-tools-version: "1.0"'),

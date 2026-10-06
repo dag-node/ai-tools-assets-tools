@@ -38,12 +38,24 @@ class KeyValueGrammar(unittest.TestCase):
         self.assertEqual(document.get("a"), "2")
         self.assertEqual(len(document.syntax_errors()), 2)
 
+    def test_reports_a_quote_that_does_not_close_and_text_after_one(self):
+        document = parse_key_value_text('a="MIT\nb="MIT"garbage\nc="MIT" # fine\nd=\'x\' \n')
+        self.assertEqual(document.values, {"a": "MIT", "b": "MIT", "c": "MIT", "d": "x"})
+        errors = document.syntax_errors()
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("line 1: `a=`: the \" quote does not close", errors[0])
+        self.assertIn("line 2: `b=`: `garbage` follows the closing quote", errors[1])
+
     def test_lists(self):
         self.assertEqual(parse_list_value("[a, b]"), (("a", "b"), None))
         self.assertEqual(parse_list_value("a, b c"), (("a", "b", "c"), None))
         self.assertEqual(parse_list_value("[]"), ((), None))
+        self.assertEqual(parse_list_value("[ ]"), ((), None))
         self.assertEqual(parse_list_value("[a")[0], ())
         self.assertEqual(parse_list_value("[a, 'b']")[0], ())
+        self.assertEqual(parse_list_value("[a,,b]"), ((), "an item between two commas is empty"))
+        self.assertEqual(parse_list_value("[a, b,]")[0], ())
+        self.assertEqual(parse_list_value(""), ((), "it is empty; write `key=[]` for an explicit empty list, or omit the key"))
 
 
 class FrontmatterSubset(unittest.TestCase):
