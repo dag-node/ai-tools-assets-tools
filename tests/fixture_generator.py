@@ -7,7 +7,9 @@
 Every fixture is one publisher's set, written from one base tree so a failing fixture differs from the passing one in
 the one thing its rule refuses. A fixture directory holds `fixture.conf` -- `expect` (pass, fail or warn), `rule`
 (the rule id a failing or warning fixture reports), `publisher`, `profile`, `licenses` and `license_texts`, the options
-`tools/validate --set-directory` is run with -- and beside it the set directory. The licence texts the fixtures share
+`tools/validate --set-directory` is run with -- and beside it the set directory. A rule's first fixture is
+`fail/<rule>/`; a further shape the same rule refuses is `fail/<rule>.<variant>/`, with the rule in its
+`fixture.conf`. The licence texts the fixtures share
 sit in fixtures/LICENSES/ and are not generated. The fixtures are committed so a consumer -- ai-tools-base's CI runs
 its own validator over them at the pinned release -- reads them without running this script; `check` keeps the
 committed copies current. Three rules take a tree git does not carry (a hard link, a special file, an over-size file),
@@ -252,6 +254,19 @@ FAIL_FIXTURES: List[Tuple[str, str, Mutation]] = [
 ]
 
 
+# (fixture name, rule id, mutation): a further shape a rule refuses, beside the rule's first fixture.
+VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
+    ("body.dynamic-injection.inline", "body.dynamic-injection",
+     lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n- Current date: !`date`\n")),
+    ("body.dynamic-injection.fence", "body.dynamic-injection",
+     lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\nMore text.\n\n```!\ngit status\n```\n")),
+    ("body.dynamic-injection.fence-tagged", "body.dynamic-injection",
+     lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n```bash!\ngit status\n```\n")),
+    ("body.dynamic-injection.subagent", "body.dynamic-injection",
+     lambda tree: tree.__setitem__("agents/acme-reviewer.md", tree["agents/acme-reviewer.md"] + "\nThe branch: !`git branch --show-current`\n")),
+]
+
+
 def symlink_fixture(tree: Tree) -> None:
     tree[f"{SKILL}/references/link.md"] = SymlinkTo("formats.md")
 
@@ -305,8 +320,10 @@ def all_fixtures(destination: pathlib.Path) -> None:
         (directory).mkdir(parents=True, exist_ok=True)
         (directory / "fixture.conf").write_text(fixture_conf("pass", "", publisher), encoding="utf-8")
         write_tree(directory / set_name, base_tree(publisher, set_name))
-    for rule, expect, mutation in FAIL_FIXTURES:
-        directory = destination / "fail" / rule
+    fail_fixtures = [(rule, rule, expect, mutation) for rule, expect, mutation in FAIL_FIXTURES]
+    fail_fixtures += [(name, rule, "fail", mutation) for name, rule, mutation in VARIANT_FIXTURES]
+    for fixture_name, rule, expect, mutation in fail_fixtures:
+        directory = destination / "fail" / fixture_name
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "fixture.conf").write_text(fixture_conf(expect, rule, "acme"), encoding="utf-8")
         tree = base_tree("acme", "acme")

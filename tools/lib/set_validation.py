@@ -587,7 +587,7 @@ class _SetValidator:
 
     def check_body(self, relative_path: Path, body: str, inject: bool) -> None:
         for line_number, line in enumerate(body.split("\n"), start=1):
-            if inject and (fmt.DYNAMIC_INJECTION_LINE.match(line) or fmt.DYNAMIC_INJECTION_FENCE.match(line)):
+            if inject and (fmt.DYNAMIC_INJECTION_INLINE.search(line) or fmt.DYNAMIC_INJECTION_FENCE.match(line)):
                 self.refuse(relative_path, "body.dynamic-injection", f"line {line_number} runs a command when the asset loads, before a person or the model reads it")
             match = fmt.ABSOLUTE_PATH_REFUSED.search(line)
             if match:
