@@ -111,7 +111,7 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
 
     options = ValidationOptions(publisher=publisher_conf.get("publisher") or None, profile=profile,
                                 reserved_words=read_reserved_words(RESERVED_WORDS_FILE), license_allowlist=allowlist,
-                                license_text_directories=[root], display_root=root)
+                                license_text_directories=[root], display_root=root, publisher_conf=publisher_conf)
     validated = []
     try:
         with os.scandir(sets_fd) as listing:
@@ -140,9 +140,11 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
         return  # the repository-level checks read manifests the set walk has judged
     run_check_publisher(root, collector)
     if not only_sets:
-        for relative_path, reason in stale_manifest_files(root_fd, expected_manifest_files(publisher_conf, validated)):
-            rule_id = "repo.marketplace" if relative_path == MARKETPLACE_PATH else "set.manifest.plugin"
-            collector.refuse(str(relative_path), rule_id, f"{reason}; run `python3 tools/sync-manifests`")
+        # Each set's manifests were compared inside its validation (the options carry publisher.conf); the marketplace
+        # is the repository's one generated file left.
+        expected = {MARKETPLACE_PATH: expected_manifest_files(publisher_conf, validated)[MARKETPLACE_PATH]}
+        for relative_path, reason in stale_manifest_files(root_fd, expected):
+            collector.refuse(str(relative_path), "repo.marketplace", f"{reason}; run `python3 tools/sync-manifests`")
 
 
 def run_check_publisher(root: pathlib.Path, collector: FindingCollector) -> None:
@@ -156,12 +158,41 @@ def run_check_publisher(root: pathlib.Path, collector: FindingCollector) -> None
 
 
 def validate_one_set(set_directory: pathlib.Path, publisher: str, licenses: str, license_texts: list, profile: str,
-                     collector: FindingCollector) -> None:
+                     publisher_conf_path: pathlib.Path, collector: FindingCollector) -> None:
     allowlist = tuple(item for item in licenses.replace(",", " ").split() if item) if licenses is not None else fmt.DEFAULT_LICENSE_ALLOWLIST
+    publisher_conf = None
+    if publisher_conf_path is not None:
+        publisher_conf = read_publisher_conf(publisher_conf_path, collector)
+        if publisher_conf is None:
+            return
     options = ValidationOptions(publisher=publisher, profile=profile, reserved_words=read_reserved_words(RESERVED_WORDS_FILE),
                                 license_allowlist=allowlist, license_text_directories=[path.resolve() for path in license_texts],
-                                display_root=set_directory.parent)
+                                display_root=set_directory.parent, publisher_conf=publisher_conf)
     validate_set_directory(set_directory, options, collector)
+
+
+def read_publisher_conf(path: pathlib.Path, collector: FindingCollector):
+    """The publisher.conf at `path`, read from its directory's descriptor, or None after a `repo.publisher-conf` finding."""
+    try:
+        directory_fd = open_root(path.parent)
+    except OSError:
+        collector.refuse(str(path), "repo.publisher-conf", "cannot be read: its directory does not exist")
+        return None
+    try:
+        return parse_key_value_text(read_text_under(directory_fd, pathlib.PurePath(path.name), fmt.FILE_MAX_BYTES))
+    except FileNotFoundError:
+        collector.refuse(str(path), "repo.publisher-conf", "does not exist")
+    except RefusedRead as refusal:
+        collector.refuse(str(path), "repo.publisher-conf", refusal.message)
+    finally:
+        os.close(directory_fd)
+    return None
+
+
+def default_publisher_conf(set_directory: pathlib.Path) -> pathlib.Path:
+    """`<set-directory>/../../publisher.conf` -- the repository root's, for a set under `sets/` -- where it exists."""
+    candidate = set_directory.parent.parent / "publisher.conf"
+    return candidate if candidate.is_file() else None
 
 
 def main() -> int:
@@ -174,6 +205,9 @@ def main() -> int:
     parser.add_argument("--licenses", metavar="ID,...", help="with --set-directory: the SPDX allowlist in force")
     parser.add_argument("--license-texts", action="append", default=[], type=pathlib.Path, metavar="DIR",
                         help="with --set-directory: a directory whose LICENSES/ holds the texts the set does not carry; repeatable")
+    parser.add_argument("--publisher-conf", type=pathlib.Path, metavar="PATH",
+                        help="with --set-directory: the publisher.conf the manifests are rendered from, compared whole "
+                             "(default: <set-directory>/../../publisher.conf where it exists)")
     parser.add_argument("--list-rules", action="store_true", help="print every rule id with what it requires")
     parser.add_argument("--markdown", action="store_true", help="with --list-rules: as the table format/FORMAT.md embeds")
     args = parser.parse_args()
@@ -183,8 +217,9 @@ def main() -> int:
     if args.set_directory is not None:
         # The path is made absolute without resolving its last component, which the validator opens without following
         # a link; its parent is the operator's argument.
-        validate_one_set(pathlib.Path(os.path.abspath(args.set_directory)), args.publisher, args.licenses, args.license_texts,
-                         args.profile, collector)
+        set_directory = pathlib.Path(os.path.abspath(args.set_directory))
+        publisher_conf_path = args.publisher_conf.resolve() if args.publisher_conf is not None else default_publisher_conf(set_directory)
+        validate_one_set(set_directory, args.publisher, args.licenses, args.license_texts, args.profile, publisher_conf_path, collector)
     else:
         validate_repository(args.root.resolve(), args.profile, args.set, collector)
     return collector.report()

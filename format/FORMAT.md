@@ -253,7 +253,7 @@ differ.
 | `set.conf.unknown-key` | warns | an unknown key is reported; base reads past it |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
 | `set.entry.reserved` | refuses | `jobs`, `libs` and `variants` are reserved and do not hold any content |
-| `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence |
+| `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |
 | `set.manifest.components` | refuses | a plugin manifest does not declare a component key |
 | `set.manifest.claude-plugin` | refuses | `.claude-plugin` holds `plugin.json` alone |
 | `name.grammar` | refuses | a name is 1 to 64 characters of `a-z`, `0-9` and single hyphens, starting and ending with a letter or digit |
@@ -264,7 +264,7 @@ differ.
 | `name.frontmatter` | refuses | the frontmatter `name` equals the directory or file-stem name |
 | `name.collision` | refuses | a skill and a subagent do not share a name |
 | `name.composed-length` | warns | `<plugin>:<name>` is at most 64 characters, the OpenAI submission limit |
-| `kind.shape` | refuses | an entry under `skills/` is a directory holding `SKILL.md`, and one under `agents/` a `.md` file |
+| `kind.shape` | refuses | `skills/` and `agents/` are directories; an entry under `skills/` is a directory holding a `SKILL.md` file, and one under `agents/` a `.md` file |
 | `kind.reserved` | refuses | a reserved kind directory does not hold any content |
 | `skill.entry.unknown` | refuses | a skill holds `SKILL.md`, `scripts`, `references`, `assets`, `tests`, `UPSTREAM.conf`, `LICENSE` and `LICENSES` alone |
 | `skill.plugin-manifest` | refuses | a skill does not hold a `.claude-plugin` directory |
@@ -289,7 +289,7 @@ differ.
 | `file.name` | refuses | a file name is printable and does not carry a newline |
 | `cs.package` | refuses | a `.cs` script does not carry a `#:package` directive |
 | `cs.sdk` | refuses | a `.cs` script's `#:sdk` is `Microsoft.NET.Sdk` or `Microsoft.NET.Sdk.Web` |
-| `cs.project` | refuses | a `.cs` script's `#:project` names a `.csproj` inside the skill |
+| `cs.project` | refuses | a `.cs` script's `#:project` names, relative to the script, a `.csproj` the skill ships |
 | `provenance.syntax` | refuses | `UPSTREAM.conf` reads as `KEY=value` with `source`, `path`, `revision` and `license` |
 | `provenance.duplicate` | refuses | an asset has one `UPSTREAM.conf`, in the skill or under `metadata` |
 | `metadata.kind` | refuses | `metadata/<kind>` is an implemented kind id |
@@ -300,5 +300,5 @@ differ.
 | `license.allowlist` | refuses | every identifier of a licence is on the list in force |
 | `license.text` | refuses | `LICENSES/<identifier>.txt` exists for every identifier a set declares |
 | `license.file` | refuses | every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation |
-| `release.inventory` | refuses | `SHA256SUMS` lists every file of the built set and matches each |
+| `release.inventory` | refuses | `SHA256SUMS` lists every file of the built set once and matches each |
 <!-- rules:end -->

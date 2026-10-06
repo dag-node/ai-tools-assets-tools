@@ -25,12 +25,15 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 from key_value_config import parse_key_value_text  # noqa: E402
 
 
-def run_validate(set_directory: pathlib.Path, publisher: str, profile: str = "source", license_texts=None, licenses=None):
+def run_validate(set_directory: pathlib.Path, publisher: str, profile: str = "source", license_texts=None, licenses=None,
+                 publisher_conf: pathlib.Path = None):
     command = [sys.executable, str(VALIDATE), "--set-directory", str(set_directory), "--publisher", publisher, "--profile", profile]
     for directory in license_texts or [FIXTURES]:
         command += ["--license-texts", str(directory)]
     if licenses is not None:
         command += ["--licenses", licenses]
+    if publisher_conf is not None:
+        command += ["--publisher-conf", str(publisher_conf)]
     completed = subprocess.run(command, capture_output=True, text=True)
     lines = completed.stderr.strip().splitlines() if completed.stderr.strip() else []
     refusals = [line for line in lines if ": warning: " not in line]
@@ -52,8 +55,10 @@ class CommittedFixtures(unittest.TestCase):
         for fixture_directory, conf, set_directory in cases:
             with self.subTest(fixture=fixture_directory.relative_to(FIXTURES)):
                 license_texts = [(fixture_directory / conf.get("license_texts")).resolve()] if conf.has("license_texts") else []
+                publisher_conf = (fixture_directory / conf.get("publisher_conf")).resolve() if conf.has("publisher_conf") else None
                 status, refusals, warnings = run_validate(set_directory, conf.get("publisher"), conf.get("profile", "source"),
-                                                          license_texts, conf.get("licenses") if conf.has("licenses") else None)
+                                                          license_texts, conf.get("licenses") if conf.has("licenses") else None,
+                                                          publisher_conf)
                 expect, rule = conf.get("expect"), conf.get("rule")
                 if expect == "pass":
                     self.assertEqual((status, refusals, warnings), (0, [], []))
