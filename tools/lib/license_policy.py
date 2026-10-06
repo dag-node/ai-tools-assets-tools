@@ -24,7 +24,9 @@ read, so each of those files is refused rather than judged by the root's annotat
 from __future__ import annotations
 
 import functools
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
@@ -82,11 +84,23 @@ def check_declared_license(collector: FindingCollector, path: str, expression: s
 def check_license_texts(collector: FindingCollector, declaring_path: str, identifiers: Iterable[str], carried: Set[str],
                         text_directories: Sequence[Path]) -> None:
     """Report an identifier whose text is not among `carried` (the texts a walk read inside the tree under check) and
-    is `LICENSES/<identifier>.txt` under none of `text_directories`, the operator-named directories outside it."""
+    is `LICENSES/<identifier>.txt` under none of `text_directories`, the operator-named directories outside it.
+
+    An external text counts only as one regular file with one link, `lstat`ed so a link at the name is not followed:
+    `build-set` reads it through `safe_read` under the same rule, so what validation accepts is what a build can carry.
+    """
     for identifier in sorted(set(identifiers) - set(carried)):
-        if not any((directory / LICENSE_TEXTS_DIRECTORY / f"{identifier}.txt").is_file() for directory in text_directories):
+        if not any(_is_one_regular_file(directory / LICENSE_TEXTS_DIRECTORY / f"{identifier}.txt") for directory in text_directories):
             searched = ", ".join(str(directory / LICENSE_TEXTS_DIRECTORY) for directory in [Path("."), *text_directories])
-            collector.refuse(declaring_path, "license.text", f"no `{identifier}.txt` under {searched}")
+            collector.refuse(declaring_path, "license.text", f"no `{identifier}.txt` (one regular file, not a link) under {searched}")
+
+
+def _is_one_regular_file(path: Path) -> bool:
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(status.st_mode) and status.st_nlink == 1
 
 
 def file_spdx_expressions(root_fd: int, relative_path: PurePath) -> List[str]:
