@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: MIT
-"""The format-1 validator over one set directory: every rule `asset_format.RULES` names, applied in one walk.
+"""The format-1 validator over one set directory: every rule `asset_format.RULES` names, applied over one walk.
 
-A set is read as data. The walk does not follow a symlink, reads each file once, and judges what it read; no file under
-the set is imported, executed or sourced. The same function serves `tools/validate` over a publisher repository, the
-conformance fixtures under `fixtures/`, and a built set under the release profile, so one implementation decides what
-a set may carry.
+A set is read as data, once. The walk opens the set root and every directory under it by descriptor through
+`safe_read`, so no symbolic link is followed and no path is reopened after it: every later rule reads the `FileRecord`
+the walk kept, and the release inventory compares the digest the walk took. The walk is iterative and holds to the
+budgets `asset_format` states; the first budget tripped is one `file.size` finding at the set root, after which the
+walk stops and no later rule runs, so a tree too large to read whole is refused rather than judged in part. No file
+under the set is imported, executed or sourced. The same function serves `tools/validate` over a publisher repository,
+the conformance fixtures under `fixtures/`, and a built set under the release profile, so one implementation decides
+what a set may carry.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -19,8 +22,9 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 import asset_format as fmt
 from findings import FindingCollector
 from frontmatter import FrontmatterDocument, split_frontmatter
-from key_value_config import ConfigDocument, read_key_value_file
+from key_value_config import ConfigDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
+from safe_read import RefusedRead, open_directory, open_root, read_file
 
 PROFILE_SOURCE = "source"
 PROFILE_RELEASE = "release"
@@ -31,10 +35,13 @@ SHA256SUMS_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64}) [ *](?P<path>.+)$")
 
 @dataclass
 class FileRecord:
-    """One regular file the walk met, with the text it read where the suffix is one the rules inspect."""
+    """One regular file the walk read: its bytes and digest when it was read whole, and the text where the suffix is
+    one the rules inspect. `data` and `digest` are None for a file over the size cap, whose first bytes alone were read."""
 
     relative_path: Path
     size: int
+    data: Optional[bytes] = None
+    digest: Optional[str] = None
     text: Optional[str] = None
     is_text: bool = True
 
@@ -68,10 +75,19 @@ class ValidationOptions:
     display_root: Path
 
 
-def validate_set_directory(set_directory: Path, options: ValidationOptions, collector: FindingCollector) -> SetSummary:
-    """Apply every set-level rule to `set_directory` and return what was read."""
+def validate_set_directory(set_directory: Path, options: ValidationOptions, collector: FindingCollector,
+                           parent_fd: Optional[int] = None) -> SetSummary:
+    """Apply every set-level rule to `set_directory` and return what was read.
+
+    The set root is opened as `set_directory.name` under `parent_fd` without following a symbolic link; with no
+    `parent_fd`, the parent directory is the operator's argument and is opened by path.
+    """
     validator = _SetValidator(set_directory, options, collector)
-    return validator.run()
+    return validator.run(parent_fd)
+
+
+class _BudgetExceeded(Exception):
+    """A walk budget tripped; the message names the budget and where."""
 
 
 class _SetValidator:
@@ -83,6 +99,7 @@ class _SetValidator:
         self.summary = SetSummary(set_name=self.set_name)
         self.files_by_path: Dict[Path, FileRecord] = {}
         self.directories: Set[Path] = set()
+        self.bytes_read = 0
 
     # ── reporting ──────────────────────────────────────────────────────────────────────────────────────────────
     def display(self, relative_path: Path) -> str:
@@ -98,11 +115,16 @@ class _SetValidator:
         self.collector.warn(self.display(relative_path), rule_id, message)
 
     # ── the run ────────────────────────────────────────────────────────────────────────────────────────────────
-    def run(self) -> SetSummary:
-        if not self.set_directory.is_dir():
-            self.refuse(Path("."), "set.conf.missing", "is not a directory")
+    def run(self, parent_fd: Optional[int]) -> SetSummary:
+        root_fd = self.open_set_root(parent_fd)
+        if root_fd is None:
             return self.summary
-        self.walk(Path("."))
+        try:
+            complete = self.walk(root_fd)
+        finally:
+            os.close(root_fd)
+        if not complete:
+            return self.summary
         self.check_set_root_entries()
         set_conf = self.check_set_conf()
         self.check_claude_plugin_directory()
@@ -119,31 +141,97 @@ class _SetValidator:
         return self.summary
 
     # ── the walk ───────────────────────────────────────────────────────────────────────────────────────────────
-    def walk(self, relative_directory: Path) -> None:
-        directory = self.set_directory / relative_directory
+    def open_set_root(self, parent_fd: Optional[int]) -> Optional[int]:
+        """The set root's descriptor, opened under `parent_fd` without following a link; None after a refusal."""
+        own_parent: Optional[int] = None
         try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            if parent_fd is None:
+                parent_fd = own_parent = open_root(self.set_directory.parent)
+            return open_directory(self.set_directory.name, parent_fd)
+        except RefusedRead as refusal:
+            self.refuse(Path("."), refusal.rule_id, refusal.message)
+        except FileNotFoundError:
+            self.refuse(Path("."), "set.conf.missing", "does not exist")
+        except NotADirectoryError:
+            self.refuse(Path("."), "set.conf.missing", "is not a directory")
+        finally:
+            if own_parent is not None:
+                os.close(own_parent)
+        return None
+
+    def walk(self, root_fd: int) -> bool:
+        """Read every entry under the set root once, by descriptor; False when a budget tripped and the walk stopped.
+
+        An explicit stack of open directory descriptors replaces recursion, so depth is a budget and not a stack
+        limit; a directory's entries are consumed as an iterator against the per-directory cap before they are sorted.
+        """
+        pending: List[Tuple[Path, int, int]] = [(Path("."), root_fd, 0)]
+        try:
+            while pending:
+                relative_directory, dir_fd, depth = pending.pop()
+                try:
+                    subdirectories = self.read_directory(relative_directory, dir_fd, depth)
+                finally:
+                    if dir_fd != root_fd:
+                        os.close(dir_fd)
+                pending.extend(reversed(subdirectories))
+        except _BudgetExceeded as budget:
+            for _, dir_fd, _ in pending:
+                if dir_fd != root_fd:
+                    os.close(dir_fd)
+            self.refuse(Path("."), "file.size", f"{budget}; the walk stopped there and no later rule was applied")
+            return False
+        return True
+
+    def read_directory(self, relative_directory: Path, dir_fd: int, depth: int) -> List[Tuple[Path, int, int]]:
+        """Record every entry of one directory and return its subdirectories, each opened, for the walk to continue."""
+        entries = []
+        try:
+            with os.scandir(dir_fd) as listing:
+                for entry in listing:
+                    entries.append(entry)
+                    if len(entries) > fmt.SET_MAX_DIRECTORY_ENTRIES:
+                        raise _BudgetExceeded(f"`{relative_directory}` holds more than {fmt.SET_MAX_DIRECTORY_ENTRIES} entries")
         except OSError as error:
             self.refuse(relative_directory, "file.special", f"cannot be read: {error.strerror}")
-            return
-        for entry in entries:
-            relative_path = relative_directory / entry.name
-            if not self.check_file_name(relative_path, entry.name):
-                continue
-            if entry.is_symlink():
-                self.refuse(relative_path, "file.symlink", "is a symbolic link; a zip or a copy does not carry one the same way on every host")
-                continue
-            if entry.is_dir(follow_symlinks=False):
-                self.directories.add(relative_path)
-                self.check_reserved_directory_name(relative_path, entry.name)
-                self.walk(relative_path)
-                continue
-            if not entry.is_file(follow_symlinks=False):
-                self.refuse(relative_path, "file.special", "is not a regular file or a directory")
-                continue
-            self.record_file(relative_path, entry)
-        if relative_directory == Path(".") and len(self.files_by_path) > fmt.SET_MAX_FILES:
-            self.refuse(Path("."), "file.size", f"holds {len(self.files_by_path)} files; a set holds at most {fmt.SET_MAX_FILES}")
+            return []
+        entries.sort(key=lambda entry: entry.name)
+        subdirectories: List[Tuple[Path, int, int]] = []
+        try:
+            for entry in entries:
+                relative_path = relative_directory / entry.name
+                if not self.check_file_name(relative_path, entry.name):
+                    continue
+                if entry.is_symlink():
+                    self.refuse(relative_path, "file.symlink", "is a symbolic link; a zip or a copy does not carry one the same way on every host")
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    subdirectories.append((relative_path, self.open_subdirectory(relative_path, entry.name, dir_fd, depth + 1), depth + 1))
+                    continue
+                self.record_file(relative_path, entry.name, dir_fd)
+        except _BudgetExceeded:
+            for _, fd, _ in subdirectories:
+                os.close(fd)
+            raise
+        return [(path, fd, child_depth) for path, fd, child_depth in subdirectories if fd >= 0]
+
+    def open_subdirectory(self, relative_path: Path, name: str, dir_fd: int, depth: int) -> int:
+        """Open a child directory under budget, recording it; -1 after a refusal, so the walk goes on past it."""
+        if depth > fmt.SET_MAX_DEPTH:
+            raise _BudgetExceeded(f"`{relative_path}` is {depth} levels deep; a set is at most {fmt.SET_MAX_DEPTH}")
+        if len(self.directories) + 1 > fmt.SET_MAX_DIRECTORIES:
+            raise _BudgetExceeded(f"the set holds more than {fmt.SET_MAX_DIRECTORIES} directories")
+        try:
+            fd = open_directory(name, dir_fd)
+        except RefusedRead as refusal:
+            self.refuse(relative_path, refusal.rule_id, refusal.message)
+            return -1
+        except OSError as error:
+            self.refuse(relative_path, "file.special", f"cannot be read: {error.strerror}")
+            return -1
+        self.directories.add(relative_path)
+        self.check_reserved_directory_name(relative_path, name)
+        return fd
 
     def check_file_name(self, relative_path: Path, name: str) -> bool:
         if any(character in name for character in "\n\r") or not name.isprintable():
@@ -160,32 +248,37 @@ class _SetValidator:
             else:
                 self.refuse(relative_path, "file.reserved-name", f"`{name}` is reserved for the set root")
 
-    def record_file(self, relative_path: Path, entry: os.DirEntry) -> None:
+    def record_file(self, relative_path: Path, name: str, dir_fd: int) -> None:
+        """Read one file under `dir_fd` through safe_read, keep its record, and count it against the budgets."""
+        if len(self.files_by_path) + 1 > fmt.SET_MAX_FILES:
+            raise _BudgetExceeded(f"the set holds more than {fmt.SET_MAX_FILES} files")
         try:
-            stat = entry.stat(follow_symlinks=False)
+            read = read_file(name, dir_fd, fmt.FILE_MAX_BYTES)
+        except RefusedRead as refusal:
+            self.refuse(relative_path, refusal.rule_id, refusal.message)
+            return
         except OSError as error:
             self.refuse(relative_path, "file.special", f"cannot be read: {error.strerror}")
             return
-        record = FileRecord(relative_path=relative_path, size=stat.st_size)
-        if stat.st_nlink > 1:
-            self.refuse(relative_path, "file.hardlink", f"has {stat.st_nlink} links; a file inside a set has one")
-        if stat.st_size > fmt.FILE_MAX_BYTES:
-            self.refuse(relative_path, "file.size", f"is {stat.st_size} bytes; a file is at most {fmt.FILE_MAX_BYTES}")
+        record = FileRecord(relative_path=relative_path, size=read.size)
+        if read.truncated:
+            self.refuse(relative_path, "file.size", f"is {read.size} bytes; a file is at most {fmt.FILE_MAX_BYTES}")
             record.is_text = False
         else:
-            record.is_text = self.read_text(relative_path, record)
+            self.bytes_read += len(read.data)
+            if self.bytes_read > fmt.SET_MAX_BYTES:
+                raise _BudgetExceeded(f"the set holds more than {fmt.SET_MAX_BYTES} bytes")
+            record.data = read.data
+            record.digest = read.digest
+            record.is_text = self.keep_text(relative_path, record)
         self.check_reserved_file_placement(relative_path)
         self.files_by_path[relative_path] = record
         self.summary.files.append(record)
 
-    def read_text(self, relative_path: Path, record: FileRecord) -> bool:
+    def keep_text(self, relative_path: Path, record: FileRecord) -> bool:
+        """Decode the bytes read and keep the text where a rule inspects the suffix; False after a `file.binary` refusal."""
         try:
-            data = (self.set_directory / relative_path).read_bytes()
-        except OSError as error:
-            self.refuse(relative_path, "file.special", f"cannot be read: {error.strerror}")
-            return False
-        try:
-            text = data.decode("utf-8")
+            text = record.data.decode("utf-8")
         except UnicodeDecodeError:
             self.refuse(relative_path, "file.binary", "is not UTF-8 text; a set carries text files alone")
             return False
@@ -254,11 +347,7 @@ class _SetValidator:
             return None
         if record.text is None:
             return None
-        try:
-            set_conf = read_key_value_file(self.set_directory / relative_path)
-        except (OSError, UnicodeDecodeError) as error:
-            self.refuse(relative_path, "set.conf.syntax", f"cannot be read: {error}")
-            return None
+        set_conf = parse_key_value_text(record.text)
         for message in set_conf.syntax_errors():
             self.refuse(relative_path, "set.conf.syntax", message)
         missing = [key for key in fmt.SET_CONF_REQUIRED if not set_conf.get(key).strip()]
@@ -293,12 +382,14 @@ class _SetValidator:
             if evaluation.is_allowed:
                 self.summary.declared_licenses.update(evaluation.identifiers)
                 check_license_texts(self.collector, self.display(relative_path), evaluation.identifiers,
-                                    self.license_text_directories())
+                                    self.carried_license_texts(), self.options.license_text_directories)
         self.summary.set_conf = set_conf
         return set_conf
 
-    def license_text_directories(self) -> List[Path]:
-        return [self.set_directory, *self.options.license_text_directories]
+    def carried_license_texts(self, *scopes: Path) -> Set[str]:
+        """The identifiers whose `LICENSES/<identifier>.txt` the walk read at the set root or under one of `scopes`."""
+        directories = {Path(fmt.LICENSE_TEXTS_DIRECTORY), *(scope / fmt.LICENSE_TEXTS_DIRECTORY for scope in scopes)}
+        return {path.stem for path in self.files_by_path if path.parent in directories and path.suffix == ".txt"}
 
     def check_claude_plugin_directory(self) -> None:
         directory = Path(fmt.CLAUDE_PLUGIN_DIRECTORY)
@@ -454,7 +545,7 @@ class _SetValidator:
                 if evaluation.is_allowed:
                     self.summary.declared_licenses.update(evaluation.identifiers)
                     check_license_texts(self.collector, self.display(entry_file), evaluation.identifiers,
-                                        [self.set_directory / skill_root, *self.license_text_directories()])
+                                        self.carried_license_texts(skill_root), self.options.license_text_directories)
         self.check_body(entry_file, body, inject=True)
         for relative_path, other in self.files_by_path.items():
             if relative_path != entry_file and relative_path.suffix in fmt.PROSE_FILE_SUFFIXES and other.text is not None \
@@ -591,11 +682,10 @@ class _SetValidator:
                     self.check_upstream_conf(asset_directory / fmt.UPSTREAM_CONF_FILE)
 
     def check_asset_conf(self, relative_path: Path) -> None:
-        try:
-            document = read_key_value_file(self.set_directory / relative_path)
-        except (OSError, UnicodeDecodeError) as error:
-            self.refuse(relative_path, "metadata.asset-conf", f"cannot be read: {error}")
-            return
+        record = self.files_by_path[relative_path]
+        if record.text is None:
+            return  # the walk reported why the file was not read
+        document = parse_key_value_text(record.text)
         for message in document.syntax_errors():
             self.refuse(relative_path, "metadata.asset-conf", message)
         if document.get("format").strip() != str(fmt.FORMAT_VERSION):
@@ -620,11 +710,10 @@ class _SetValidator:
                 self.warn(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; base reports and ignores it")
 
     def check_upstream_conf(self, relative_path: Path) -> None:
-        try:
-            document = read_key_value_file(self.set_directory / relative_path)
-        except (OSError, UnicodeDecodeError) as error:
-            self.refuse(relative_path, "provenance.syntax", f"cannot be read: {error}")
-            return
+        record = self.files_by_path[relative_path]
+        if record.text is None:
+            return  # the walk reported why the file was not read
+        document = parse_key_value_text(record.text)
         for message in document.syntax_errors():
             self.refuse(relative_path, "provenance.syntax", message)
         missing = [key for key in fmt.UPSTREAM_CONF_REQUIRED if not document.get(key).strip()]
@@ -643,7 +732,7 @@ class _SetValidator:
             if evaluation.is_allowed:
                 self.summary.declared_licenses.update(evaluation.identifiers)
                 check_license_texts(self.collector, self.display(relative_path), evaluation.identifiers,
-                                    [self.set_directory / relative_path.parent, *self.license_text_directories()])
+                                    self.carried_license_texts(relative_path.parent), self.options.license_text_directories)
 
     def check_reserved_kind_directories(self) -> None:
         for kind in fmt.KINDS:
@@ -667,16 +756,18 @@ class _SetValidator:
                 self.refuse(inventory_path, "release.inventory", f"line {line_number} is not `<sha256>  <path>`")
                 continue
             listed[match.group("path")] = match.group("digest")
-        present = {str(path) for path in self.files_by_path if path.name not in ("SHA256SUMS", "SHA256SUMS.asc")}
-        for missing in sorted(present - set(listed)):
+        present = {str(path): file for path, file in self.files_by_path.items() if path.name not in ("SHA256SUMS", "SHA256SUMS.asc")}
+        for missing in sorted(set(present) - set(listed)):
             self.refuse(inventory_path, "release.inventory", f"`{missing}` is in the set and not in SHA256SUMS")
-        for extra in sorted(set(listed) - present):
+        for extra in sorted(set(listed) - set(present)):
             self.refuse(inventory_path, "release.inventory", f"`{extra}` is in SHA256SUMS and not in the set")
         for path_text, digest in sorted(listed.items()):
-            if path_text in present:
-                actual = hashlib.sha256((self.set_directory / path_text).read_bytes()).hexdigest()
-                if actual != digest:
-                    self.refuse(inventory_path, "release.inventory", f"`{path_text}` does not match its SHA256SUMS line")
+            if path_text not in present:
+                continue
+            if present[path_text].digest is None:
+                self.refuse(inventory_path, "release.inventory", f"`{path_text}` was not read whole, so its SHA256SUMS line cannot be checked")
+            elif present[path_text].digest != digest:
+                self.refuse(inventory_path, "release.inventory", f"`{path_text}` does not match its SHA256SUMS line")
 
 
 def read_reserved_words(path: Path) -> Set[str]:

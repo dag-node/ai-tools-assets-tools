@@ -9,13 +9,13 @@ a bracketed list with one bracket, with quotes around it, or with a quote or a f
 
 The tools are stricter than base in two places, each a mistake base reads past and a publisher should see: a line
 without `=` and a key given twice are reported, where base ignores the line and takes the last assignment. The reader
-parses and does not execute: a file is text, read whole, and no value in it is evaluated.
+parses text and does not execute: a caller reads the file through `safe_read` and hands the text over, and no value in
+it is evaluated.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -115,8 +115,3 @@ def parse_key_value_text(text: str) -> ConfigDocument:
         document.quoted[key] = quoted
         document.line_numbers[key] = line_number
     return document
-
-
-def read_key_value_file(path: Path) -> ConfigDocument:
-    """Read a config file; the caller handles OSError and UnicodeDecodeError, which name the file as unreadable."""
-    return parse_key_value_text(path.read_text(encoding="utf-8"))

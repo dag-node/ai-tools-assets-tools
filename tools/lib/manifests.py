@@ -12,9 +12,10 @@ import json
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-from asset_format import (CLAUDE_PLUGIN_DIRECTORY, CLAUDE_PLUGIN_MANIFEST, MARKETPLACE_NAME_SUFFIX, PLUGIN_NAME_PREFIX,
-                          PORTABLE_PLUGIN_MANIFEST, PORTABLE_PLUGIN_SCHEMA)
+from asset_format import (CLAUDE_PLUGIN_DIRECTORY, CLAUDE_PLUGIN_MANIFEST, FILE_MAX_BYTES, MARKETPLACE_NAME_SUFFIX,
+                          PLUGIN_NAME_PREFIX, PORTABLE_PLUGIN_MANIFEST, PORTABLE_PLUGIN_SCHEMA)
 from key_value_config import ConfigDocument
+from safe_read import RefusedRead, read_text_under
 
 MARKETPLACE_PATH = Path(".claude-plugin") / "marketplace.json"
 
@@ -78,13 +79,18 @@ def expected_manifest_files(publisher: ConfigDocument, sets: Sequence[Tuple[str,
     return files
 
 
-def stale_manifest_files(root: Path, expected: Dict[Path, str]) -> List[Tuple[Path, str]]:
-    """The expected files whose committed copy is absent or differs, each with the reason."""
+def stale_manifest_files(root_fd: int, expected: Dict[Path, str]) -> List[Tuple[Path, str]]:
+    """The expected files whose committed copy under `root_fd` is absent, unreadable or differs, each with the reason."""
     stale: List[Tuple[Path, str]] = []
     for relative_path, text in expected.items():
-        path = root / relative_path
-        if not path.is_file():
+        try:
+            committed = read_text_under(root_fd, relative_path, FILE_MAX_BYTES)
+        except FileNotFoundError:
             stale.append((relative_path, "is absent"))
-        elif path.read_text(encoding="utf-8") != text:
+            continue
+        except RefusedRead as refusal:
+            stale.append((relative_path, refusal.message))
+            continue
+        if committed != text:
             stale.append((relative_path, "differs from what sync-manifests writes"))
     return stale

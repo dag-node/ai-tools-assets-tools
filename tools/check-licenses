@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import subprocess
 import sys
@@ -24,9 +25,10 @@ sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
-from key_value_config import read_key_value_file  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import (allowlist_in_force, annotation_for, check_declared_license, check_license_texts,  # noqa: E402
                             exception_for, file_spdx_expression, read_reuse_annotations)
+from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
 
 NOT_JUDGED = ("LICENSE", "REUSE.toml")
 
@@ -46,26 +48,43 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     collector = FindingCollector("check-licenses")
-    publisher_path = root / "publisher.conf"
-    publisher = read_key_value_file(publisher_path) if publisher_path.is_file() else None
-    allowlist, allowlist_error = allowlist_in_force(publisher)
-    if allowlist_error:
-        collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
-    allowlist = tuple(allowlist) + tuple(args.allow)
     exceptions = []
     for item in args.exception:
         if "=" not in item:
             parser.error(f"--exception takes GLOB=ID, not `{item}`")
         glob, identifier = item.rsplit("=", 1)
         exceptions.append((glob, identifier))
-    reuse_path = root / "REUSE.toml"
-    annotations = read_reuse_annotations(reuse_path) if reuse_path.is_file() else []
+    try:
+        root_fd = open_root(root)
+    except OSError:
+        collector.refuse(str(root), "repo.layout", "is not a directory")
+        return collector.report()
+    try:
+        check_tree(root_fd, root, tuple(args.allow), exceptions, collector)
+    finally:
+        os.close(root_fd)
+    return collector.report()
+
+
+def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: list, collector: FindingCollector) -> None:
+    try:
+        publisher = parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("publisher.conf"), fmt.FILE_MAX_BYTES))
+    except FileNotFoundError:
+        publisher = None
+    except RefusedRead as refusal:
+        collector.refuse("publisher.conf", "license.allowlist", f"{refusal.message}; every licence is refused until it is readable")
+        return
+    allowlist, allowlist_error = allowlist_in_force(publisher)
+    if allowlist_error:
+        collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
+    allowlist = tuple(allowlist) + allowed
+    annotations = read_reuse_annotations(root_fd)
     used = set()
     for relative_path in tracked_files(root):
         path_text = relative_path.as_posix()
         if relative_path.name in NOT_JUDGED or relative_path.parts[0] == fmt.LICENSE_TEXTS_DIRECTORY:
             continue
-        expression = file_spdx_expression(root / relative_path) or annotation_for(path_text, annotations)
+        expression = file_spdx_expression(root_fd, relative_path) or annotation_for(path_text, annotations)
         if expression is None:
             collector.refuse(path_text, "license.file", "states no licence: no SPDX header and no REUSE.toml annotation matches")
             continue
@@ -74,10 +93,9 @@ def main() -> int:
         evaluation = check_declared_license(collector, path_text, expression, in_force, "the file's licence")
         if evaluation.is_well_formed:
             used.update(evaluation.identifiers)
-    check_license_texts(collector, "LICENSES", used, [root])
+    check_license_texts(collector, "LICENSES", used, set(), [root])
     if not collector.has_refusals():
         print(f"check-licenses: every file is under {', '.join(sorted(used))}; texts present")
-    return collector.report()
 
 
 if __name__ == "__main__":
