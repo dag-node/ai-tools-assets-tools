@@ -7,10 +7,12 @@ are skipped; one layer of matched quotes is removed; outside quotes a `#` at the
 ends it; `KEY=` is present with an empty value. A list is `[a, b]`, or a bare `a, b c` split on commas and whitespace;
 a bracketed list with one bracket, with quotes around it, or with a quote or a further bracket inside is invalid.
 
-The tools are stricter than base in two places, each a mistake base reads past and a publisher should see: a line
-without `=` and a key given twice are reported, where base ignores the line and takes the last assignment. The reader
-parses text and does not execute: a caller reads the file through `safe_read` and hands the text over, and no value in
-it is evaluated.
+The tools are stricter than base where base reads past a mistake a publisher should see: a line without `=`, a key given
+twice, a quote that does not close, text other than whitespace and a `#` comment after the closing quote, and an empty
+list item (`[a,,b]`, a trailing comma) are reported, where base takes the last assignment, the text to the line's end
+or the items it can split. For a list-typed key, `key=` is refused -- `key=[]` is the explicit empty list and an
+absent key is not declared -- so the three are told apart. The reader parses text and does not execute: a caller
+reads the file through `safe_read` and hands the text over, and no value in it is evaluated.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-LIST_SEPARATORS = re.compile(r"[,\s]+")
+EMPTY_LIST_REASON = "it is empty; write `key=[]` for an explicit empty list, or omit the key"
 
 
 @dataclass
@@ -30,7 +32,7 @@ class ConfigDocument:
     quoted: Dict[str, bool] = field(default_factory=dict)
     line_numbers: Dict[str, int] = field(default_factory=dict)
     duplicate_keys: List[Tuple[str, int]] = field(default_factory=list)
-    malformed_lines: List[Tuple[int, str]] = field(default_factory=list)
+    malformed_lines: List[Tuple[int, str]] = field(default_factory=list)  # (line number, what is wrong with it)
 
     def has(self, key: str) -> bool:
         return key in self.values
@@ -46,7 +48,7 @@ class ConfigDocument:
 
     def syntax_errors(self) -> List[str]:
         """One message per thing the reader refused, each naming its line."""
-        messages = [f"line {line_number}: no `=` in `{text}`" for line_number, text in self.malformed_lines]
+        messages = [f"line {line_number}: {what}" for line_number, what in self.malformed_lines]
         messages.extend(f"line {line_number}: key `{key}` is given again; a key is written once"
                         for key, line_number in self.duplicate_keys)
         return messages
@@ -55,32 +57,48 @@ class ConfigDocument:
 def parse_list_value(value: str, quoted: bool = False) -> Tuple[Tuple[str, ...], Optional[str]]:
     """Split a list value the way base splits it: `[a, b]` bracketed, or bare items on commas and whitespace.
 
-    Returns the items and `None`, or an empty tuple and the reason the value is not a list.
+    Returns the items and `None`, or an empty tuple and the reason the value is not a list: an empty value, one
+    bracket, quotes around the brackets, a quote or a bracket inside, or an empty item between two commas.
     """
     value = value.strip()
-    if not value.startswith("[") and not value.endswith("]"):
-        return tuple(item for item in LIST_SEPARATORS.split(value) if item), None
-    if not (value.startswith("[") and value.endswith("]")):
+    if not value:
+        return (), EMPTY_LIST_REASON
+    if value.startswith("[") != value.endswith("]"):
         return (), "it has one bracket and not the other"
-    if quoted:
-        return (), "a bracketed list is written without quotes around it"
-    inner = value[1:-1]
-    if any(character in inner for character in "\"'[]"):
-        return (), "an item inside brackets carries no quote or bracket"
-    return tuple(item for item in LIST_SEPARATORS.split(inner) if item), None
+    if value.startswith("["):
+        if quoted:
+            return (), "a bracketed list is written without quotes around it"
+        value = value[1:-1]
+        if any(character in value for character in "\"'[]"):
+            return (), "an item inside brackets carries no quote or bracket"
+        if not value.strip():
+            return (), None
+    items: List[str] = []
+    for part in value.split(","):
+        if not part.strip():
+            return (), "an item between two commas is empty"
+        items.extend(part.split())
+    return tuple(items), None
 
 
-def parse_scalar_value(raw_value: str) -> Tuple[str, bool]:
-    """The value after `=`, with one quote layer removed; returns it and whether it was quoted."""
+def parse_scalar_value(raw_value: str) -> Tuple[str, bool, Optional[str]]:
+    """The value after `=`, with one quote layer removed; returns it, whether it was quoted, and what is wrong with it.
+
+    A quoted value closes on its line and is followed by whitespace and a `#` comment at most.
+    """
     value = raw_value.lstrip()
     if value[:1] in ("\"", "'"):
         quote = value[0]
         rest = value[1:]
-        if quote in rest:
-            return rest[: rest.index(quote)], True
-        return rest.rstrip(), True
+        if quote not in rest:
+            return rest.rstrip(), True, f"the {quote} quote does not close"
+        closing = rest.index(quote)
+        trailing = rest[closing + 1:].strip()
+        if trailing and not trailing.startswith("#"):
+            return rest[:closing], True, f"`{trailing}` follows the closing quote; a comment after a value opens with `#`"
+        return rest[:closing], True, None
     value = strip_inline_comment(value)
-    return value.rstrip(), False
+    return value.rstrip(), False, None
 
 
 def strip_inline_comment(value: str) -> str:
@@ -101,14 +119,16 @@ def parse_key_value_text(text: str) -> ConfigDocument:
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            document.malformed_lines.append((line_number, raw_line.strip()))
+            document.malformed_lines.append((line_number, f"no `=` in `{raw_line.strip()}`"))
             continue
         key, raw_value = line.split("=", 1)
         key = key.rstrip()
         if not KEY_PATTERN.match(key):
-            document.malformed_lines.append((line_number, raw_line.strip()))
+            document.malformed_lines.append((line_number, f"`{key}` is not a key of letters, digits and underscores"))
             continue
-        value, quoted = parse_scalar_value(raw_value)
+        value, quoted, problem = parse_scalar_value(raw_value)
+        if problem is not None:
+            document.malformed_lines.append((line_number, f"`{key}=`: {problem}"))
         if key in document.values:
             document.duplicate_keys.append((key, line_number))
         document.values[key] = value

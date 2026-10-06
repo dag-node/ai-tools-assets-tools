@@ -351,7 +351,9 @@ class _SetValidator:
         set_conf = parse_key_value_text(record.text)
         for message in set_conf.syntax_errors():
             self.refuse(relative_path, "set.conf.syntax", message)
-        missing = [key for key in fmt.SET_CONF_REQUIRED if not set_conf.get(key).strip()]
+        # An empty list key (`maintainers=`) is the list grammar's finding below, so the two rules do not both fire.
+        missing = [key for key in fmt.SET_CONF_REQUIRED
+                   if not set_conf.has(key) or (key not in fmt.SET_CONF_LIST_KEYS and not set_conf.get(key).strip())]
         if missing:
             self.refuse(relative_path, "set.conf.required-key", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
         if set_conf.has("format") and set_conf.get("format").strip() != str(fmt.FORMAT_VERSION):
@@ -365,6 +367,8 @@ class _SetValidator:
                 items, reason = set_conf.list_value(key)
                 if reason is not None:
                     self.refuse(relative_path, "set.conf.syntax", f"`{key}` is not a list ({reason}); write it as [a, b]")
+                elif not items and key in fmt.SET_CONF_REQUIRED:
+                    self.refuse(relative_path, "set.conf.required-key", f"`{key}=[]` is empty; a set declares at least one")
                 elif key == "requires_capabilities":
                     for capability in items:
                         if capability not in fmt.KNOWN_CAPABILITIES:
