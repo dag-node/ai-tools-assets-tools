@@ -123,10 +123,19 @@ using System;
 Console.WriteLine(args.Length);
 """
 
+# The fixture scripts carry a header of their own; `reuse lint` reads the literal here as this file's second
+# expression, so the two constants sit in an ignored block.
+# REUSE-IgnoreStart
 EXTRACT_PY = """# SPDX-License-Identifier: MIT
 import sys
 print(sys.argv[1:])
 """
+
+TEST_EXTRACT_PY = """# SPDX-License-Identifier: MIT
+def test_nothing():
+    assert True
+"""
+# REUSE-IgnoreEnd
 
 
 def base_tree(publisher: str, set_name: str) -> Tree:
@@ -144,7 +153,7 @@ def base_tree(publisher: str, set_name: str) -> Tree:
         f"skills/{prefix}pdf-processing/scripts/extract.py": EXTRACT_PY,
         f"skills/{prefix}pdf-processing/scripts/report.cs": REPORT_CS,
         f"skills/{prefix}pdf-processing/references/formats.md": "# Formats\n\nPDF 1.4 to 2.0.\n",
-        f"skills/{prefix}pdf-processing/tests/test_extract.py": "# SPDX-License-Identifier: MIT\ndef test_nothing():\n    assert True\n",
+        f"skills/{prefix}pdf-processing/tests/test_extract.py": TEST_EXTRACT_PY,
         "skills/pdftext/SKILL.md": VENDORED_SKILL_MD,
         "skills/pdftext/UPSTREAM.conf": UPSTREAM_CONF,
         "skills/pdftext/scripts/pdftext.py": "print('text')\n",

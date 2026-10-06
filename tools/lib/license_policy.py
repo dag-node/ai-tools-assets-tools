@@ -59,7 +59,7 @@ def check_license_texts(collector: FindingCollector, declaring_path: str, identi
 
 
 def file_spdx_expression(path: Path) -> Optional[str]:
-    """The expression of an `SPDX-License-Identifier:` header in the file's first lines, or None."""
+    """The expression of an SPDX licence header in the file's first lines, or None."""
     try:
         with path.open("r", encoding="utf-8", errors="strict") as handle:
             for _ in range(SPDX_HEADER_LINES_READ):
