@@ -35,36 +35,49 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: The tag is annotated and signed by the pinned maintainer key
+      # The tag object is captured once from the checkout and every later step names that object or the commit it
+      # peels to, so a tag moved on the remote between steps cannot swap what is verified for what is archived.
+      - name: The tag is annotated, names itself, points at this commit, and is signed by the pinned maintainer key
         env:
           TAG: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-          test "$(git cat-file -t "refs/tags/$TAG")" = tag || { echo "$TAG is not an annotated tag" >&2; exit 1; }
+          tag_object="$(git rev-parse --verify --quiet "refs/tags/$TAG^{tag}")" \
+            || { echo "$TAG is not an annotated tag in this checkout" >&2; exit 1; }
+          test "$(git cat-file -t "$tag_object")" = tag || { echo "$tag_object is not a tag object" >&2; exit 1; }
+          embedded="$(git cat-file -p "$tag_object" | awk '/^tag / { print $2; exit }')"
+          test "$embedded" = "$TAG" \
+            || { echo "the tag object names itself $embedded, not $TAG; a tag object is published under its own name" >&2; exit 1; }
+          commit="$(git rev-parse "$tag_object^{commit}")"
+          test "$commit" = "$EVENT_SHA" && test "$commit" = "$(git rev-parse HEAD)" \
+            || { echo "$TAG peels to $commit; the event's commit is $EVENT_SHA and the checkout is $(git rev-parse HEAD)" >&2; exit 1; }
           export GNUPGHOME="$(mktemp -d)"
           curl -sSf "$TAG_SIGNER_KEY_URL" | gpg --batch --import
-          status="$(git verify-tag --raw "$TAG" 2>&1)" || { echo "$status" >&2; exit 1; }
+          status="$(git verify-tag --raw "$tag_object" 2>&1)" || { echo "$status" >&2; exit 1; }
           primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF }')"
           test "$primary" = "$TAG_SIGNER_PRIMARY_FINGERPRINT" \
             || { echo "$TAG is signed by primary ${primary:-none}, not the pinned $TAG_SIGNER_PRIMARY_FINGERPRINT" >&2; exit 1; }
-          echo "$TAG verified: signed by $primary"
+          echo "$TAG verified: tag object $tag_object, commit $commit, signed by $primary"
+          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.9'
 
-      - name: The suite passes at the tag
-        run: python3 -m unittest discover -s tests
+      - name: The suite passes at the verified commit
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT" || { echo "the checkout moved off $RELEASE_COMMIT" >&2; exit 1; }
+          python3 -m unittest discover -s tests
 
-      - name: Write the archive and its SHA-256
+      - name: Write the archive of the verified commit and its SHA-256
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p dist
           archive="dist/ai-tools-assets-tools-${TAG#v}.tar.gz"
-          git archive --format=tar.gz --prefix="ai-tools-assets-tools-${TAG#v}/" -o "$archive" "refs/tags/$TAG"
+          git archive --format=tar.gz --prefix="ai-tools-assets-tools-${TAG#v}/" -o "$archive" "$RELEASE_COMMIT"
           (cd dist && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
           echo "archive=$archive" >> "$GITHUB_ENV"
 
