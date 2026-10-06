@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,7 @@ from findings import FindingCollector
 from frontmatter import FrontmatterDocument, FrontmatterValue, Scalar, split_frontmatter
 from key_value_config import ConfigDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
+from manifests import claude_plugin_document, portable_plugin_document, render_json
 from safe_read import RefusedRead, open_directory, open_root, read_file
 
 PROFILE_SOURCE = "source"
@@ -74,6 +76,8 @@ class ValidationOptions:
     license_allowlist: Sequence[str]
     license_text_directories: Sequence[Path]
     display_root: Path
+    # The publisher.conf the manifests are rendered from; with one, each manifest equals that rendering whole.
+    publisher_conf: Optional[ConfigDocument] = None
 
 
 def validate_set_directory(set_directory: Path, options: ValidationOptions, collector: FindingCollector,
@@ -322,11 +326,29 @@ class _SetValidator:
         entries.update(directory for directory in self.directories if len(directory.parts) == 1)
         return sorted(entries)
 
+    def entry_type(self, relative_path: Path) -> str:
+        return fmt.ENTRY_DIRECTORY if relative_path in self.directories else fmt.ENTRY_FILE
+
+    def check_entry_types(self, entries: Sequence[Path], types: Dict[str, str], rule_id: str) -> List[Path]:
+        """Refuse each allowed entry that is a file where a directory is specified or the reverse; the rest are returned."""
+        well_typed: List[Path] = []
+        for entry in entries:
+            expected = types.get(entry.name)
+            if expected is not None and self.entry_type(entry) != expected:
+                self.refuse(entry, rule_id, f"`{entry.name}` is a {self.entry_type(entry)}; the format specifies a {expected}")
+            else:
+                well_typed.append(entry)
+        return well_typed
+
     def check_set_root_entries(self) -> None:
         allowed = set(fmt.SET_ROOT_ENTRIES_ALLOWED)
         if self.options.profile == PROFILE_RELEASE:
             allowed |= fmt.RELEASE_ROOT_ENTRIES_ALLOWED
-        for entry in self.root_entries():
+        entries = self.root_entries()
+        kind_roots = [entry for entry in entries if entry.name in fmt.KINDS_BY_DIRECTORY and fmt.KINDS_BY_DIRECTORY[entry.name].is_implemented]
+        other = [entry for entry in entries if entry not in kind_roots]
+        self.check_entry_types(kind_roots, fmt.SET_ROOT_ENTRY_TYPES, "kind.shape")
+        for entry in self.check_entry_types(other, fmt.SET_ROOT_ENTRY_TYPES, "set.entry.unknown"):
             name = entry.name
             if name in allowed:
                 continue
@@ -432,12 +454,19 @@ class _SetValidator:
             for key, value in expected.items():
                 if document.get(key) != value:
                     self.refuse(relative_path, "set.manifest.plugin", f"`{key}` is `{document.get(key)}`, expected `{value}` from set.conf")
-            if relative_path.name == fmt.PORTABLE_PLUGIN_MANIFEST and relative_path.parent == Path("."):
-                if document.get("$schema") != fmt.PORTABLE_PLUGIN_SCHEMA:
-                    self.refuse(relative_path, "set.manifest.plugin", f"`$schema` is `{document.get('$schema')}`, expected `{fmt.PORTABLE_PLUGIN_SCHEMA}`")
+            is_portable = relative_path.name == fmt.PORTABLE_PLUGIN_MANIFEST and relative_path.parent == Path(".")
+            if is_portable and document.get("$schema") != fmt.PORTABLE_PLUGIN_SCHEMA:
+                self.refuse(relative_path, "set.manifest.plugin", f"`$schema` is `{document.get('$schema')}`, expected `{fmt.PORTABLE_PLUGIN_SCHEMA}`")
             declared = sorted(key for key in document if key in fmt.PLUGIN_MANIFEST_COMPONENT_KEYS)
             if declared:
                 self.refuse(relative_path, "set.manifest.components", "declares " + ", ".join(f"`{key}`" for key in declared) + "; a set manifest declares no component, each agent reads skills/ and agents/ from its default place")
+            unknown = sorted(key for key in document if key not in fmt.PLUGIN_MANIFEST_ALLOWED_KEYS and key not in fmt.PLUGIN_MANIFEST_COMPONENT_KEYS)
+            if unknown:
+                self.refuse(relative_path, "set.manifest.plugin", "carries " + ", ".join(f"`{key}`" for key in unknown) + "; a set manifest carries " + ", ".join(sorted(fmt.PLUGIN_MANIFEST_ALLOWED_KEYS)) + " alone")
+            if self.options.publisher_conf is not None and not declared and not unknown:
+                rendered = render_json((portable_plugin_document if is_portable else claude_plugin_document)(set_conf, self.options.publisher_conf))
+                if record.text != rendered:
+                    self.refuse(relative_path, "set.manifest.plugin", "differs from what sync-manifests writes from set.conf and publisher.conf")
 
     def check_set_name(self) -> None:
         relative_path = Path(fmt.SET_CONF_FILE)
@@ -483,7 +512,8 @@ class _SetValidator:
             name = skill_root.name
             entry_file = skill_root / "SKILL.md"
             if entry_file not in self.files_by_path:
-                self.refuse(skill_root, "kind.shape", "a skill directory holds SKILL.md")
+                what = "is a directory" if entry_file in self.directories else "is absent"
+                self.refuse(skill_root, "kind.shape", f"a skill directory holds a SKILL.md file; `{name}/SKILL.md` {what}")
                 continue
             if not self.check_name_grammar(skill_root, "skill", name):
                 continue
@@ -523,7 +553,7 @@ class _SetValidator:
         files, directories = self.children_of(skill_root)
         sidecar = skill_root / fmt.SKILL_SIDECAR_RESERVED_PATH
         has_sidecar = sidecar in self.files_by_path
-        for entry in files + directories:
+        for entry in self.check_entry_types(files + directories, fmt.SKILL_ROOT_ENTRY_TYPES, "skill.entry.unknown"):
             if entry.name not in fmt.SKILL_ROOT_ENTRIES_ALLOWED:
                 if entry.name == fmt.CLAUDE_PLUGIN_DIRECTORY or (has_sidecar and entry == sidecar.parent):
                     continue  # reported by the walk, or as the sidecar
@@ -661,10 +691,20 @@ class _SetValidator:
                     if sdk not in fmt.CS_SDKS_ALLOWED:
                         self.refuse(relative_path, "cs.sdk", f"line {line_number}: `#:sdk {value}`; " + " or ".join(sorted(fmt.CS_SDKS_ALLOWED)) + " ship with the SDK, another is fetched from NuGet")
                 elif directive == "project":
-                    target = Path(value.strip())
-                    inside = not target.is_absolute() and ".." not in target.parts and target.suffix == ".csproj"
-                    if not inside:
-                        self.refuse(relative_path, "cs.project", f"line {line_number}: `#:project {value}` names a project outside the skill")
+                    self.check_cs_project(relative_path, skill_root, line_number, value.strip())
+
+    def check_cs_project(self, script: Path, skill_root: Path, line_number: int, value: str) -> None:
+        """`#:project` resolved lexically against the script's directory: inside the skill, a `.csproj`, and shipped."""
+        if Path(value).is_absolute():
+            self.refuse(script, "cs.project", f"line {line_number}: `#:project {value}` is absolute; a project is named relative to the script")
+            return
+        target = Path(posixpath.normpath(posixpath.join(script.parent.as_posix(), value)))
+        if target.parts[:1] == ("..",) or (skill_root != target.parent and skill_root not in target.parents):
+            self.refuse(script, "cs.project", f"line {line_number}: `#:project {value}` names a project outside the skill")
+        elif target.suffix != ".csproj":
+            self.refuse(script, "cs.project", f"line {line_number}: `#:project {value}` does not name a `.csproj`")
+        elif target not in self.files_by_path:
+            self.refuse(script, "cs.project", f"line {line_number}: `#:project {value}` names `{target}`, which the skill does not ship")
 
     # ── subagents ──────────────────────────────────────────────────────────────────────────────────────────────
     def check_subagents(self) -> Dict[str, AssetRecord]:
@@ -723,7 +763,7 @@ class _SetValidator:
                 if (kind.kind_id, asset_directory.name) not in asset_names:
                     self.refuse(asset_directory, "metadata.asset", f"the set holds no {kind.kind_id[:-1]} named `{asset_directory.name}`")
                 asset_files, asset_subdirectories = self.children_of(asset_directory)
-                for entry in asset_files + asset_subdirectories:
+                for entry in self.check_entry_types(asset_files + asset_subdirectories, fmt.METADATA_ENTRY_TYPES, "metadata.entry"):
                     if entry.name not in fmt.METADATA_ENTRIES_ALLOWED:
                         self.refuse(entry, "metadata.entry", "metadata/<kind>/<name>/ holds asset.conf, UPSTREAM.conf and references/ alone")
                 if (asset_directory / fmt.ASSET_CONF_FILE) in self.files_by_path:
@@ -804,6 +844,9 @@ class _SetValidator:
             match = SHA256SUMS_LINE.match(line)
             if not match:
                 self.refuse(inventory_path, "release.inventory", f"line {line_number} is not `<sha256>  <path>`")
+                continue
+            if match.group("path") in listed:
+                self.refuse(inventory_path, "release.inventory", f"line {line_number} lists `{match.group('path')}` again; a file is listed once")
                 continue
             listed[match.group("path")] = match.group("digest")
         present = {str(path): file for path, file in self.files_by_path.items() if path.name not in ("SHA256SUMS", "SHA256SUMS.asc")}

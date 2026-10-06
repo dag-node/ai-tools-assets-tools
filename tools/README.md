@@ -12,7 +12,7 @@ and exits 1 when a finding refuses; the rule ids are
 
 | Command | What it does |
 |---|---|
-| `validate` | applies the format to every set, runs `check-publisher`, holds the committed manifests and the marketplace to `sync-manifests`, and every declared licence to the list in force; `--set-directory DIR` validates one set, `--profile release` a built one; `--list-rules` prints the rules |
+| `validate` | applies the format to every set, runs `check-publisher`, holds the committed manifests and the marketplace to `sync-manifests`, and every declared licence to the list in force; `--set-directory DIR` validates one set (with `--publisher-conf PATH`, its manifests are compared whole against that file's rendering; the repository root's is the default where it exists), `--profile release` a built one; `--list-rules` prints the rules |
 | `check-publisher` | checks that the marketplace, the set names and the manifests' names and contacts are copied from `publisher.conf`; with `--repository <owner>/<repo>`, that `publisher.conf` describes that repository (every release tag) |
 | `sync-manifests` | writes each set's `plugin.json` and `.claude-plugin/plugin.json` and the repository's `.claude-plugin/marketplace.json` from `set.conf` and `publisher.conf`; `--check` refuses a committed copy that differs |
 | `new-set` | creates `sets/<set>/` with `set.conf`, `CHANGELOG.md` and `README.md`, and writes its manifests; refuses a name the format refuses |

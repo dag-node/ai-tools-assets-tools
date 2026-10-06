@@ -178,7 +178,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
         return collector.report()
     options = ValidationOptions(publisher=publisher.get("publisher") or None, profile=PROFILE_SOURCE,
                                 reserved_words=read_reserved_words(TOOLS / "reserved-words.txt"), license_allowlist=allowlist,
-                                license_text_directories=[root], display_root=root)
+                                license_text_directories=[root], display_root=root, publisher_conf=publisher)
     try:
         summary = validate_set_directory(root / "sets" / set_name, options, collector, parent_fd=sets_fd)
     finally:
@@ -200,7 +200,8 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
         for relative, data in staged.items():
             create_file(staging_root, pathlib.PurePath(set_name, relative), data)
         release_options = ValidationOptions(publisher=options.publisher, profile=PROFILE_RELEASE, reserved_words=options.reserved_words,
-                                            license_allowlist=allowlist, license_text_directories=[], display_root=staging_root)
+                                            license_allowlist=allowlist, license_text_directories=[], display_root=staging_root,
+                                            publisher_conf=publisher)
         validate_set_directory(staging, release_options, collector)
         if collector.has_refusals():
             print("build-set: the staged set does not validate under the release profile; no zip was written", file=sys.stderr)
