@@ -42,6 +42,11 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   outside a REUSE ignore block -- under its precedence and glob grammar,
   and refusing a `REUSE.toml` outside the TOML subset it reads rather than
   judging any file on it.
+- A skill or subagent may run a command when it loads, such as injecting
+  `git status` output, once its `asset.conf` declares `skills.dynamic.v1`
+  and `publisher.conf` sets `allow_dynamic_injection=yes`; every other
+  substitution, and a declaration the publisher does not admit, fails
+  `body.dynamic-injection`.
 - `check-signoff`, the Developer Certificate of Origin check over a pull
   request's own commits.
 - The conformance fixtures under `fixtures/`: a passing set per publisher shape
