@@ -96,11 +96,11 @@ file in it as a subagent.
 | `requires_base` | no | the least `ai-tools-base` version |
 | `requires_integrations` | no | a list of `integration-<name>` tokens the assets need |
 | `requires_capabilities` | no | a list of capability tokens; an unknown one refuses the set |
-| `x_<name>` | no | a publisher's own key; accepted without a finding, read past by base |
+| `x_<key>` | no | a publisher's own key; accepted without a finding, read past by base |
 
 The capabilities this format defines are `skills.portable.v1`
 and `subagents.claude.v1`. A key outside this table that is not
-an `x_<name>` extension key is refused.
+an `x_<key>` extension key is refused.
 
 ## `KEY=value` grammar
 
@@ -131,7 +131,7 @@ and an empty item (`[a,,b]`, a trailing comma) is refused. For a list key,
 is refused, so the three are told apart; a required list given `[]` fails
 the required-key rule. `publisher.conf` `licenses=[]` refuses every licence.
 
-`x_<name>` -- `x_` then a key body -- is the one shape a key outside a file's
+`x_<key>` -- `x_` then a key body -- is the one shape a key outside a file's
 table takes. The tools accept it without a finding and base reads past it; any
 other unknown key is refused, so a misspelt key does not pass as informational.
 A requirement never takes the `x_` form.
@@ -255,7 +255,7 @@ asset carries it under `metadata/<kind>/<name>/`. One declaration per asset.
 
 `metadata/<kind>/<name>/asset.conf` carries `format=1`. An asset declares
 what it needs in `requires_capabilities`, `requires_integrations` (as
-`integration-<name>`) and `x_<name>` keys. `<kind>` is a known kind id;
+`integration-<name>`) and `x_<key>` keys. `<kind>` is a known kind id;
 `<name>` is an asset the set holds. An unknown capability refuses
 the asset.
 
@@ -266,7 +266,7 @@ profiles. A reader that filters assets per agent rejects any asset whose
 required profile the agent does not implement.
 
 Compatibility notes (agent, model, date) live as ordinary prose in the
-skill's `compatibility` field. Publisher-specific data goes in an `x_<name>`
+skill's `compatibility` field. Publisher-specific data goes in an `x_<key>`
 key.
 
 ## Licences
@@ -316,7 +316,7 @@ a reader with it refuses a set that carries the content and omits the token.
 No reader reads an entry it does not define, and none ignores one.
 
 A publisher's own key in `set.conf`,
-`UPSTREAM.conf` or `asset.conf` is `x_<name>`, which base reads past; a key
+`UPSTREAM.conf` or `asset.conf` is `x_<key>`, which base reads past; a key
 of another shape outside the file's table is refused, and a requirement
 (`requires_base`, `requires_capabilities`, `requires_integrations`) is read,
 not skipped, so an unknown required capability refuses. An unknown top-level
@@ -369,7 +369,7 @@ differ.
 | `set.conf.version` | refuses | `version` is a semantic version |
 | `set.conf.requires-capabilities` | refuses | every required capability is one the format defines |
 | `set.conf.requires-integrations` | refuses | every required integration is written as `integration-<name>` |
-| `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<name>` extension key |
+| `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
 | `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 admits content at one |
 | `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |

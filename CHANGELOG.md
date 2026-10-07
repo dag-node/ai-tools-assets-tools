@@ -13,7 +13,7 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   per rule, and `tools/validate` applying it to a publisher repository
   or to one set directory, with a release profile for a built set. The format
   states its `KEY=value` grammar (an empty list, an absent key and `key=[]`
-  told apart; a publisher's own keys as `x_<name>`, every other unknown key
+  told apart; a publisher's own keys as `x_<key>`, every other unknown key
   refused), the type of every frontmatter field (a scalar YAML would read as
   a number, a boolean, null, a date or no value is quoted; one lexical rule
   holds every plain scalar wherever it stands), the content rules over the
