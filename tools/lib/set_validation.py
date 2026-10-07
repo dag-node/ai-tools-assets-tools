@@ -414,10 +414,10 @@ class _SetValidator:
         return set_conf
 
     def check_known_keys(self, relative_path: Path, document: KeyValueDocument, known: Set[str]) -> None:
-        """Refuse a key outside the file's table unless it is an `x_<name>` extension key, which is read past."""
+        """Refuse a key outside the file's table unless it is an `x_<key>` extension key, which is read past."""
         for key in document.values:
             if key not in known and not fmt.EXTENSION_KEY_PATTERN.match(key):
-                self.refuse(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; a publisher's own key is `x_<name>`")
+                self.refuse(relative_path, "set.conf.unknown-key", f"`{key}` is not a key this format reads; a publisher's own key is `x_<key>`")
 
     def carried_license_texts(self, *scopes: Path) -> Set[str]:
         """The identifiers whose `LICENSES/<identifier>.txt` the walk read at the set root or under one of `scopes`."""
