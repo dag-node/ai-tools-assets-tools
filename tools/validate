@@ -44,7 +44,7 @@ from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import allowlist_in_force  # noqa: E402
 from manifests import MARKETPLACE_PATH, expected_manifest_files, stale_manifest_files  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
-from set_validation import (PROFILE_SOURCE, PROFILES, ValidationOptions, dynamic_injection_admission,  # noqa: E402
+from set_validation import (PROFILE_SOURCE, PROFILES, ValidationOptions, dynamic_injection_setting,  # noqa: E402
                             read_reserved_words, validate_set_directory)
 
 RESERVED_WORDS_FILE = TOOLS / "reserved-words.txt"
@@ -109,9 +109,9 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
     missing = [key for key in fmt.PUBLISHER_CONF_REQUIRED if not publisher_conf.get(key).strip()]
     if missing:
         collector.refuse("publisher.conf", "repo.publisher-conf", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
-    _, admission_error = dynamic_injection_admission(publisher_conf)
-    if admission_error:
-        collector.refuse("publisher.conf", "repo.publisher-conf", admission_error)
+    _, setting_error = dynamic_injection_setting(publisher_conf)
+    if setting_error:
+        collector.refuse("publisher.conf", "repo.publisher-conf", setting_error)
     allowlist, allowlist_error = allowlist_in_force(publisher_conf)
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
@@ -172,9 +172,9 @@ def validate_one_set(set_directory: pathlib.Path, publisher: str, licenses: str,
         publisher_conf = read_publisher_conf(publisher_conf_path, collector)
         if publisher_conf is None:
             return
-        _, admission_error = dynamic_injection_admission(publisher_conf)
-        if admission_error:
-            collector.refuse(str(publisher_conf_path), "repo.publisher-conf", admission_error)
+        _, setting_error = dynamic_injection_setting(publisher_conf)
+        if setting_error:
+            collector.refuse(str(publisher_conf_path), "repo.publisher-conf", setting_error)
     options = ValidationOptions(publisher=publisher, profile=profile, reserved_words=read_reserved_words(RESERVED_WORDS_FILE),
                                 license_allowlist=allowlist, license_text_directories=[path.resolve() for path in license_texts],
                                 display_root=set_directory.parent, publisher_conf=publisher_conf)

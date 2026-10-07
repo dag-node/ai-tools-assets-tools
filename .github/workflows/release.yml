@@ -5,7 +5,7 @@
 # (ai-tools-base's CI, a publisher's tools.pin) pins the tag and verifies the archive against the org key's primary,
 # 67F42DC18BF764B42D82F14256D2F802CF9832E4.
 #
-# The release job alone declares `environment: release`, whose deployment policy admits tags v*.*.* and no branch, so
+# The release job alone declares `environment: release`, whose deployment policy allows tags v*.*.* and no branch, so
 # the signing key and its passphrase reach a job on a maintainer-created tag and no other ref. The tag is annotated and
 # signed by a maintainer's personal key -- p4nda's primary 225DFF22D0221D3DD68CCEFFFABAF500E7D90733, fetched over HTTPS
 # for this one check -- so a leaked CI secret cannot mint a release by itself. The tag object verified is the one

@@ -6,7 +6,7 @@
 #     ai-tools-assets:
 #       uses: dag-node/ai-tools-assets-tools/.github/workflows/validate.yml@v1
 #       with:
-#         license-exceptions: ''          # space-separated GLOB=ID pairs check-licenses admits
+#         license-exceptions: ''          # space-separated GLOB=ID pairs check-licenses accepts
 #         enforce-signoff: false          # true once the repository requires a DCO sign-off on every commit
 #         tools-repository: ''            # a fork of this repository the tools are checked out from, as <owner>/<repo>
 #
@@ -32,7 +32,7 @@ on:
   workflow_call:
     inputs:
       license-exceptions:
-        description: space-separated GLOB=ID pairs check-licenses admits, for a tree carrying another licence in one directory; REUSE's glob grammar, so `dir/**` covers a directory
+        description: space-separated GLOB=ID pairs check-licenses accepts, for a tree carrying another licence in one directory; REUSE's glob grammar, so `dir/**` covers a directory
         type: string
         required: false
         default: ''
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
-      # This repository's own run admits its AGPL formatters; a caller passes its own pairs.
+      # This repository's own run accepts its AGPL formatters; a caller passes its own pairs.
       LICENSE_EXCEPTIONS: ${{ inputs.license-exceptions || (github.repository == 'dag-node/ai-tools-assets-tools' && 'formatters/**=AGPL-3.0-only' || '') }}
     steps:
       - name: Check out the repository under check

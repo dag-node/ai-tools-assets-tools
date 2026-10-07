@@ -32,7 +32,7 @@ sets/<set>/
 
 A set directory holds these entries and no other. `jobs/`, `libs/`,
 `variants/` and `llms.txt` are reserved: the names are spoken for, and no
-capability of format 1 admits content at one. `llms.txt` is the
+capability of format 1 allows content at one. `llms.txt` is the
 agent-discovery index of [llmstxt.org](https://llmstxt.org/) -- an H1,
 a blockquote summary and H2 link lists, which an agent without a plugin
 loader reads from a root -- that the tools may generate beside the manifests;
@@ -45,7 +45,7 @@ in a plugin manifest: hooks, MCP and LSP servers, `bin/`, commands, monitors,
 workflows, output styles, themes and `settings.json`. The entry list is
 an allowlist, so a component Claude Code adds later is refused the same way.
 Hooks, MCP servers and LSP servers are reserved kinds, and [Forward
-compatibility](#forward-compatibility) states how a later release admits one
+compatibility](#forward-compatibility) states how a later release adds one
 without `format=2`.
 
 ## Validation profiles
@@ -84,7 +84,7 @@ a name, since an agent lists both kinds in one list.
 | `skills` | `skills/` | a directory holding `SKILL.md` | implemented |
 | `subagents` | `agents/` | a `<name>.md` file | implemented |
 | `orientation` | — | base's own; not a set kind | base-only |
-| `jobs`, `mcps`, `commands`, `instructions`, `hooks`, `lsps`, `output-styles`, `settings`, `workflows`, `themes`, `monitors`, `tools` | the kind's name | reserved: refused with content; a capability token admits each (see Forward compatibility) | reserved |
+| `jobs`, `mcps`, `commands`, `instructions`, `hooks`, `lsps`, `output-styles`, `settings`, `workflows`, `themes`, `monitors`, `tools` | the kind's name | reserved: refused with content; a capability token allows each (see Forward compatibility) | reserved |
 
 The id `subagents` is stable; the directory is Claude Code's `agents/`,
 and `agents/` holds subagent files alone because Claude Code loads every `.md`
@@ -163,7 +163,7 @@ that differs.
 `publisher.conf` at the repository root carries `publisher`, `contact`,
 `maintainers`, `source` and `description` (the marketplace's), and optionally
 `licenses`, the SPDX allowlist that replaces the default,
-and `allow_dynamic_injection`, `yes` or `no`, which admits the load-time
+and `allow_dynamic_injection`, `yes` or `no`, which allows the load-time
 substitution of [Bodies and files](#bodies-and-files). An absent key reads
 as `no`; any other value is refused under `repo.publisher-conf` and also
 reads as `no`.
@@ -251,7 +251,7 @@ alone. A flow list holds plain items, none empty.
   | `publisher.conf` | asset declares the token | substitution in the file | outcome |
   |---|---|---|---|
   | `no` or absent | no | yes | refused: the asset does not declare it |
-  | `no` or absent | yes | either | refused: `publisher.conf` does not admit it |
+  | `no` or absent | yes | either | refused: `publisher.conf` does not allow it |
   | `yes` | no | yes | refused: the asset does not declare it |
   | `yes` | yes | yes | passes |
   | `yes` | yes | no | passes; an unused declaration is not a finding |
@@ -344,7 +344,7 @@ stays the integer `1` until a change in what an existing entry means, which
 is `format=2` and a new major of the tools; a new entry is not that change.
 
 A reserved entry (`jobs/`, `libs/`, `variants/`, `llms.txt`, a reserved kind)
-is admitted by one bundled change: a capability token in the existing
+is added by one bundled change: a capability token in the existing
 `<kind>.<profile>.v<n>` shape joins the capabilities this format defines,
 the entry moves to the allowed table with its shape and rules, a rule
 requires a set carrying content at it to declare the token
@@ -410,7 +410,7 @@ differ.
 | `set.conf.requires-integrations` | refuses | every required integration is written as `integration-<name>` |
 | `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
-| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 admits content at one |
+| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 allows content at one |
 | `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |
 | `set.manifest.components` | refuses | a plugin manifest does not declare a component key |
 | `set.manifest.claude-plugin` | refuses | `.claude-plugin` holds `plugin.json` alone |
@@ -436,7 +436,7 @@ differ.
 | `frontmatter.length` | refuses | `description` is at most 1024 characters and `compatibility` at most 500 |
 | `frontmatter.metadata` | refuses | `metadata` is a map of string values |
 | `frontmatter.metadata-prefix` | warns | a `metadata` key this format reads starts with `ai-tools-` |
-| `body.dynamic-injection` | refuses | a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not admit is refused |
+| `body.dynamic-injection` | refuses | a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not allow is refused |
 | `body.absolute-path` | refuses | an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share` |
 | `file.symlink` | refuses | a set does not hold a symbolic link |
 | `file.hardlink` | refuses | a file has one link |

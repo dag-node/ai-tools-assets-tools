@@ -333,7 +333,7 @@ class FormatRegistry(unittest.TestCase):
 
     def test_implemented_kinds(self):
         self.assertEqual([kind.kind_id for kind in fmt.IMPLEMENTED_KINDS], ["skills", "subagents"])
-        self.assertFalse(fmt.KINDS_BY_ID["orientation"].is_set_admissible)
+        self.assertFalse(fmt.KINDS_BY_ID["orientation"].is_allowed_in_set)
 
 
 if __name__ == "__main__":

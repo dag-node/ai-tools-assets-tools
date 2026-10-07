@@ -12,7 +12,7 @@
 # expressions that table declares; a file with none is reported, a file over the bound is refused unjudged, and
 # every expression that applies is judged. Every identifier is on the list in force -- `publisher.conf` `licenses=`,
 # or the GPLv3-compatible permissive default, plus each `--allow` -- and has its text under `LICENSES/`. An `--exception`
-# admits one identifier for the files its glob (REUSE's grammar: `**` crosses `/`, `*` does not) matches alone, which is
+# accepts one identifier for the files its glob (REUSE's grammar: `**` crosses `/`, `*` does not) matches alone, which is
 # how this repository carries its `AGPL-3.0-only` `formatters/` beside an MIT tree. `LICENSE`, `LICENSES/`, `REUSE.toml`
 # and a `.license` sidecar are not judged: they are the texts and the declarations themselves. A `REUSE.toml` inside
 # a subdirectory is not read, and every file under it is reported. Standard library only.
@@ -47,8 +47,8 @@ def tracked_files(root: pathlib.Path):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Hold every file's licence to the SPDX allowlist in force.")
     parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the repository (default: the current directory)")
-    parser.add_argument("--allow", action="append", default=[], metavar="ID", help="an identifier admitted beside the list in force")
-    parser.add_argument("--exception", action="append", default=[], metavar="GLOB=ID", help="admit ID for the files GLOB matches")
+    parser.add_argument("--allow", action="append", default=[], metavar="ID", help="an identifier accepted beside the list in force")
+    parser.add_argument("--exception", action="append", default=[], metavar="GLOB=ID", help="accept ID for the files GLOB matches")
     args = parser.parse_args()
     root = args.root.resolve()
     collector = FindingCollector("check-licenses")
@@ -109,8 +109,8 @@ def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: lis
         if not expressions:
             collector.refuse(path_text, "license.file", "states no licence: no SPDX header, no .license sidecar and no REUSE.toml annotation matches")
             continue
-        admitted = exception_for(path_text, exceptions)
-        in_force = allowlist + ((admitted,) if admitted else ())
+        accepted = exception_for(path_text, exceptions)
+        in_force = allowlist + ((accepted,) if accepted else ())
         for expression in expressions:
             evaluation = check_declared_license(collector, path_text, expression, in_force, "the file's licence")
             if evaluation.is_well_formed:

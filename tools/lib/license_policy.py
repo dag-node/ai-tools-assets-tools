@@ -362,7 +362,7 @@ def applicable_expressions(root_fd: int, relative_path: PurePath, tracked: Set[s
 
 
 def exception_for(relative_path: str, exceptions: Sequence[Tuple[str, str]]) -> Optional[str]:
-    """The identifier an `--exception GLOB=ID` admits for `relative_path`, under the REUSE glob grammar, or None."""
+    """The identifier an `--exception GLOB=ID` accepts for `relative_path`, under the REUSE glob grammar, or None."""
     for glob, identifier in exceptions:
         if matches_reuse_glob(relative_path, glob):
             return identifier
