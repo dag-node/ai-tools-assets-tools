@@ -116,7 +116,6 @@ license=CC0-1.0
 
 ASSET_CONF = """format=1
 requires_capabilities=[subagents.claude.v1]
-supported_targets=[claude-code]
 x_fixture_reviewed=2026-10
 """
 
@@ -353,7 +352,7 @@ PASS_VARIANT_FIXTURES: List[Tuple[str, Mutation]] = [
         replace_in(tree, f"{SKILL}/scripts/report.cs", "#:property Nullable=enable", "#:project ../assets/Shared.csproj"),
         tree.__setitem__(f"{SKILL}/assets/Shared.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n'))),
     ("acme.explicit-empty-list", lambda tree: (
-        replace_in(tree, "metadata/subagents/upstream-triage/asset.conf", "supported_targets=[claude-code]\n", "supported_targets=[claude-code]\nrequires_integrations=[]\n"),
+        replace_in(tree, "metadata/subagents/upstream-triage/asset.conf", "requires_capabilities=[subagents.claude.v1]\n", "requires_capabilities=[subagents.claude.v1]\nrequires_integrations=[]\n"),
         replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT" # the set\'s licence\nrequires_capabilities=[]\n'))),
     ("acme.subagent-tools-scalar", lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: Read, Grep\nmaxTurns: 12")),
     ("acme.quoted-typed-scalars", lambda tree: (

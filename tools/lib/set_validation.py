@@ -809,8 +809,6 @@ class _SetValidator:
                     self.refuse(relative_path, "metadata.asset-conf", f"`{item}` is not a capability this format defines; the asset is refused")
                 elif key == "requires_integrations" and not fmt.INTEGRATION_TOKEN_PATTERN.match(item):
                     self.refuse(relative_path, "metadata.asset-conf", f"`{item}` is not written as integration-<name>")
-                elif key == "supported_targets" and not fmt.is_valid_name(item):
-                    self.refuse(relative_path, "metadata.asset-conf", f"target `{item}` is not a name")
         self.check_known_keys(relative_path, document, set(fmt.ASSET_CONF_REQUIRED) | set(fmt.ASSET_CONF_OPTIONAL))
 
     def check_upstream_conf(self, relative_path: Path) -> None:
