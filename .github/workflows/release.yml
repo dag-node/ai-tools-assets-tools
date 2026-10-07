@@ -34,9 +34,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The write token is not stored in .git/config: `git ls-remote` reads this public repository without it, and
+      # `gh release create` takes it from GH_TOKEN in its own step.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # The tag object is captured once from the checkout and every later step names that object or the commit it
       # peels to, so a tag moved on the remote between steps cannot swap what is verified for what is archived.
