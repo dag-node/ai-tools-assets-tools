@@ -246,7 +246,7 @@ RULES: Dict[str, str] = {
     "repo.publisher-conf": "`publisher.conf` reads as `KEY=value` with every required key",
     "repo.marketplace": "`.claude-plugin/marketplace.json` equals what `sync-manifests` writes from `set.conf` and `publisher.conf`",
     "set.conf.missing": "a set directory holds `set.conf`",
-    "set.conf.syntax": "`set.conf` reads as `KEY=value`: every line is `KEY=value` or a comment, a key is written once, a list is `[a, b]`",
+    "set.conf.syntax": "`set.conf` reads as `KEY=value`: every line is `KEY=value` or a comment, a key is written once, a list is `[a, b]` or bare `a, b`",
     "set.conf.required-key": "`set.conf` carries `format`, `name`, `version`, `summary`, `license`, `maintainers` and `source`",
     "set.conf.format": "`format` is the integer `1`",
     "set.conf.name": "`name` equals the set directory",
@@ -282,7 +282,7 @@ RULES: Dict[str, str] = {
     "frontmatter.metadata": "`metadata` is a map of string values",
     "frontmatter.metadata-prefix": "a `metadata` key this format reads starts with `ai-tools-`",
     "body.dynamic-injection": "a line does not run a command when the asset loads",
-    "body.absolute-path": "a body does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share`",
+    "body.absolute-path": "an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share`",
     "file.symlink": "a set does not hold a symbolic link",
     "file.hardlink": "a file has one link",
     "file.special": "every entry is a regular file or a directory",
@@ -303,7 +303,7 @@ RULES: Dict[str, str] = {
     "license.allowlist": "every identifier of a licence is on the list in force",
     "license.text": "`LICENSES/<identifier>.txt` exists for every identifier a set declares",
     "license.file": "every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation",
-    "release.inventory": "`SHA256SUMS` lists every file of the built set once and matches each",
+    "release.inventory": "`SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each",
 }
 RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix"})
 
