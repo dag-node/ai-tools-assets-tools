@@ -413,6 +413,33 @@ PUBLISHER_CONF_FIXTURES: List[Tuple[str, str, Mutation]] = [
      lambda tree: tree.__setitem__("plugin.json", tree["plugin.json"].replace("tools@acme.example", "someone@elsewhere.example"))),
 ]
 
+# The shared publisher.conf, two levels up from a fixture: it does not carry `allow_dynamic_injection`.
+SHARED_PUBLISHER_CONF = "../../publisher.conf"
+SKILL_ASSET_CONF = "metadata/skills/acme-pdf-processing/asset.conf"
+
+
+def declare_dynamic(tree: Tree) -> None:
+    tree[SKILL_ASSET_CONF] = "format=1\nrequires_capabilities=[skills.dynamic.v1]\n"
+
+
+def inject(tree: Tree) -> None:
+    tree[f"{SKILL}/SKILL.md"] = tree[f"{SKILL}/SKILL.md"] + "\nThe working tree: !`git status --short`\n"
+
+
+# (expectation, fixture name, rule id, allow_dynamic_injection, mutation): the outcomes of load-time substitution under
+# the two switches. A value of None runs the fixture with the shared publisher.conf, which does not carry the key;
+# "yes" and "no" write a publisher.conf carrying it beside the set. The plain fixtures of body.dynamic-injection are the
+# undeclared case. ai-tools-base's conformance job does not run the `.not-admitted` variants, since base reads the
+# declaration and not publisher.conf.
+DYNAMIC_INJECTION_FIXTURES: List[Tuple[str, str, str, Union[str, None], Mutation]] = [
+    ("fail", "body.dynamic-injection.not-admitted", "body.dynamic-injection", None, lambda tree: (declare_dynamic(tree), inject(tree))),
+    ("fail", "body.dynamic-injection.not-admitted-no", "body.dynamic-injection", "no", lambda tree: (declare_dynamic(tree), inject(tree))),
+    ("fail", "body.dynamic-injection.not-admitted-unused", "body.dynamic-injection", None, declare_dynamic),
+    ("fail", "body.dynamic-injection.not-declared", "body.dynamic-injection", "yes", inject),
+    ("pass", "acme.dynamic-injection-declared", "", "yes", lambda tree: (declare_dynamic(tree), inject(tree))),
+    ("pass", "acme.dynamic-injection-declared-unused", "", "yes", declare_dynamic),
+]
+
 PASS_FIXTURES: List[Tuple[str, str, str]] = [("acme", "acme", "acme"), ("core", "dag-node", "core")]
 NAMED_SET_FIXTURES: List[Tuple[str, str, str, str]] = [
     # (fixture name, rule, publisher, set name): rules on the set name need a set named for them.
@@ -421,14 +448,14 @@ NAMED_SET_FIXTURES: List[Tuple[str, str, str, str]] = [
 ]
 
 
-def fixture_conf(expect: str, rule: str, publisher: str, profile: str = "source", publisher_conf: bool = False) -> str:
+def fixture_conf(expect: str, rule: str, publisher: str, profile: str = "source", publisher_conf: str = "") -> str:
     lines = [f"expect={expect}"]
     if rule:
         lines.append(f"rule={rule}")
     # The directory whose LICENSES/ holds the texts the fixtures share: fixtures/, two levels up from the fixture.
     lines.extend([f"publisher={publisher}", f"profile={profile}", "license_texts=../.."])
     if publisher_conf:
-        lines.append("publisher_conf=../../publisher.conf")
+        lines.append(f"publisher_conf={publisher_conf}")
     return "\n".join(lines) + "\n"
 
 
@@ -481,7 +508,19 @@ def all_fixtures(destination: pathlib.Path) -> None:
     for fixture_name, rule, mutation in PUBLISHER_CONF_FIXTURES:
         directory = destination / "fail" / fixture_name
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "fixture.conf").write_text(fixture_conf("fail", rule, "acme", publisher_conf=True), encoding="utf-8")
+        (directory / "fixture.conf").write_text(fixture_conf("fail", rule, "acme", publisher_conf=SHARED_PUBLISHER_CONF), encoding="utf-8")
+        tree = base_tree("acme", "acme")
+        mutation(tree)
+        write_tree(directory / "acme", tree)
+    for expect, fixture_name, rule, allow, mutation in DYNAMIC_INJECTION_FIXTURES:
+        directory = destination / expect / fixture_name
+        directory.mkdir(parents=True, exist_ok=True)
+        publisher_conf = SHARED_PUBLISHER_CONF
+        if allow is not None:
+            publisher_conf = "publisher.conf"
+            (directory / publisher_conf).write_text(PUBLISHER_CONF.format(publisher="acme") + f"allow_dynamic_injection={allow}\n",
+                                                    encoding="utf-8")
+        (directory / "fixture.conf").write_text(fixture_conf(expect, rule, "acme", publisher_conf=publisher_conf), encoding="utf-8")
         tree = base_tree("acme", "acme")
         mutation(tree)
         write_tree(directory / "acme", tree)

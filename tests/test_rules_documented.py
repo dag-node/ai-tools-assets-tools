@@ -21,7 +21,8 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 sys.path.insert(0, str(TESTS))
 
 import asset_format as fmt  # noqa: E402
-from fixture_generator import FAIL_FIXTURES, NAMED_SET_FIXTURES, PUBLISHER_CONF_FIXTURES, RELEASE_FIXTURES, VARIANT_FIXTURES  # noqa: E402
+from fixture_generator import (DYNAMIC_INJECTION_FIXTURES, FAIL_FIXTURES, NAMED_SET_FIXTURES,  # noqa: E402
+                               PUBLISHER_CONF_FIXTURES, RELEASE_FIXTURES, VARIANT_FIXTURES)
 
 BEGIN_MARKER = "<!-- rules:begin -->"
 END_MARKER = "<!-- rules:end -->"
@@ -69,7 +70,8 @@ class RulesDocumented(unittest.TestCase):
             self.assertIn(rule, commands_tests, f"{rule} has no assertion in tests/test_commands.py")
 
     def test_a_variant_fixture_is_named_for_its_rule(self):
-        for name, rule, _ in VARIANT_FIXTURES + PUBLISHER_CONF_FIXTURES + RELEASE_FIXTURES:
+        failing = [(name, rule) for expect, name, rule, _, _ in DYNAMIC_INJECTION_FIXTURES if expect == "fail"]
+        for name, rule in [(name, rule) for name, rule, _ in VARIANT_FIXTURES + PUBLISHER_CONF_FIXTURES + RELEASE_FIXTURES] + failing:
             self.assertTrue(name == rule or name.startswith(rule + "."), f"{name} is not <rule> or <rule>.<variant> for {rule}")
 
 
@@ -77,7 +79,7 @@ def fixture_rules():
     """Every rule a committed fixture names."""
     return ({rule for rule, _, _ in FAIL_FIXTURES} | {rule for _, rule, _ in RELEASE_FIXTURES}
             | {rule for _, rule, _, _ in NAMED_SET_FIXTURES} | {rule for _, rule, _ in VARIANT_FIXTURES}
-            | {rule for _, rule, _ in PUBLISHER_CONF_FIXTURES})
+            | {rule for _, rule, _ in PUBLISHER_CONF_FIXTURES} | {rule for _, _, rule, _, _ in DYNAMIC_INJECTION_FIXTURES if rule})
 
 
 if __name__ == "__main__":

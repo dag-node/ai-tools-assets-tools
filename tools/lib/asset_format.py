@@ -174,7 +174,7 @@ SET_CONF_REQUIRED: Tuple[str, ...] = ("format", "name", "version", "summary", "l
 SET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_base", "requires_integrations", "requires_capabilities")
 SET_CONF_LIST_KEYS: Tuple[str, ...] = ("maintainers", "requires_integrations", "requires_capabilities")
 PUBLISHER_CONF_REQUIRED: Tuple[str, ...] = ("publisher", "contact", "maintainers", "source", "description")
-PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses",)
+PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses", "allow_dynamic_injection")
 UPSTREAM_CONF_REQUIRED: Tuple[str, ...] = ("source", "path", "revision", "license")
 UPSTREAM_CONF_OPTIONAL: Tuple[str, ...] = ("signature", "signer")
 UPSTREAM_CONF_FILE = "UPSTREAM.conf"
@@ -191,7 +191,12 @@ METADATA_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(METADATA_ENTRY_TYPES)
 COMMIT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
 
 # The capabilities a format-1 reader implements; an unknown required one refuses the asset, or the set at set scope.
-KNOWN_CAPABILITIES: FrozenSet[str] = frozenset({"skills.portable.v1", "subagents.claude.v1"})
+KNOWN_CAPABILITIES: FrozenSet[str] = frozenset({"skills.portable.v1", "subagents.claude.v1", "skills.dynamic.v1"})
+# Load-time substitution is admitted per asset by two switches: the asset's `asset.conf` declares this token, and the
+# repository's `publisher.conf` sets ALLOW_DYNAMIC_INJECTION_KEY to `yes`. ai-tools-base reads the declaration alone,
+# since publisher.conf does not reach a host.
+DYNAMIC_INJECTION_CAPABILITY = "skills.dynamic.v1"
+ALLOW_DYNAMIC_INJECTION_KEY = "allow_dynamic_injection"
 INTEGRATION_TOKEN_PATTERN = re.compile(r"^integration-[a-z][a-z0-9-]*$")
 
 # ── Files ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -281,7 +286,7 @@ RULES: Dict[str, str] = {
     "frontmatter.length": "`description` is at most 1024 characters and `compatibility` at most 500",
     "frontmatter.metadata": "`metadata` is a map of string values",
     "frontmatter.metadata-prefix": "a `metadata` key this format reads starts with `ai-tools-`",
-    "body.dynamic-injection": "a line does not run a command when the asset loads",
+    "body.dynamic-injection": "a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not admit is refused",
     "body.absolute-path": "an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share`",
     "file.symlink": "a set does not hold a symbolic link",
     "file.hardlink": "a file has one link",
