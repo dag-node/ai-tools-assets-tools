@@ -24,7 +24,7 @@ sets/<set>/
 │   └── UPSTREAM.conf           a vendored skill alone
 ├── agents/<name>.md            subagents, Claude Code's format
 └── metadata/<kind>/<name>/     optional
-    ├── asset.conf              requirements and supported targets
+    ├── asset.conf              requirements: profiles and integrations
     ├── UPSTREAM.conf           provenance of a vendored flat-file asset
     └── references/
 ```
@@ -36,10 +36,16 @@ agent-discovery index of [llmstxt.org](https://llmstxt.org/) -- an H1,
 a blockquote summary and H2 link lists, which an agent without a plugin
 loader reads from a root -- that the tools may generate beside the manifests;
 today they write and read none, and a repository-level `llms.txt` is
-the publisher's own file. Every other Claude Code plugin component (hooks,
-MCP and LSP servers, `bin/`, commands, monitors, workflows, output styles,
-themes, `settings.json`) is refused, and so is a component kind Claude Code
-adds later, since the list is an allowlist.
+the publisher's own file.
+
+A set carries skills and subagents alone. Any other Claude Code plugin
+component is refused, whether a set adds it as a file or declares it
+in a plugin manifest: hooks, MCP and LSP servers, `bin/`, commands, monitors,
+workflows, output styles, themes and `settings.json`. The entry list is
+an allowlist, so a component Claude Code adds later is refused the same way.
+Hooks, MCP servers and LSP servers are reserved kinds, and [Forward
+compatibility](#forward-compatibility) states how a later release admits one
+without `format=2`.
 
 ## Profiles
 
