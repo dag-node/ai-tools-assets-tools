@@ -253,7 +253,7 @@ RULES: Dict[str, str] = {
     "set.conf.version": "`version` is a semantic version",
     "set.conf.requires-capabilities": "every required capability is one the format defines",
     "set.conf.requires-integrations": "every required integration is written as `integration-<name>`",
-    "set.conf.unknown-key": "a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<name>` extension key",
+    "set.conf.unknown-key": "a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key",
     "set.entry.unknown": "a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone",
     "set.entry.reserved": "`jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 admits content at one",
     "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read",
