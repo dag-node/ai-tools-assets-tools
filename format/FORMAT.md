@@ -47,8 +47,11 @@ Hooks, MCP servers and LSP servers are reserved kinds, and [Forward
 compatibility](#forward-compatibility) states how a later release admits one
 without `format=2`.
 
-## Profiles
+## Validation profiles
 
+`tools/validate --profile` selects the validation profile, `source`
+or `release`. The profile tokens an asset requires are described under
+[Provenance and metadata](#provenance-and-metadata).
 The **source** profile is the committed tree, checked on every pull request.
 The **release** profile is a set `tools/build-set` staged: the same tree plus
 `LICENSES/` texts for every identifier it declares, the repository's `LICENSE`
@@ -260,10 +263,10 @@ asset carries it under `metadata/<kind>/<name>/`. One declaration per asset.
 | `signature`, `signer` | no | reserved for asset signing |
 
 `metadata/<kind>/<name>/asset.conf` carries `format=1`. An asset declares
-what it needs in `requires_capabilities`, `requires_integrations` (as
-`integration-<name>`) and `x_<key>` keys. `<kind>` is a known kind id;
-`<name>` is an asset the set holds. An unknown capability refuses
-the asset.
+what it needs in `requires_capabilities` and `requires_integrations` (as
+`integration-<name>`). An `x_<key>` key is informational: the tools and base
+read past it, so it does not state a requirement. `<kind>` is an implemented kind id; `<name>` is an asset
+the set holds. An unknown capability refuses the asset.
 
 An asset does not name the agents it targets. It only requires profiles,
 in `requires_capabilities`. A profile token names the format the asset is
@@ -271,9 +274,9 @@ written in (`skills.portable.v1`, `subagents.claude.v1`). Agents implement
 profiles. A reader that filters assets per agent rejects any asset whose
 required profile the agent does not implement.
 
-Compatibility notes (agent, model, date) live as ordinary prose in the
-skill's `compatibility` field. Publisher-specific data goes in an `x_<key>`
-key.
+A skill's compatibility notes (agent, model, date) live as ordinary prose
+in its `compatibility` field; a subagent has no such field. Publisher-specific
+data goes in an `x_<key>` key.
 
 ## Licences
 
