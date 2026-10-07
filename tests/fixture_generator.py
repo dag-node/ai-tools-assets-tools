@@ -273,6 +273,10 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
      lambda tree: tree.__setitem__("agents/acme-reviewer.md", tree["agents/acme-reviewer.md"] + "\nThe branch: !`git branch --show-current`\n")),
     ("body.dynamic-injection.frontmatter", "body.dynamic-injection",
      lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", 'compatibility: "Run !`echo pwn`"')),
+    # The reserved half of the rule, which ai-tools-base enforces: an `ai-tools-` asset outside `core` and `ai-tools`.
+    ("name.asset-prefix.reserved", "name.asset-prefix",
+     lambda tree: (rename(tree, SKILL, "skills/ai-tools-pdf-processing"),
+                   replace_in(tree, "skills/ai-tools-pdf-processing/SKILL.md", "name: acme-pdf-processing", "name: ai-tools-pdf-processing"))),
     ("body.absolute-path.frontmatter", "body.absolute-path",
      lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", 'compatibility: "see /opt/ai-tools/skills/x"')),
     ("license.expression.nested", "license.expression",
