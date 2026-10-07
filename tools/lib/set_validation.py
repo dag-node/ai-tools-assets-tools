@@ -80,6 +80,20 @@ class ValidationOptions:
     publisher_conf: Optional[KeyValueDocument] = None
 
 
+def dynamic_injection_admission(publisher_conf: Optional[KeyValueDocument]) -> Tuple[bool, Optional[str]]:
+    """Whether `publisher.conf` admits load-time substitution, and the reason its value is refused where it is.
+
+    An absent file or key reads as not admitted; a value other than `yes` or `no` reads as not admitted too, with
+    the reason for a `repo.publisher-conf` finding.
+    """
+    if publisher_conf is None or not publisher_conf.has(fmt.ALLOW_DYNAMIC_INJECTION_KEY):
+        return False, None
+    value = publisher_conf.get(fmt.ALLOW_DYNAMIC_INJECTION_KEY).strip()
+    if value in ("yes", "no"):
+        return value == "yes", None
+    return False, f"`{fmt.ALLOW_DYNAMIC_INJECTION_KEY}={value}`; the value is `yes` or `no`"
+
+
 def validate_set_directory(set_directory: Path, options: ValidationOptions, collector: FindingCollector,
                            parent_fd: Optional[int] = None) -> SetSummary:
     """Apply every set-level rule to `set_directory` and return what was read.
@@ -105,6 +119,7 @@ class _SetValidator:
         self.files_by_path: Dict[Path, FileRecord] = {}
         self.directories: Set[Path] = set()
         self.bytes_read = 0
+        self.dynamic_injection_admitted, _ = dynamic_injection_admission(options.publisher_conf)
 
     # ── reporting ──────────────────────────────────────────────────────────────────────────────────────────────
     def display(self, relative_path: Path) -> str:
@@ -589,11 +604,11 @@ class _SetValidator:
                 self.summary.declared_licenses.update(evaluation.identifiers)
                 check_license_texts(self.collector, self.display(entry_file), evaluation.identifiers,
                                     self.carried_license_texts(skill_root), self.options.license_text_directories)
-        self.check_body(entry_file, record.text, inject=True)
+        self.check_body(entry_file, record.text, self.dynamic_injection_refusal("skills", name))
         for relative_path, other in self.files_by_path.items():
             if relative_path != entry_file and relative_path.suffix in fmt.PROSE_FILE_SUFFIXES and other.text is not None \
                     and skill_root in relative_path.parents:
-                self.check_body(relative_path, other.text, inject=False)
+                self.check_body(relative_path, other.text, None)
 
     def check_frontmatter(self, relative_path: Path, document: FrontmatterDocument, expected_name: str,
                           required: Sequence[str], types: Dict[str, str], refused_why: Dict[str, str]) -> Dict[str, TypedValue]:
@@ -680,12 +695,36 @@ class _SetValidator:
             return None
         return value.text
 
-    def check_body(self, relative_path: Path, text: str, inject: bool) -> None:
+    def dynamic_injection_refusal(self, kind_id: str, name: str) -> Optional[str]:
+        """Why a substitution in the asset's entry file is refused, or None where the asset declares the capability
+        and publisher.conf admits it. A declaration publisher.conf does not admit is refused here, used or not."""
+        asset_conf = Path(fmt.METADATA_DIRECTORY) / kind_id / name / fmt.ASSET_CONF_FILE
+        if fmt.DYNAMIC_INJECTION_CAPABILITY not in self.declared_capabilities(asset_conf):
+            return f"the asset does not declare `{fmt.DYNAMIC_INJECTION_CAPABILITY}` in {asset_conf}"
+        if self.dynamic_injection_admitted:
+            return None
+        self.refuse(asset_conf, "body.dynamic-injection", f"declares `{fmt.DYNAMIC_INJECTION_CAPABILITY}`, which publisher.conf does not admit; a publisher admits it with `{fmt.ALLOW_DYNAMIC_INJECTION_KEY}=yes`")
+        return f"publisher.conf does not admit `{fmt.DYNAMIC_INJECTION_CAPABILITY}`"
+
+    def declared_capabilities(self, asset_conf: Path) -> Set[str]:
+        """The capabilities `asset_conf` requires; empty where the file is absent, unread or malformed, which
+        check_asset_conf reports, so a declaration the validator cannot read does not admit anything."""
+        record = self.files_by_path.get(asset_conf)
+        if record is None or record.text is None:
+            return set()
+        document = parse_key_value_text(record.text)
+        if document.syntax_errors():
+            return set()
+        items, reason = document.list_value("requires_capabilities")
+        return set(items) if reason is None else set()
+
+    def check_body(self, relative_path: Path, text: str, injection_refusal: Optional[str]) -> None:
         """Scan every line of the file -- an entry file's frontmatter included, since a loader expands a substitution
-        wherever it stands -- for a dynamic substitution (where `inject`) and a refused absolute path."""
+        wherever it stands -- for a dynamic substitution (where `injection_refusal` names why one is refused) and
+        a refused absolute path."""
         for line_number, line in enumerate(text.split("\n"), start=1):
-            if inject and (fmt.DYNAMIC_INJECTION_INLINE.search(line) or fmt.DYNAMIC_INJECTION_FENCE.match(line)):
-                self.refuse(relative_path, "body.dynamic-injection", f"line {line_number} runs a command when the asset loads, before a person or the model reads it")
+            if injection_refusal and (fmt.DYNAMIC_INJECTION_INLINE.search(line) or fmt.DYNAMIC_INJECTION_FENCE.match(line)):
+                self.refuse(relative_path, "body.dynamic-injection", f"line {line_number} runs a command when the asset loads, before a person or the model reads it; {injection_refusal}")
             match = fmt.ABSOLUTE_PATH_REFUSED.search(line)
             if match:
                 self.refuse(relative_path, "body.absolute-path", f"line {line_number} names `{match.group(0).strip()}`; a skill names its own files relative to its root, and another skill by name")
@@ -752,7 +791,7 @@ class _SetValidator:
             document, _ = split_frontmatter(text)
             self.check_frontmatter(file_path, document, name, fmt.SUBAGENT_FRONTMATTER_REQUIRED,
                                    fmt.SUBAGENT_FRONTMATTER_TYPES, fmt.SUBAGENT_FRONTMATTER_REFUSED_WHY)
-            self.check_body(file_path, text, inject=True)
+            self.check_body(file_path, text, self.dynamic_injection_refusal("subagents", name))
         return subagents
 
     def check_name_collisions(self, skills: Dict[str, AssetRecord], subagents: Dict[str, AssetRecord]) -> None:

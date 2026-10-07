@@ -186,5 +186,23 @@ class UncommittableFixtures(unittest.TestCase):
         self.assert_refuses_alone("file.reserved-name")
 
 
+class DynamicInjectionAdmission(unittest.TestCase):
+    """A publisher.conf value the validator does not read as `yes` or `no` is reported and does not admit."""
+
+    def test_an_unknown_value_is_reported_and_does_not_admit(self):
+        fixture = FIXTURES / "pass" / "acme.dynamic-injection-declared"
+        with tempfile.TemporaryDirectory() as scratch:
+            publisher_conf = pathlib.Path(scratch) / "publisher.conf"
+            text = (fixture / "publisher.conf").read_text(encoding="utf-8")
+            self.assertIn("allow_dynamic_injection=yes\n", text, "the control fixture admits the capability")
+            publisher_conf.write_text(text.replace("allow_dynamic_injection=yes", "allow_dynamic_injection=true"), encoding="utf-8")
+            control, _, _ = run_validate(fixture / "acme", "acme", publisher_conf=fixture / "publisher.conf")
+            status, refusals, _ = run_validate(fixture / "acme", "acme", publisher_conf=publisher_conf)
+        self.assertEqual(control, 0, "the fixture passes with the value it ships")
+        self.assertEqual(status, 1, refusals)
+        self.assertTrue(any(": repo.publisher-conf: " in line and "allow_dynamic_injection=true" in line for line in refusals), refusals)
+        self.assertTrue(any(": body.dynamic-injection: " in line and "does not admit" in line for line in refusals), refusals)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -109,8 +109,10 @@ file in it as a subagent.
 | `requires_capabilities` | no | a list of capability tokens; an unknown one refuses the set |
 | `x_<key>` | no | a publisher's own key; accepted without a finding, read past by base |
 
-The capabilities this format defines are `skills.portable.v1`
-and `subagents.claude.v1`. A key outside this table that is not
+The capabilities this format defines are `skills.portable.v1`,
+`subagents.claude.v1` and `skills.dynamic.v1`; an asset declares
+`skills.dynamic.v1` in its own `asset.conf` (see [Bodies and
+files](#bodies-and-files)). A key outside this table that is not
 an `x_<key>` extension key is refused.
 
 ## `KEY=value` grammar
@@ -160,7 +162,11 @@ that differs.
 
 `publisher.conf` at the repository root carries `publisher`, `contact`,
 `maintainers`, `source` and `description` (the marketplace's), and optionally
-`licenses`, the SPDX allowlist that replaces the default.
+`licenses`, the SPDX allowlist that replaces the default,
+and `allow_dynamic_injection`, `yes` or `no`, which admits the load-time
+substitution of [Bodies and files](#bodies-and-files). An absent key reads
+as `no`; any other value is refused under `repo.publisher-conf` and also
+reads as `no`.
 
 ## Skills
 
@@ -234,6 +240,24 @@ alone. A flow list holds plain items, none empty.
   the YAML string does not exempt it. `scripts/` and `references/` are not
   scanned for them: a script runs through its interpreter, and a reference is
   read, not loaded.
+
+  An asset that needs the substitution, such as a skill that injects
+  `git status` output when it loads, passes when two switches are set:
+  its `metadata/<kind>/<name>/asset.conf` lists `skills.dynamic.v1`
+  in `requires_capabilities`, and `publisher.conf` sets
+  `allow_dynamic_injection=yes`. The outcomes, all under
+  `body.dynamic-injection`, with the detail naming the switch that is off:
+
+  | `publisher.conf` | asset declares the token | substitution in the file | outcome |
+  |---|---|---|---|
+  | `no` or absent | no | yes | refused: the asset does not declare it |
+  | `no` or absent | yes | either | refused: `publisher.conf` does not admit it |
+  | `yes` | no | yes | refused: the asset does not declare it |
+  | `yes` | yes | yes | passes |
+  | `yes` | yes | no | passes; an unused declaration is not a finding |
+
+  `ai-tools-base` reads the declaration alone, since `publisher.conf` does
+  not reach a host, and prints the capability beside the asset it links.
 - No `.md` file of an asset names an absolute path into `/opt/ai-tools`,
   `/usr/share` or `/usr/local/share`, anywhere in the file, an entry file's
   frontmatter included; a skill names its own files relative to its root
@@ -273,7 +297,8 @@ the asset.
 
 An asset does not name the agents it targets. It only requires profiles,
 in `requires_capabilities`. A profile token names the format the asset is
-written in (`skills.portable.v1`, `subagents.claude.v1`). Agents implement
+written in (`skills.portable.v1`, `subagents.claude.v1`,
+`skills.dynamic.v1`). Agents implement
 profiles. A reader that filters assets per agent rejects any asset whose
 required profile the agent does not implement.
 
@@ -411,7 +436,7 @@ differ.
 | `frontmatter.length` | refuses | `description` is at most 1024 characters and `compatibility` at most 500 |
 | `frontmatter.metadata` | refuses | `metadata` is a map of string values |
 | `frontmatter.metadata-prefix` | warns | a `metadata` key this format reads starts with `ai-tools-` |
-| `body.dynamic-injection` | refuses | a line does not run a command when the asset loads |
+| `body.dynamic-injection` | refuses | a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not admit is refused |
 | `body.absolute-path` | refuses | an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share` |
 | `file.symlink` | refuses | a set does not hold a symbolic link |
 | `file.hardlink` | refuses | a file has one link |
