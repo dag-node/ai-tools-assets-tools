@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The bounded reader for the YAML frontmatter of a `SKILL.md` and of a subagent file.
 
-The format admits a subset of YAML a reader can parse without ambiguity, and this module is that subset's one
+The format accepts a subset of YAML a reader can parse without ambiguity, and this module is that subset's one
 statement, so the tools and base refuse the same files. A frontmatter opens with `---` on the first line and closes with
 the next `---` line. Inside it, a line is blank, a `#` comment, or `key: value` at the margin with a key of letters,
 digits, `-` and `_`. A value is a plain scalar, a `"double"` or `'single'` quoted scalar on the one line, a flow list
