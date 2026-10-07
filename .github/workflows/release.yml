@@ -93,7 +93,10 @@ jobs:
           set -euo pipefail
           test -n "$GPG_SIGNING_KEY" && test -n "$GPG_SIGNING_PASSPHRASE" \
             || { echo "the release environment holds no signing key or passphrase" >&2; exit 1; }
-          export GNUPGHOME="$(mktemp -d)"
+          # The secret keyring lives on tmpfs (/dev/shm), so the key does not reach the runner's disk, and the trap
+          # stops the agent holding the unlocked key and removes the keyring when the step ends.
+          export GNUPGHOME="$(mktemp -d -p /dev/shm 2>/dev/null || mktemp -d)"
+          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
           printf '%s' "$GPG_SIGNING_KEY" | gpg --batch --import
           printf '%s' "$GPG_SIGNING_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
             --armor --detach-sign --output "$archive.asc" "$archive"
