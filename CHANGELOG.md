@@ -21,7 +21,7 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   (files, directories, depth, bytes, entries per directory, SPDX expression
   size, manifest size), at which validation stops with one finding. The
   format reserves `jobs/`, `libs/`, `variants/` and `llms.txt` at the set
-  root and states how a reserved entry is admitted: additively, by a
+  root and states how a reserved entry is added: additively, by a
   capability token a set carrying it must declare, so a reader without the
   token refuses the set whole; `format=2` is kept for a change in what an
   existing entry means.
@@ -45,7 +45,7 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 - A skill or subagent may run a command when it loads, such as injecting
   `git status` output, once its `asset.conf` declares `skills.dynamic.v1`
   and `publisher.conf` sets `allow_dynamic_injection=yes`; every other
-  substitution, and a declaration the publisher does not admit, fails
+  substitution, and a declaration the publisher does not allow, fails
   `body.dynamic-injection`.
 - `check-signoff`, the Developer Certificate of Origin check over a pull
   request's own commits.

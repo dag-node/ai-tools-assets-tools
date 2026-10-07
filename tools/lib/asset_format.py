@@ -52,7 +52,7 @@ class KindDefinition:
         return self.support == "implemented"
 
     @property
-    def is_set_admissible(self) -> bool:
+    def is_allowed_in_set(self) -> bool:
         return self.support != "base-only"
 
 
@@ -88,9 +88,9 @@ SET_ROOT_ENTRY_TYPES: Dict[str, str] = {
     "skills": ENTRY_DIRECTORY, "agents": ENTRY_DIRECTORY, "metadata": ENTRY_DIRECTORY,
 }
 SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SET_ROOT_ENTRY_TYPES)
-# Reserved: named now so the format admits each without a rename. Admission is additive and stays format 1: a capability
+# Reserved: named now so the format can allow each without a rename. Allowing one is additive and stays format 1: a capability
 # token joins KNOWN_CAPABILITIES, the entry moves to the allowed table, and a set carrying content at it declares the
-# token, so a reader without the token refuses the set whole. Until then no capability admits content at one.
+# token, so a reader without the token refuses the set whole. Until then no capability allows content at one.
 # `llms.txt` is the agent-discovery index (llmstxt.org) the tools may generate beside the manifests.
 SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt"})
 RELEASE_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({"SHA256SUMS", "SHA256SUMS.asc"})
@@ -116,7 +116,7 @@ SKILL_ROOT_ENTRY_TYPES: Dict[str, str] = {
     "tests": ENTRY_DIRECTORY, "UPSTREAM.conf": ENTRY_FILE, "LICENSE": ENTRY_FILE, "LICENSES": ENTRY_DIRECTORY,
 }
 SKILL_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SKILL_ROOT_ENTRY_TYPES)
-# OpenAI's skill sidecar carries invocation policy and tool dependencies; reserved until a tested profile admits it.
+# OpenAI's skill sidecar carries invocation policy and tool dependencies; reserved until a tested profile allows it.
 SKILL_SIDECAR_RESERVED_PATH = "agents/openai.yaml"
 
 # Reserved file names are never discovered as assets, and are refused where they would be anything else.
@@ -192,7 +192,7 @@ COMMIT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
 
 # The capabilities a format-1 reader implements; an unknown required one refuses the asset, or the set at set scope.
 KNOWN_CAPABILITIES: FrozenSet[str] = frozenset({"skills.portable.v1", "subagents.claude.v1", "skills.dynamic.v1"})
-# Load-time substitution is admitted per asset by two switches: the asset's `asset.conf` declares this token, and the
+# Load-time substitution is allowed per asset by two switches: the asset's `asset.conf` declares this token, and the
 # repository's `publisher.conf` sets ALLOW_DYNAMIC_INJECTION_KEY to `yes`. ai-tools-base reads the declaration alone,
 # since publisher.conf does not reach a host.
 DYNAMIC_INJECTION_CAPABILITY = "skills.dynamic.v1"
@@ -260,7 +260,7 @@ RULES: Dict[str, str] = {
     "set.conf.requires-integrations": "every required integration is written as `integration-<name>`",
     "set.conf.unknown-key": "a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key",
     "set.entry.unknown": "a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone",
-    "set.entry.reserved": "`jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 admits content at one",
+    "set.entry.reserved": "`jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 allows content at one",
     "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read",
     "set.manifest.components": "a plugin manifest does not declare a component key",
     "set.manifest.claude-plugin": "`.claude-plugin` holds `plugin.json` alone",
@@ -286,7 +286,7 @@ RULES: Dict[str, str] = {
     "frontmatter.length": "`description` is at most 1024 characters and `compatibility` at most 500",
     "frontmatter.metadata": "`metadata` is a map of string values",
     "frontmatter.metadata-prefix": "a `metadata` key this format reads starts with `ai-tools-`",
-    "body.dynamic-injection": "a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not admit is refused",
+    "body.dynamic-injection": "a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not allow is refused",
     "body.absolute-path": "an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share`",
     "file.symlink": "a set does not hold a symbolic link",
     "file.hardlink": "a file has one link",

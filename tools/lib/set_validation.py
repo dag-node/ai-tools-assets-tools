@@ -80,10 +80,10 @@ class ValidationOptions:
     publisher_conf: Optional[KeyValueDocument] = None
 
 
-def dynamic_injection_admission(publisher_conf: Optional[KeyValueDocument]) -> Tuple[bool, Optional[str]]:
-    """Whether `publisher.conf` admits load-time substitution, and the reason its value is refused where it is.
+def dynamic_injection_setting(publisher_conf: Optional[KeyValueDocument]) -> Tuple[bool, Optional[str]]:
+    """Whether `publisher.conf` allows load-time substitution, and the reason its value is refused where it is.
 
-    An absent file or key reads as not admitted; a value other than `yes` or `no` reads as not admitted too, with
+    An absent file or key reads as not allowed; a value other than `yes` or `no` reads as not allowed too, with
     the reason for a `repo.publisher-conf` finding.
     """
     if publisher_conf is None or not publisher_conf.has(fmt.ALLOW_DYNAMIC_INJECTION_KEY):
@@ -119,7 +119,7 @@ class _SetValidator:
         self.files_by_path: Dict[Path, FileRecord] = {}
         self.directories: Set[Path] = set()
         self.bytes_read = 0
-        self.dynamic_injection_admitted, _ = dynamic_injection_admission(options.publisher_conf)
+        self.dynamic_injection_allowed, _ = dynamic_injection_setting(options.publisher_conf)
 
     # ── reporting ──────────────────────────────────────────────────────────────────────────────────────────────
     def display(self, relative_path: Path) -> str:
@@ -372,7 +372,7 @@ class _SetValidator:
                 continue  # reported as file.reserved-name under the source profile
             if name in fmt.SET_ROOT_ENTRIES_RESERVED:
                 shown = f"{name}/" if entry in self.directories else name
-                self.refuse(entry, "set.entry.reserved", f"`{shown}` is reserved; no capability of format 1 admits content at it")
+                self.refuse(entry, "set.entry.reserved", f"`{shown}` is reserved; no capability of format 1 allows content at it")
                 continue
             kind = fmt.KINDS_BY_DIRECTORY.get(name)
             if kind is not None and kind.support == "reserved" and entry in self.directories:
@@ -580,7 +580,7 @@ class _SetValidator:
                     continue  # reported by the walk, or as the sidecar
                 self.refuse(entry, "skill.entry.unknown", "a skill holds " + ", ".join(sorted(fmt.SKILL_ROOT_ENTRIES_ALLOWED)) + " alone")
         if has_sidecar:
-            self.refuse(sidecar, "skill.sidecar", "`agents/openai.yaml` carries invocation policy and tool dependencies; it is reserved until a tested profile admits it")
+            self.refuse(sidecar, "skill.sidecar", "`agents/openai.yaml` carries invocation policy and tool dependencies; it is reserved until a tested profile allows it")
 
     def check_skill_frontmatter_and_body(self, skill_root: Path, name: str) -> None:
         entry_file = skill_root / "SKILL.md"
@@ -697,18 +697,18 @@ class _SetValidator:
 
     def dynamic_injection_refusal(self, kind_id: str, name: str) -> Optional[str]:
         """Why a substitution in the asset's entry file is refused, or None where the asset declares the capability
-        and publisher.conf admits it. A declaration publisher.conf does not admit is refused here, used or not."""
+        and publisher.conf allows it. A declaration publisher.conf does not allow is refused here, used or not."""
         asset_conf = Path(fmt.METADATA_DIRECTORY) / kind_id / name / fmt.ASSET_CONF_FILE
         if fmt.DYNAMIC_INJECTION_CAPABILITY not in self.declared_capabilities(asset_conf):
             return f"the asset does not declare `{fmt.DYNAMIC_INJECTION_CAPABILITY}` in {asset_conf}"
-        if self.dynamic_injection_admitted:
+        if self.dynamic_injection_allowed:
             return None
-        self.refuse(asset_conf, "body.dynamic-injection", f"declares `{fmt.DYNAMIC_INJECTION_CAPABILITY}`, which publisher.conf does not admit; a publisher admits it with `{fmt.ALLOW_DYNAMIC_INJECTION_KEY}=yes`")
-        return f"publisher.conf does not admit `{fmt.DYNAMIC_INJECTION_CAPABILITY}`"
+        self.refuse(asset_conf, "body.dynamic-injection", f"declares `{fmt.DYNAMIC_INJECTION_CAPABILITY}`, which publisher.conf does not allow; a publisher allows it with `{fmt.ALLOW_DYNAMIC_INJECTION_KEY}=yes`")
+        return f"publisher.conf does not allow `{fmt.DYNAMIC_INJECTION_CAPABILITY}`"
 
     def declared_capabilities(self, asset_conf: Path) -> Set[str]:
         """The capabilities `asset_conf` requires; empty where the file is absent, unread or malformed, which
-        check_asset_conf reports, so a declaration the validator cannot read does not admit anything."""
+        check_asset_conf reports, so a declaration the validator cannot read does not allow anything."""
         record = self.files_by_path.get(asset_conf)
         if record is None or record.text is None:
             return set()
@@ -878,7 +878,7 @@ class _SetValidator:
                 continue
             directory = Path(kind.directory)
             if directory in self.directories and directory.name not in fmt.SET_ROOT_ENTRIES_RESERVED:
-                self.refuse(directory, "kind.reserved", f"`{kind.directory}/` is the reserved kind `{kind.kind_id}`, which this format does not admit")
+                self.refuse(directory, "kind.reserved", f"`{kind.directory}/` is the reserved kind `{kind.kind_id}`, which this format does not allow")
 
     # ── release profile ────────────────────────────────────────────────────────────────────────────────────────
     def check_release_inventory(self) -> None:

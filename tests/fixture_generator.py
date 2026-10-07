@@ -429,12 +429,12 @@ def inject(tree: Tree) -> None:
 # (expectation, fixture name, rule id, allow_dynamic_injection, mutation): the outcomes of load-time substitution under
 # the two switches. A value of None runs the fixture with the shared publisher.conf, which does not carry the key;
 # "yes" and "no" write a publisher.conf carrying it beside the set. The plain fixtures of body.dynamic-injection are the
-# undeclared case. ai-tools-base's conformance job does not run the `.not-admitted` variants, since base reads the
+# undeclared case. ai-tools-base's conformance job does not run the `.not-allowed` variants, since base reads the
 # declaration and not publisher.conf.
 DYNAMIC_INJECTION_FIXTURES: List[Tuple[str, str, str, Union[str, None], Mutation]] = [
-    ("fail", "body.dynamic-injection.not-admitted", "body.dynamic-injection", None, lambda tree: (declare_dynamic(tree), inject(tree))),
-    ("fail", "body.dynamic-injection.not-admitted-no", "body.dynamic-injection", "no", lambda tree: (declare_dynamic(tree), inject(tree))),
-    ("fail", "body.dynamic-injection.not-admitted-unused", "body.dynamic-injection", None, declare_dynamic),
+    ("fail", "body.dynamic-injection.not-allowed", "body.dynamic-injection", None, lambda tree: (declare_dynamic(tree), inject(tree))),
+    ("fail", "body.dynamic-injection.not-allowed-no", "body.dynamic-injection", "no", lambda tree: (declare_dynamic(tree), inject(tree))),
+    ("fail", "body.dynamic-injection.not-allowed-unused", "body.dynamic-injection", None, declare_dynamic),
     ("fail", "body.dynamic-injection.not-declared", "body.dynamic-injection", "yes", inject),
     ("pass", "acme.dynamic-injection-declared", "", "yes", lambda tree: (declare_dynamic(tree), inject(tree))),
     ("pass", "acme.dynamic-injection-declared-unused", "", "yes", declare_dynamic),
