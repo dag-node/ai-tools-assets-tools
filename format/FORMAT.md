@@ -3,8 +3,9 @@
 What a set of skills and subagents holds, how its files are named and written,
 and the rule `tools/validate` applies to each. A set that passes installs
 as a Claude Code or Codex plugin as committed, and `ai-tools-base` reads it
-as a package; base's own validator applies the rows marked as enforced by base,
-and the conformance fixtures under `fixtures/` hold the two to one another.
+as a package. Base's own validator applies a subset of these rules under
+the same ids, which base's documentation names, and the conformance fixtures
+under `fixtures/` check that the two validators agree on that subset.
 
 ```text
 sets/<set>/
@@ -55,7 +56,8 @@ or `release`. The profile tokens an asset requires are described under
 The **source** profile is the committed tree, checked on every pull request.
 The **release** profile is a set `tools/build-set` staged: the same tree plus
 `LICENSES/` texts for every identifier it declares, the repository's `LICENSE`
-where the set has none, and `SHA256SUMS` at the set root listing every file.
+where the set has none, and `SHA256SUMS` at the set root listing every file
+of the set other than `SHA256SUMS` and its signature, `SHA256SUMS.asc`.
 `SHA256SUMS` and its signature are not committed: the source profile refuses
 them.
 
@@ -265,8 +267,9 @@ asset carries it under `metadata/<kind>/<name>/`. One declaration per asset.
 `metadata/<kind>/<name>/asset.conf` carries `format=1`. An asset declares
 what it needs in `requires_capabilities` and `requires_integrations` (as
 `integration-<name>`). An `x_<key>` key is informational: the tools and base
-read past it, so it does not state a requirement. `<kind>` is an implemented kind id; `<name>` is an asset
-the set holds. An unknown capability refuses the asset.
+read past it, so it does not state a requirement. `<kind>` is an implemented
+kind id; `<name>` is an asset the set holds. An unknown capability refuses
+the asset.
 
 An asset does not name the agents it targets. It only requires profiles,
 in `requires_capabilities`. A profile token names the format the asset is
@@ -298,10 +301,12 @@ in the file (read whole, up to the file bound; the lines from
 sidecar, combined with the last `REUSE.toml` annotation whose `path` glob
 matches under that annotation's `precedence`. A file over the bound is refused
 rather than judged on its first bytes. `REUSE.toml` is read as a bounded TOML
-subset: inside an `[[annotations]]` table a line is `key = "string"`,
-`key = 'string'` or `key = ["a", "b"]` on one line, or a comment. A file with a
-line outside that subset -- a comment after a value, a multi-line array,
-an inline table, a dotted key, another table header -- is refused whole,
+subset: a file holds any number of `[[annotations]]` tables, the lines
+before the first table (`version` and the package keys) are not read, and
+inside a table a line is `key = "string"`, `key = 'string'`
+or `key = ["a", "b"]` on one line, or a comment. A file with a line outside
+that subset -- a comment after a value, a multi-line array, an inline table,
+a dotted key, a table header other than `[[annotations]]` -- is refused whole,
 and no file is judged on it, since a reading the tools cannot vouch for is not
 a pass; `reuse lint` is the check that the file is TOML. A `path` glob is
 at most 256 characters, with `**` standing alone between slashes.
@@ -371,7 +376,7 @@ differ.
 | `repo.publisher-conf` | refuses | `publisher.conf` reads as `KEY=value` with every required key |
 | `repo.marketplace` | refuses | `.claude-plugin/marketplace.json` equals what `sync-manifests` writes from `set.conf` and `publisher.conf` |
 | `set.conf.missing` | refuses | a set directory holds `set.conf` |
-| `set.conf.syntax` | refuses | `set.conf` reads as `KEY=value`: every line is `KEY=value` or a comment, a key is written once, a list is `[a, b]` |
+| `set.conf.syntax` | refuses | `set.conf` reads as `KEY=value`: every line is `KEY=value` or a comment, a key is written once, a list is `[a, b]` or bare `a, b` |
 | `set.conf.required-key` | refuses | `set.conf` carries `format`, `name`, `version`, `summary`, `license`, `maintainers` and `source` |
 | `set.conf.format` | refuses | `format` is the integer `1` |
 | `set.conf.name` | refuses | `name` equals the set directory |
@@ -407,7 +412,7 @@ differ.
 | `frontmatter.metadata` | refuses | `metadata` is a map of string values |
 | `frontmatter.metadata-prefix` | warns | a `metadata` key this format reads starts with `ai-tools-` |
 | `body.dynamic-injection` | refuses | a line does not run a command when the asset loads |
-| `body.absolute-path` | refuses | a body does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share` |
+| `body.absolute-path` | refuses | an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share` |
 | `file.symlink` | refuses | a set does not hold a symbolic link |
 | `file.hardlink` | refuses | a file has one link |
 | `file.special` | refuses | every entry is a regular file or a directory |
@@ -428,5 +433,5 @@ differ.
 | `license.allowlist` | refuses | every identifier of a licence is on the list in force |
 | `license.text` | refuses | `LICENSES/<identifier>.txt` exists for every identifier a set declares |
 | `license.file` | refuses | every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation |
-| `release.inventory` | refuses | `SHA256SUMS` lists every file of the built set once and matches each |
+| `release.inventory` | refuses | `SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each |
 <!-- rules:end -->
