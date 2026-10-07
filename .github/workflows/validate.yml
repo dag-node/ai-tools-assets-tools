@@ -3,15 +3,20 @@
 # repository's own, on every pull request and every push to develop and main.
 #
 #   jobs:
-#     validate:
+#     ai-tools-assets:
 #       uses: dag-node/ai-tools-assets-tools/.github/workflows/validate.yml@v1
 #       with:
 #         license-exceptions: ''          # space-separated GLOB=ID pairs check-licenses admits
 #         enforce-signoff: false          # true once the repository requires a DCO sign-off on every commit
 #         tools-repository: ''            # a fork of this repository the tools are checked out from, as <owner>/<repo>
 #
-# The job name `validate` is the status check a ruleset requires on main; renaming it leaves the requirement waiting
-# for a check that no longer runs. The tools run from a checkout of the repository and commit that define this
+# The status check a ruleset requires on main is `validate` in this repository and `<caller job> / validate` in
+# a caller. The calling job is named for the calling repository, as in the example for dag-node/ai-tools-assets, whose
+# check is `ai-tools-assets / validate`, the exact context that repository's ruleset requires. A caller also lists
+# `<caller job> / tests (python ${{ matrix.python }})` as skipped: the suite runs in this repository alone, and
+# a skipped job's name keeps its matrix expression.
+#
+# The tools run from a checkout of the repository and commit that define this
 # workflow file -- job.workflow_repository, job.workflow_sha and job.workflow_file_path, which name the reusable
 # workflow's own file in a called job where the github.* context names the caller's -- so a caller pinned at a tag runs
 # that tag's tools and a caller's own tree is never the tools. The resolve step refuses a repository other than
