@@ -253,11 +253,21 @@ asset carries it under `metadata/<kind>/<name>/`. One declaration per asset.
 | `license` | yes | the upstream SPDX licence, on the list in force |
 | `signature`, `signer` | no | reserved for asset signing |
 
-`metadata/<kind>/<name>/asset.conf` carries `format=1` and optionally
-`requires_capabilities`, `requires_integrations` (as `integration-<name>`),
-`supported_targets` (agent names) and `x_<name>` keys. `<kind>` is
-an implemented kind id and `<name>` an asset the set holds. An unknown required
-capability refuses the asset.
+`metadata/<kind>/<name>/asset.conf` carries `format=1`. An asset declares
+what it needs in `requires_capabilities`, `requires_integrations` (as
+`integration-<name>`) and `x_<name>` keys. `<kind>` is a known kind id;
+`<name>` is an asset the set holds. An unknown capability refuses
+the asset.
+
+An asset does not name the agents it targets. It only requires profiles,
+in `requires_capabilities`. A profile token names the format the asset is
+written in (`skills.portable.v1`, `subagents.claude.v1`). Agents implement
+profiles. A reader that filters assets per agent rejects any asset whose
+required profile the agent does not implement.
+
+Compatibility notes (agent, model, date) live as ordinary prose in the
+skill's `compatibility` field. Publisher-specific data goes in an `x_<name>`
+key.
 
 ## Licences
 
@@ -308,10 +318,9 @@ No reader reads an entry it does not define, and none ignores one.
 A publisher's own key in `set.conf`,
 `UPSTREAM.conf` or `asset.conf` is `x_<name>`, which base reads past; a key
 of another shape outside the file's table is refused, and a requirement
-(`requires_base`, `requires_capabilities`, `requires_integrations`,
-`supported_targets`) is read, not skipped, so an unknown required capability
-refuses. An unknown top-level set entry fails validation; a reserved one is
-refused with content.
+(`requires_base`, `requires_capabilities`, `requires_integrations`) is read,
+not skipped, so an unknown required capability refuses. An unknown top-level
+set entry fails validation; a reserved one is refused with content.
 
 ## Limits
 
@@ -405,7 +414,7 @@ differ.
 | `metadata.kind` | refuses | `metadata/<kind>` is an implemented kind id |
 | `metadata.asset` | refuses | `metadata/<kind>/<name>` names an asset the set holds |
 | `metadata.entry` | refuses | `metadata/<kind>/<name>` holds `asset.conf`, `UPSTREAM.conf` and `references` alone |
-| `metadata.asset-conf` | refuses | `asset.conf` reads as `KEY=value` with `format=1` and known capabilities, integration tokens and target names |
+| `metadata.asset-conf` | refuses | `asset.conf` reads as `KEY=value` with `format=1`, known capabilities and `integration-<name>` tokens |
 | `license.expression` | refuses | a licence is a well-formed SPDX expression without `WITH`, `LicenseRef` or a `+` suffix |
 | `license.allowlist` | refuses | every identifier of a licence is on the list in force |
 | `license.text` | refuses | `LICENSES/<identifier>.txt` exists for every identifier a set declares |

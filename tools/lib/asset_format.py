@@ -180,8 +180,8 @@ UPSTREAM_CONF_OPTIONAL: Tuple[str, ...] = ("signature", "signer")
 UPSTREAM_CONF_FILE = "UPSTREAM.conf"
 ASSET_CONF_FILE = "asset.conf"
 ASSET_CONF_REQUIRED: Tuple[str, ...] = ("format",)
-ASSET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "supported_targets")
-ASSET_CONF_LIST_KEYS: Tuple[str, ...] = ("requires_capabilities", "requires_integrations", "supported_targets")
+ASSET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_capabilities", "requires_integrations")
+ASSET_CONF_LIST_KEYS: Tuple[str, ...] = ("requires_capabilities", "requires_integrations")
 # An extension key, `x_` then a key body, is a publisher's own informational key: the tools accept it without a finding
 # and base reads past it, where every other key outside a file's table is refused. A requirement never takes this form.
 EXTENSION_KEY_PATTERN = re.compile(r"^x_[A-Za-z0-9_]+$")
@@ -298,7 +298,7 @@ RULES: Dict[str, str] = {
     "metadata.kind": "`metadata/<kind>` is an implemented kind id",
     "metadata.asset": "`metadata/<kind>/<name>` names an asset the set holds",
     "metadata.entry": "`metadata/<kind>/<name>` holds `asset.conf`, `UPSTREAM.conf` and `references` alone",
-    "metadata.asset-conf": "`asset.conf` reads as `KEY=value` with `format=1` and known capabilities, integration tokens and target names",
+    "metadata.asset-conf": "`asset.conf` reads as `KEY=value` with `format=1`, known capabilities and `integration-<name>` tokens",
     "license.expression": "a licence is a well-formed SPDX expression without `WITH`, `LicenseRef` or a `+` suffix",
     "license.allowlist": "every identifier of a licence is on the list in force",
     "license.text": "`LICENSES/<identifier>.txt` exists for every identifier a set declares",
