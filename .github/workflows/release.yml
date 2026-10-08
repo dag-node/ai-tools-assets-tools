@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: MIT
 # Releases this repository's tooling for a tag v<semver>: verifies the tag's signature against the maintainer's pinned
 # key, runs the suite, writes the source archive with its SHA-256 and a detached signature by the org package-signing
-# key, re-verifies that signature on the runner, and creates the GitHub release the archive is read from. A consumer
-# (ai-tools-base's CI, a publisher's tools.pin) pins the tag and verifies the archive against the org key's primary,
-# 67F42DC18BF764B42D82F14256D2F802CF9832E4.
+# key, builds the RPM ai-tools-assets-tools from that archive, signs it inside an EL9 container and verifies it in EL9
+# and EL10, creates the GitHub release with the archive, its .sha256 and .asc and the RPM, and asks dag-node/rpm to
+# publish the RPM at rpm.dagnode.com. A prerelease tag (v1.1.0-rc.1) creates a prerelease and does not dispatch.
+# A consumer (ai-tools-base's CI, a publisher's tools.pin) pins the tag and verifies the archive against the org key's
+# primary, 67F42DC18BF764B42D82F14256D2F802CF9832E4; a host installs the RPM from rpm.dagnode.com.
 #
-# The release job alone declares `environment: release`, whose deployment policy allows tags v*.*.* and no branch, so
-# the signing key and its passphrase reach a job on a maintainer-created tag and no other ref. The tag is annotated and
-# signed by a maintainer's personal key -- p4nda's primary 225DFF22D0221D3DD68CCEFFFABAF500E7D90733, fetched over HTTPS
-# for this one check -- so a leaked CI secret cannot mint a release by itself. The tag object verified is the one
-# archived, and the remote's `refs/tags/<tag>` is compared with it immediately before the release is created, since
-# `gh release create --verify-tag` checks that the name exists, not which object it names: the repository ruleset
-# that makes `v*.*.*` tags immutable is the control that holds across the run, and that comparison confirms it is in
-# force. The RPM of the tooling and its dispatch to dag-node/rpm join this workflow with the signing slice.
+# Each step runs packaging/release-steps.sh, the same steps set-release.yml runs for a publisher's set; that file
+# states each step's checks and how the key material is held. The release job alone declares `environment: release`,
+# whose deployment policy allows tags v*.*.* and no branch, so the signing key, its passphrase and the dispatch token
+# reach a job on a maintainer-created tag and no other ref. The tag is annotated and signed by a maintainer's personal
+# key -- p4nda's primary 225DFF22D0221D3DD68CCEFFFABAF500E7D90733, fetched over HTTPS for this one check -- so a leaked
+# CI secret cannot mint a release by itself. The tag object verified is the one archived, and the remote's
+# `refs/tags/<tag>` is compared with it immediately before the release is created, since `gh release create
+# --verify-tag` checks that the name exists, not which object it names: the repository ruleset that makes `v*.*.*`
+# tags immutable is the control that holds across the run, and that comparison confirms it is in force.
 name: release
 
 on:
@@ -23,7 +26,7 @@ permissions:
   contents: read
 
 env:
-  TAG_SIGNER_PRIMARY_FINGERPRINT: 225DFF22D0221D3DD68CCEFFFABAF500E7D90733
+  TAG_SIGNER_PRIMARY_FINGERPRINTS: 225DFF22D0221D3DD68CCEFFFABAF500E7D90733
   TAG_SIGNER_KEY_URL: https://github.com/p4nda.gpg
   ARTIFACT_SIGNER_PRIMARY_FINGERPRINT: 67F42DC18BF764B42D82F14256D2F802CF9832E4
 
@@ -33,40 +36,26 @@ jobs:
     environment: release
     permissions:
       contents: write
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
-      # The write token is not stored in .git/config: `git ls-remote` reads this public repository without it, and
+      # The write token is not stored in .git/config: git reads this public repository without it, and
       # `gh release create` takes it from GH_TOKEN in its own step.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      # The tag object is captured once from the checkout and every later step names that object or the commit it
-      # peels to, so a tag moved on the remote between steps cannot swap what is verified for what is archived.
       - name: The tag is annotated, names itself, points at this commit, and is signed by the pinned maintainer key
         env:
-          TAG: ${{ github.ref_name }}
           EVENT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          tag_object="$(git rev-parse --verify --quiet "refs/tags/$TAG^{tag}")" \
-            || { echo "$TAG is not an annotated tag in this checkout" >&2; exit 1; }
-          test "$(git cat-file -t "$tag_object")" = tag || { echo "$tag_object is not a tag object" >&2; exit 1; }
-          embedded="$(git cat-file -p "$tag_object" | awk '/^tag / { print $2; exit }')"
-          test "$embedded" = "$TAG" \
-            || { echo "the tag object names itself $embedded, not $TAG; a tag object is published under its own name" >&2; exit 1; }
-          commit="$(git rev-parse "$tag_object^{commit}")"
-          test "$commit" = "$EVENT_SHA" && test "$commit" = "$(git rev-parse HEAD)" \
-            || { echo "$TAG peels to $commit; the event's commit is $EVENT_SHA and the checkout is $(git rev-parse HEAD)" >&2; exit 1; }
-          export GNUPGHOME="$(mktemp -d)"
-          curl -sSf "$TAG_SIGNER_KEY_URL" | gpg --batch --import
-          status="$(git verify-tag --raw "$tag_object" 2>&1)" || { echo "$status" >&2; exit 1; }
-          primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF }')"
-          test "$primary" = "$TAG_SIGNER_PRIMARY_FINGERPRINT" \
-            || { echo "$TAG is signed by primary ${primary:-none}, not the pinned $TAG_SIGNER_PRIMARY_FINGERPRINT" >&2; exit 1; }
-          echo "$TAG verified: tag object $tag_object, commit $commit, signed by $primary"
-          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG_OBJECT=$tag_object" >> "$GITHUB_ENV"
+          bash packaging/release-steps.sh verify-tag "$TAG" "$EVENT_SHA"
+          version="${TAG#v}"
+          dispatch=true
+          [[ "$version" == *-* ]] && dispatch=false
+          printf 'VERSION=%s\nDISPATCH_RPM=%s\n' "$version" "$dispatch" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -74,50 +63,60 @@ jobs:
 
       - name: The suite passes at the verified commit
         run: |
-          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT" || { echo "the checkout moved off $RELEASE_COMMIT" >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT" || { echo "::error::the checkout moved off $RELEASE_COMMIT" >&2; exit 1; }
           python3 -m unittest discover -s tests
 
       - name: Write the archive of the verified commit and its SHA-256
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          archive="dist/ai-tools-assets-tools-${TAG#v}.tar.gz"
-          git archive --format=tar.gz --prefix="ai-tools-assets-tools-${TAG#v}/" -o "$archive" "$RELEASE_COMMIT"
+          archive="dist/ai-tools-assets-tools-$VERSION.tar.gz"
+          git archive --format=tar.gz --prefix="ai-tools-assets-tools-$VERSION/" -o "$archive" "$RELEASE_COMMIT"
           (cd dist && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
-          echo "archive=$archive" >> "$GITHUB_ENV"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: The signing key is the pinned artifact signer and the dispatch token reads dag-node/rpm
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
+          RPM_REPO_DISPATCH_TOKEN: ${{ secrets.RPM_REPO_DISPATCH_TOKEN }}
+        run: bash packaging/release-steps.sh preflight
 
       - name: Sign the archive with the org package-signing key and re-verify
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
+        run: bash packaging/release-steps.sh sign-files "$ARCHIVE"
+
+      # The RPM is built from the archive's extracted tree, so it carries the bytes the archive and its signature cover.
+      - name: Build the unsigned tools RPM from the archive with the pinned nFPM, timestamps from the tag's commit
         run: |
           set -euo pipefail
-          test -n "$GPG_SIGNING_KEY" && test -n "$GPG_SIGNING_PASSPHRASE" \
-            || { echo "the release environment holds no signing key or passphrase" >&2; exit 1; }
-          # The secret keyring lives on tmpfs (/dev/shm), so the key does not reach the runner's disk, and the trap
-          # stops the agent holding the unlocked key and removes the keyring when the step ends.
-          export GNUPGHOME="$(mktemp -d -p /dev/shm 2>/dev/null || mktemp -d)"
-          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
-          printf '%s' "$GPG_SIGNING_KEY" | gpg --batch --import
-          printf '%s' "$GPG_SIGNING_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
-            --armor --detach-sign --output "$archive.asc" "$archive"
-          status="$(gpg --batch --status-fd 1 --verify "$archive.asc" "$archive" 2>/dev/null)"
-          primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF }')"
-          test "$primary" = "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" \
-            || { echo "the archive signature is by primary ${primary:-none}, not $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" >&2; exit 1; }
-          echo "$archive.asc verified: signed by $primary"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$RELEASE_COMMIT")"
+          export SOURCE_DATE_EPOCH
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP"
+          python3 packaging/render-nfpm.py tools --version "$VERSION" --output "$RUNNER_TEMP/nfpm.yaml"
+          (cd "$RUNNER_TEMP/ai-tools-assets-tools-$VERSION" \
+            && bash "$GITHUB_WORKSPACE/packaging/release-steps.sh" build-rpm "$RUNNER_TEMP/nfpm.yaml" "$GITHUB_WORKSPACE/dist/rpm")
+          rpms=(dist/rpm/*.rpm)
+          echo "RPM=${rpms[0]}" >> "$GITHUB_ENV"
+
+      - name: Sign the RPM in EL9 and verify its signature in EL9 and EL10
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
+        run: bash packaging/release-steps.sh sign-rpm "$RPM"
 
       - name: Create the release from the verified tag, once the remote still names that tag object
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-          remote="$(git ls-remote origin "refs/tags/$TAG" | awk -v ref="refs/tags/$TAG" '$2 == ref { print $1 }')"
-          test "$remote" = "$RELEASE_TAG_OBJECT" \
-            || { echo "refs/tags/$TAG on the remote is ${remote:-absent}; the verified tag object is $RELEASE_TAG_OBJECT, so the tag moved and the release is not created" >&2; exit 1; }
-          gh release create "$TAG" --verify-tag --title "$TAG" \
-            --notes "Tooling release $TAG. Verify the archive with its .asc against the dag-node package-signing key, primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT." \
-            "$archive" "$archive.sha256" "$archive.asc"
+          bash packaging/release-steps.sh create-release "$TAG" \
+            "Tooling release $TAG. Verify the archive with its .asc and the RPM with rpmkeys -K against the dag-node package-signing key, primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT." \
+            "$ARCHIVE" "$ARCHIVE.sha256" "$ARCHIVE.asc" "$RPM"
+
+      - name: Notify dag-node/rpm to publish the RPM
+        if: env.DISPATCH_RPM == 'true'
+        env:
+          RPM_REPO_DISPATCH_TOKEN: ${{ secrets.RPM_REPO_DISPATCH_TOKEN }}
+        run: bash packaging/release-steps.sh dispatch "$TAG"

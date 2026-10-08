@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: MIT
+# The nFPM configuration of this repository's tools RPM; packaging/render-nfpm.py replaces each placeholder, an
+# upper-case key between two at signs, with a quoted value. nFPM runs from the root of the release archive's extracted
+# tree, which the relative src paths name, so the package carries the bytes of the verified commit. It installs under
+# /usr/share/ai-tools-assets-tools/ and does not put a command on PATH: a command runs as
+# `python3 /usr/share/ai-tools-assets-tools/tools/<name>`. The fixtures keep their one symbolic link, the input
+# the file.symlink rule refuses. umask, buildhost and SOURCE_DATE_EPOCH serve as in nfpm-set.yaml.in.
+name: ai-tools-assets-tools
+arch: all
+platform: linux
+version: @VERSION@
+version_schema: semver
+release: "1"
+maintainer: "dag-node <tools@dagnode.com>"
+vendor: dag-node
+homepage: https://github.com/dag-node/ai-tools-assets-tools
+license: MIT AND AGPL-3.0-only
+description: The ai-tools-assets format, the tools that check and build a set, and the conformance fixtures
+umask: 0o022
+contents:
+  - dst: /usr/share/ai-tools-assets-tools
+    type: dir
+    file_info:
+      mode: 0755
+  - src: tools
+    dst: /usr/share/ai-tools-assets-tools/tools
+    type: tree
+  - src: format
+    dst: /usr/share/ai-tools-assets-tools/format
+    type: tree
+  - src: fixtures
+    dst: /usr/share/ai-tools-assets-tools/fixtures
+    type: tree
+  - src: formatters
+    dst: /usr/share/ai-tools-assets-tools/formatters
+    type: tree
+  - src: LICENSES
+    dst: /usr/share/ai-tools-assets-tools/LICENSES
+    type: tree
+  - src: LICENSE
+    dst: /usr/share/ai-tools-assets-tools/LICENSE
+rpm:
+  summary: The ai-tools-assets format, tools and fixtures
+  buildhost: ai-tools-assets-release

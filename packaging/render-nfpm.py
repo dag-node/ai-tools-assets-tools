@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # packaging/render-nfpm.py -- writes the nFPM configuration of a set's RPM from nfpm-set.yaml.in, the staged set's
-# set.conf and the repository's publisher.conf.
+# set.conf and the repository's publisher.conf, or of this repository's tools RPM from nfpm-tools.yaml.in.
 #
 # ```bash
 # python3 packaging/render-nfpm.py set --root . --set <set> --version <version> --staged build/<set> --output <file>
+# python3 packaging/render-nfpm.py tools --version <version> --output <file>
 # ```
 #
 # The release workflow runs it after tools/build-set has validated and staged the set, so the values come from the
@@ -12,7 +13,8 @@
 # a `version` other than `--version`, which the workflow takes from the tag, so the package version is the tag's. Each
 # `@KEY@` in the template is replaced in one pass by its value as a JSON string, which YAML reads as a double-quoted
 # scalar: a quote, a colon or a `@KEY@` inside a value stays text and does not reach nFPM as configuration. A template
-# naming a key this script does not supply is refused. Standard library only.
+# naming a key this script does not supply is refused. The tools RPM takes the version alone, which the workflow
+# takes from the tag `v<version>`; it is held to semantic versioning here. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -25,6 +27,7 @@ from typing import Dict
 PACKAGING = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(PACKAGING.parent / "tools" / "lib"))
 
+from asset_format import SEMVER_PATTERN  # noqa: E402
 from key_value_config import KeyValueDocument, parse_key_value_text  # noqa: E402
 
 PLACEHOLDER = re.compile(r"@([A-Z_]+)@")
@@ -78,6 +81,12 @@ def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.
     }
 
 
+def tools_values(version: str) -> Dict[str, str]:
+    if not SEMVER_PATTERN.match(version):
+        raise RenderError(f"`{version}` is not a semantic version")
+    return {"VERSION": version}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Write the nFPM configuration of a set's RPM.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -87,10 +96,17 @@ def main() -> int:
     set_command.add_argument("--version", required=True, help="the version the tag names")
     set_command.add_argument("--staged", type=pathlib.Path, required=True, help="the set tools/build-set staged")
     set_command.add_argument("--output", type=pathlib.Path, required=True, help="the configuration file to write")
+    tools_command = commands.add_parser("tools", help="this repository's tools RPM")
+    tools_command.add_argument("--version", required=True, help="the version the tag names")
+    tools_command.add_argument("--output", type=pathlib.Path, required=True, help="the configuration file to write")
     arguments = parser.parse_args()
     try:
-        values = set_values(arguments.root, arguments.set_name, arguments.version, arguments.staged)
-        text = render((PACKAGING / "nfpm-set.yaml.in").read_text(encoding="utf-8"), values)
+        if arguments.command == "set":
+            values = set_values(arguments.root, arguments.set_name, arguments.version, arguments.staged)
+        else:
+            values = tools_values(arguments.version)
+        template = PACKAGING / f"nfpm-{arguments.command}.yaml.in"
+        text = render(template.read_text(encoding="utf-8"), values)
         arguments.output.write_text(text, encoding="utf-8")
     except RenderError as error:
         print(f"render-nfpm: {error}", file=sys.stderr)
