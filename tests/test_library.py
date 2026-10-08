@@ -20,6 +20,7 @@ import set_validation  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from frontmatter import Scalar, split_frontmatter  # noqa: E402
 from key_value_config import parse_key_value_text, parse_list_value  # noqa: E402
+from portable_name import propose_portable_name  # noqa: E402
 from spdx_expression import evaluate_expression  # noqa: E402
 
 FIXTURES = REPOSITORY / "fixtures"
@@ -322,6 +323,23 @@ class FormatRegistry(unittest.TestCase):
             self.assertTrue(fmt.is_valid_name(name), name)
         for name in ("", "-a", "a-", "a--b", "A", "a_b", "a" * 65):
             self.assertFalse(fmt.is_valid_name(name), name)
+
+    def test_portable_file_names(self):
+        for name in ("SKILL.md", "a", ".hidden", "_x", "a-b.c_d", "x" * 255):
+            self.assertTrue(fmt.is_portable_file_name(name), name)
+        for name in ("", ".", "..", "-a", "two words", "a\\b", "r\u00e9sum\u00e9", "a\n", "a/b", "x" * 256):
+            self.assertFalse(fmt.is_portable_file_name(name), repr(name))
+
+    def test_portable_name_proposal(self):
+        cases = {"two words.md": "two_words.md", "r\u00e9sum\u00e9.md": "resume.md", "a\\b.md": "a_b.md",
+                 "-notes.md": "_notes.md", "a  \t b": "a_b", "\ufb01le.md": "file.md", "x" * 300: "x" * 255}
+        for name, proposal in cases.items():
+            self.assertEqual(propose_portable_name(name), proposal, repr(name))
+        hashed = propose_portable_name("\u65e5\u672c")
+        self.assertRegex(hashed, r"^renamed-[0-9a-f]{16}$")
+        self.assertNotEqual(hashed, propose_portable_name("\u4e2d\u56fd"))
+        for name in list(cases) + ["\u65e5\u672c", "..", "\udcff"]:
+            self.assertTrue(fmt.is_portable_file_name(propose_portable_name(name)), repr(name))
 
     def test_prefixes(self):
         self.assertEqual(fmt.authored_asset_prefix("core"), "ai-tools-")
