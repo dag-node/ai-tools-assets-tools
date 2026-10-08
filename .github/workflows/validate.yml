@@ -22,6 +22,7 @@
 # that tag's tools and a caller's own tree is never the tools. The resolve step refuses a repository other than
 # dag-node/ai-tools-assets-tools unless the caller names its fork in tools-repository, and a file path other than
 # .github/workflows/validate.yml, so a copy of this file in another repository does not become the tools source. The
+# input widens nothing: the caller's `uses:` line already chose the repository whose code runs in its job. The
 # job.* fields are absent on GitHub Enterprise Server, where the step stops before the checkout: a publisher on GHES
 # runs the tools from a local pin instead. Over a repository with no publisher.conf (this one) the set checks are
 # skipped and the tree checks run. The sign-off check reads a pull request's own range, base.sha..head.sha, and reports
@@ -119,7 +120,8 @@ jobs:
 
       - name: Every file's licence is on the list in force
         run: |
-          set -- ; for pair in $LICENSE_EXCEPTIONS; do set -- "$@" --exception "$pair"; done
+          # set -f: a pair is split on whitespace alone; its glob is check-licenses' to read, not the shell's.
+          set -f; set -- ; for pair in $LICENSE_EXCEPTIONS; do set -- "$@" --exception "$pair"; done
           python3 "$TOOLS/tools/check-licenses" "$@"
 
       - name: REUSE lint
