@@ -96,11 +96,14 @@ jobs:
         run: bash packaging/release-steps.sh sign-files "$ARCHIVE"
 
       # The RPM is built from the archive's extracted tree, so it carries the bytes the archive and its signature cover.
+      # nFPM takes each mode from that tree and only clears bits, and tar extracts under the shell's umask, so the
+      # umask is set here: files 0644 and directories 0755, which an operator reads and traverses on a host.
       - name: Build the unsigned tools RPM from the archive with the pinned nFPM, timestamps from the tag's commit
         run: |
           set -euo pipefail
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$RELEASE_COMMIT")"
           export SOURCE_DATE_EPOCH
+          umask 022
           tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP"
           python3 packaging/render-nfpm.py tools --version "$VERSION" --output "$RUNNER_TEMP/nfpm.yaml"
           (cd "$RUNNER_TEMP/ai-tools-assets-tools-$VERSION" \
