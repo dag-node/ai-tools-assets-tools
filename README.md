@@ -79,6 +79,7 @@ or template copies them.
 ## License
 
 MIT, see [LICENSE](LICENSE), for every file that does not state another;
-`formatters/**` is `AGPL-3.0-only`, stated in each file's header.
+`formatters/**` and `packaging/sign-rpms.sh` are `AGPL-3.0-only`, stated
+in each file's header.
 [REUSE.toml](REUSE.toml) covers files that do not state one, and `LICENSES/`
 holds every text.

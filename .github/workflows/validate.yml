@@ -59,8 +59,8 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
-      # This repository's own run accepts its AGPL formatters; a caller passes its own pairs.
-      LICENSE_EXCEPTIONS: ${{ inputs.license-exceptions || (github.repository == 'dag-node/ai-tools-assets-tools' && 'formatters/**=AGPL-3.0-only' || '') }}
+      # This repository's own run accepts its AGPL formatters and RPM signer; a caller passes its own pairs.
+      LICENSE_EXCEPTIONS: ${{ inputs.license-exceptions || (github.repository == 'dag-node/ai-tools-assets-tools' && 'formatters/**=AGPL-3.0-only packaging/sign-rpms.sh=AGPL-3.0-only' || '') }}
     steps:
       - name: Check out the repository under check
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
