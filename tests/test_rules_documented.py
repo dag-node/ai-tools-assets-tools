@@ -27,7 +27,7 @@ from fixture_generator import (DYNAMIC_INJECTION_FIXTURES, FAIL_FIXTURES, NAMED_
 BEGIN_MARKER = "<!-- rules:begin -->"
 END_MARKER = "<!-- rules:end -->"
 # Rules whose fixture git does not carry; tests/test_fixtures.py builds each in a temporary directory.
-UNCOMMITTABLE_RULES = {"file.hardlink", "file.special", "file.size", "file.name"}
+UNCOMMITTABLE_RULES = {"file.hardlink", "file.special", "file.size"}
 # Rules about a repository rather than a set; tests/test_commands.py drives each.
 REPOSITORY_RULES = {"repo.layout", "repo.publisher-conf", "repo.marketplace", "license.file"}
 

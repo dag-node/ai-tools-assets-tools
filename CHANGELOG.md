@@ -25,6 +25,10 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   capability token a set carrying it must declare, so a reader without the
   token refuses the set whole; `format=2` is kept for a change in what an
   existing entry means.
+- A file or directory name in a set is of the POSIX portable filename character
+  set, does not open with `-` and is at most 255 bytes, the set `ai-tools-base`
+  reads a name under; the `file.name` finding proposes a portable name and does
+  not rename the file.
 - Every command opens a repository's files by descriptor without following
   a symbolic link and reads each once, so a linked set, manifest or `sets/`
   directory is refused before its target is read; a generated file is

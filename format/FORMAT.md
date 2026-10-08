@@ -266,10 +266,15 @@ alone. A flow list holds plain items, none empty.
   with a second hard link, no special file. Every file is UTF-8 text without
   a control character (every `Cc` code point other than tab, LF and CR, the C1
   range included), a `Bidi_Control` code point or a byte order mark anywhere
-  in it, at most 1 MiB; a set holds at most 2000 files
-  and 500 directories, 32 levels deep, 64 MiB in all, with at most 2000 entries
-  in one directory, and the validator stops at the first of these it meets.
-  A file name is printable and does not carry a newline.
+  in it, at most 1 MiB; a set holds at most 2000 files and 500 directories, 32
+  levels deep, 64 MiB in all, with at most 2000 entries in one directory,
+  and the validator stops at the first of these it meets. A file or directory
+  name is of the POSIX portable filename character set -- `A-Z`, `a-z`, `0-9`,
+  `.`, `_` and `-` -- does not open with `-`, is not `.` or `..`, and is
+  at most 255 bytes: `sha256sum` prints such a name unescaped, a whitespace
+  split leaves it whole, and a filesystem that composes Unicode leaves it
+  unchanged. The finding proposes a portable name; the validator does not
+  rename the file, since a rename owes the links to it a rewrite.
 - A reserved name is used for its reserved purpose alone: `SHA256SUMS`,
   `SHA256SUMS.asc`, `SHA512SUMS*`, `*.oms.sig`, `UPSTREAM.conf`, `asset.conf`,
   `plugin.json`, a `README.md` at a kind directory, and the directories
@@ -279,6 +284,12 @@ alone. A flow list holds plain items, none empty.
 
 A vendored skill carries `UPSTREAM.conf` at its root; a vendored flat-file
 asset carries it under `metadata/<kind>/<name>/`. One declaration per asset.
+A vendored file named outside the portable set of [Bodies
+and files](#bodies-and-files) is renamed to it in the publisher's repository
+before the asset enters a set: every licence on the allowlist in force permits
+the modification, and `UPSTREAM.conf` records the origin. Of its upstream
+naming, a vendored asset keeps its identifier alone, under the name grammar
+of [Names](#names).
 
 | Key | Required | Value |
 |---|---|---|
@@ -445,7 +456,7 @@ differ.
 | `file.binary` | refuses | every file is UTF-8 text without a control character (C0, DEL, C1, other than tab, LF and CR), a bidi control or a byte order mark |
 | `file.size` | refuses | a file is at most 1 MiB; a set holds at most 2000 files, 500 directories, 2000 entries in one directory, 32 levels and 64 MiB in all |
 | `file.reserved-name` | refuses | a reserved file name is used for its reserved purpose alone |
-| `file.name` | refuses | a file name is printable and does not carry a newline |
+| `file.name` | refuses | a file or directory name is of the POSIX portable filename character set, `A-Za-z0-9._-`, does not open with `-`, is not `.` or `..`, and is at most 255 bytes |
 | `cs.package` | refuses | a `.cs` script does not carry a `#:package` directive |
 | `cs.sdk` | refuses | a `.cs` script's `#:sdk` is `Microsoft.NET.Sdk` or `Microsoft.NET.Sdk.Web` |
 | `cs.project` | refuses | a `.cs` script's `#:project` names, relative to the script, a `.csproj` the skill ships |

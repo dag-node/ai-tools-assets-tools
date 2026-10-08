@@ -26,6 +26,7 @@ from frontmatter import FrontmatterDocument, FrontmatterValue, Scalar, split_fro
 from key_value_config import KeyValueDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
 from manifests import claude_plugin_document, portable_plugin_document, render_json
+from portable_name import propose_portable_name
 from safe_read import RefusedRead, open_directory, open_root, read_file
 
 PROFILE_SOURCE = "source"
@@ -254,10 +255,14 @@ class _SetValidator:
         return fd
 
     def check_file_name(self, relative_path: Path, name: str) -> bool:
-        if any(character in name for character in "\n\r") or not name.isprintable():
-            self.refuse(relative_path.parent / repr(name), "file.name", "a file name is printable and carries no newline")
-            return False
-        return True
+        """False after refusing a name outside the portable set; the walk does not read the entry, so no later rule
+        reports on it. The path is shown with the name quoted, which keeps a newline in it on one line."""
+        if fmt.is_portable_file_name(name):
+            return True
+        self.refuse(relative_path.parent / repr(name), "file.name",
+                    f"is not a portable file name: A-Z, a-z, 0-9, `.`, `_` and `-`, not opening with `-`, at most "
+                    f"{fmt.PORTABLE_FILE_NAME_MAX_BYTES} bytes; rename it, `{propose_portable_name(name)}` for example")
+        return False
 
     def check_reserved_directory_name(self, relative_path: Path, name: str) -> None:
         if name == ".agents":

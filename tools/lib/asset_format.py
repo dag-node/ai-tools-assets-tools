@@ -20,6 +20,12 @@ FORMAT_VERSION = 1
 # and single hyphens, starting and ending with a letter or digit.
 NAME_PATTERN = re.compile(r"^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 NAME_MAX_LENGTH = 64
+# A path component of a set: the POSIX portable filename character set, not opening with `-`, not `.` or `..`, at most
+# 255 bytes. ai-tools-base holds every name in an inventory and on its walk to the same set
+# (`ai_tools_conf_portable_name_valid`): sha256sum prints such a name unescaped, a whitespace split leaves it whole,
+# a Unicode-composing filesystem leaves it unchanged, and a command line does not read it as an option.
+PORTABLE_FILE_NAME_PATTERN = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
+PORTABLE_FILE_NAME_MAX_BYTES = 255
 CLAUDE_RESERVED_WORDS: Tuple[str, ...] = ("anthropic", "claude")
 UPSTREAM_PUBLISHER = "dag-node"
 UPSTREAM_SET = "core"
@@ -294,7 +300,7 @@ RULES: Dict[str, str] = {
     "file.binary": "every file is UTF-8 text without a control character (C0, DEL, C1, other than tab, LF and CR), a bidi control or a byte order mark",
     "file.size": "a file is at most 1 MiB; a set holds at most 2000 files, 500 directories, 2000 entries in one directory, 32 levels and 64 MiB in all",
     "file.reserved-name": "a reserved file name is used for its reserved purpose alone",
-    "file.name": "a file name is printable and does not carry a newline",
+    "file.name": "a file or directory name is of the POSIX portable filename character set, `A-Za-z0-9._-`, does not open with `-`, is not `.` or `..`, and is at most 255 bytes",
     "cs.package": "a `.cs` script does not carry a `#:package` directive",
     "cs.sdk": "a `.cs` script's `#:sdk` is `Microsoft.NET.Sdk` or `Microsoft.NET.Sdk.Web`",
     "cs.project": "a `.cs` script's `#:project` names, relative to the script, a `.csproj` the skill ships",
@@ -315,6 +321,12 @@ RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length
 
 def is_valid_name(name: str) -> bool:
     return bool(NAME_PATTERN.match(name))
+
+
+def is_portable_file_name(name: str) -> bool:
+    """True when `name` is one path component of the portable set, `PORTABLE_FILE_NAME_PATTERN` matched whole."""
+    return (bool(PORTABLE_FILE_NAME_PATTERN.fullmatch(name)) and name not in (".", "..")
+            and len(name) <= PORTABLE_FILE_NAME_MAX_BYTES)
 
 
 def is_semver(version: str) -> bool:
