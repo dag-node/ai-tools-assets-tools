@@ -280,6 +280,8 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
                    replace_in(tree, "skills/ai-tools-pdf-processing/SKILL.md", "name: acme-pdf-processing", "name: ai-tools-pdf-processing"))),
     ("body.absolute-path.frontmatter", "body.absolute-path",
      lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", 'compatibility: "see /opt/ai-tools/skills/x"')),
+    ("body.absolute-path.metadata-references", "body.absolute-path",
+     lambda tree: tree.__setitem__("metadata/subagents/upstream-triage/references/notes.md", "# Notes\n\nSee /opt/ai-tools/skills/other/README.md.\n")),
     ("license.expression.nested", "license.expression",
      lambda tree: replace_in(tree, "set.conf", "license=MIT\n", 'license="' + "(" * 600 + "MIT" + ")" * 600 + '"\n')),
     ("license.expression.long", "license.expression",
