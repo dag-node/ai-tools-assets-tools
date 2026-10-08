@@ -43,7 +43,8 @@
 # `rpmkeys -Kv` to print a signature line ending in OK inside the EL9 and the EL10 container; the exit status alone
 # passes an unsigned package. The secrets reach a container on stdin, since podman records an `-e` value in the
 # container's configuration on disk. The containers run through `sudo podman` with runc as the OCI runtime, which
-# the GitHub runner needs: its default crun rejects the generated OCI spec.
+# the GitHub runner needs: its default crun rejects the generated OCI spec. el-repos.sh points the EL9 container's repos
+# at one ordered host list before its `dnf install`.
 set -euo pipefail
 
 NFPM_VERSION=2.47.0
@@ -220,12 +221,13 @@ sign_rpm() {
     new_scratch
     work="$scratch"
     cp "$rpm" "$work/$name"
-    cp "$PACKAGING/sign-rpms.sh" "$work/sign-rpms.sh"
+    cp "$PACKAGING/sign-rpms.sh" "$PACKAGING/el-repos.sh" "$work/"
 
     container="ai-tools-assets-sign-$$"
     out="$(printf '%s\n%s\n' "$GPG_SIGNING_PASSPHRASE" "$GPG_SIGNING_KEY" \
         | sudo podman run -i --name "$container" --entrypoint /usr/bin/bash -v "$work:/in:ro" "$EL9_IMAGE" -c '
             set -euo pipefail
+            bash /in/el-repos.sh
             dnf -y -q --setopt=install_weak_deps=False install rpm-sign gnupg2 </dev/null >/dev/null
             mkdir /out && cp "/in/$1" /out/
             bash /in/sign-rpms.sh --secrets-stdin /out/sign-rpms.pub "/out/$1"' _ "$name")" \
