@@ -15,10 +15,9 @@ names it. This repository holds what every such repository shares: the format
 a set follows, the validator that applies it, the scaffolding and build
 commands, and the GitHub workflows that run them.
 
-**Status.** Format 1, the commands, the fixtures and the workflows are
-in the tree and unreleased: the first tags, `v1.0.0` and `v1`, follow
-the signing slice, which adds the RPM and the signed set release to the
-workflows. Until then a publisher calls the workflows at a commit, and runs
+**Status.** Format 1, the commands, the fixtures, the workflows and the
+signed set release are in the tree and unreleased: the first tags are `v1.0.0`
+and `v1`. Until then a publisher calls the workflows at a commit, and runs
 the tools from a checkout.
 
 ## Layout
@@ -30,9 +29,12 @@ tools/          validate, new-set, new-asset, sync-manifests, build-set,
 fixtures/       conformance fixtures: sets that pass, and sets that fail
                 one named rule each
 formatters/     reflow prose at the column a checker names (AGPL-3.0-only)
-tests/          tests for tools/ and the fixtures
-.github/        validate.yml, which a publisher's repository calls, and
-                release.yml, this repository's own release
+packaging/      the release steps, the nFPM template of a set's RPM and the
+                RPM signer
+tests/          tests for tools/, packaging/ and the fixtures
+.github/        validate.yml and set-release.yml, which a publisher's
+                repository calls, and release.yml, this repository's own
+                release
 ```
 
 ## Using the tools
@@ -53,9 +55,10 @@ directory:
 python3 ../ai-tools-assets-tools/tools/validate
 ```
 
-`tools/README.md` describes each command. A release is tagged `v<semver>`; `v1`
-moves within the major, and a change a set would have to follow is a new major
-and a new `format`.
+`tools/README.md` describes each command, and `packaging/README.md` the set
+release a publisher's release workflow calls. A release is tagged `v<semver>`;
+`v1` moves within the major, and a change a set would have to follow is a new
+major and a new `format`.
 
 ## Formatters
 
