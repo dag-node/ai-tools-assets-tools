@@ -840,6 +840,12 @@ class _SetValidator:
                 for entry in self.check_entry_types(asset_files + asset_subdirectories, fmt.METADATA_ENTRY_TYPES, "metadata.entry"):
                     if entry.name not in fmt.METADATA_ENTRIES_ALLOWED:
                         self.refuse(entry, "metadata.entry", "metadata/<kind>/<name>/ holds asset.conf, UPSTREAM.conf and references/ alone")
+                # A reference under metadata is an asset's `.md` file like one under a skill, so the same body rule
+                # reads it.
+                references = asset_directory / "references"
+                for relative_path, other in self.files_by_path.items():
+                    if references in relative_path.parents and relative_path.suffix in fmt.PROSE_FILE_SUFFIXES and other.text is not None:
+                        self.check_body(relative_path, other.text, None)
                 if (asset_directory / fmt.ASSET_CONF_FILE) in self.files_by_path:
                     self.check_asset_conf(asset_directory / fmt.ASSET_CONF_FILE)
                 if (asset_directory / fmt.UPSTREAM_CONF_FILE) in self.files_by_path:
