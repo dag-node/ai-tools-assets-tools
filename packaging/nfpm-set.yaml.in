@@ -2,10 +2,11 @@
 # The nFPM configuration of a set's RPM; packaging/render-nfpm.py replaces each placeholder, an upper-case key between
 # two at signs, with a quoted value. The package installs the staged set, SHA256SUMS and SHA256SUMS.asc included, under
 # /usr/share/ai-tools-assets/<set>/ and owns that directory, so `rpm -e` removes it; it co-owns
-# /usr/share/ai-tools-assets with every other set's package, so the last removal removes that too. It declares
-# no Requires. umask 0o022 clears group and other write from every mode nFPM reads from the staged tree, where nFPM's
-# default 0o002 keeps group write; buildhost and SOURCE_DATE_EPOCH (from the environment) fix the header fields that
-# would differ between two builds of one tag.
+# /usr/share/ai-tools-assets with every other set's package, so the last removal removes that too. The tree entry
+# writes the set's directory itself, with the staged directory's mode, and nFPM refuses a second entry at a tree's
+# destination, so only the parent carries a dir entry. It declares no Requires. umask 0o022 clears group and other
+# write from every mode nFPM reads from the staged tree, where nFPM's default 0o002 keeps group write; buildhost
+# and SOURCE_DATE_EPOCH (from the environment) fix the header fields that would differ between two builds of one tag.
 name: @NAME@
 arch: all
 platform: linux
@@ -20,10 +21,6 @@ description: @SUMMARY@
 umask: 0o022
 contents:
   - dst: @INSTALL_ROOT@
-    type: dir
-    file_info:
-      mode: 0755
-  - dst: @DESTINATION@
     type: dir
     file_info:
       mode: 0755
