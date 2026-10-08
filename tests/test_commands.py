@@ -456,6 +456,19 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("name.grammar", stderr)
 
+    def test_link_set_does_not_write_its_record_through_a_link(self):
+        target = self.root.parent / "home" / ".claude" / "skills"
+        target.mkdir(parents=True)
+        outside = self.root.parent / "home" / "elsewhere.txt"
+        outside.write_text("mine\n", encoding="utf-8")
+        record = target / ".ai-tools-assets-acme.links"
+        record.symlink_to(outside)
+        status, _, stderr = run("link-set", "acme", "--root", str(self.root), "--target", str(target))
+        self.assertEqual(status, 1)
+        self.assertIn("the record is not a regular file", stderr)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "mine\n", "the link's target is not written")
+        self.assertFalse((target / "acme-pdf-processing").exists(), "nothing is placed on a record that is refused")
+
 
 class LicenseCheck(unittest.TestCase):
     def test_this_repository_passes_with_the_formatters_and_signer_exceptions(self):
