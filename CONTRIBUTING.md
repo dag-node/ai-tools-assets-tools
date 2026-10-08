@@ -13,6 +13,7 @@ this file is about changing the tools that apply it.
 | a shared Python module | `tools/lib/`, named with underscores, imported by the commands |
 | a workflow a publisher calls | `.github/workflows/`, with its inputs documented in the workflow's header |
 | a formatter | `formatters/`, under `AGPL-3.0-only` |
+| a release step | `packaging/release-steps.sh`, which both release workflows run |
 
 A tool is Python 3.9 and the standard library alone, or bash, so it runs
 on an EL9 host and on the GitHub runner without an install step; a script is
