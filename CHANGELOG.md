@@ -29,6 +29,9 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   set, does not open with `-` and is at most 255 bytes, the set `ai-tools-base`
   reads a name under; the `file.name` finding proposes a portable name and does
   not rename the file.
+- A relative link in `SKILL.md` or a subagent file names a file of the same
+  asset, or fails `body.relative-link`, so a renamed or removed file does not
+  leave a dangling link; a link written as code is not read.
 - Every command opens a repository's files by descriptor without following
   a symbolic link and reads each once, so a linked set, manifest or `sets/`
   directory is refused before its target is read; a generated file is

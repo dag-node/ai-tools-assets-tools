@@ -26,6 +26,7 @@ from frontmatter import FrontmatterDocument, FrontmatterValue, Scalar, split_fro
 from key_value_config import KeyValueDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
 from manifests import claude_plugin_document, portable_plugin_document, render_json
+from markdown_links import relative_link_targets
 from portable_name import propose_portable_name
 from safe_read import RefusedRead, open_directory, open_root, read_file
 
@@ -610,6 +611,7 @@ class _SetValidator:
                 check_license_texts(self.collector, self.display(entry_file), evaluation.identifiers,
                                     self.carried_license_texts(skill_root), self.options.license_text_directories)
         self.check_body(entry_file, record.text, self.dynamic_injection_refusal("skills", name))
+        self.check_relative_links(entry_file, record.text, {path for path in self.files_by_path if skill_root in path.parents})
         for relative_path, other in self.files_by_path.items():
             if relative_path != entry_file and relative_path.suffix in fmt.PROSE_FILE_SUFFIXES and other.text is not None \
                     and skill_root in relative_path.parents:
@@ -734,6 +736,16 @@ class _SetValidator:
             if match:
                 self.refuse(relative_path, "body.absolute-path", f"line {line_number} names `{match.group(0).strip()}`; a skill names its own files relative to its root, and another skill by name")
 
+    def check_relative_links(self, entry_file: Path, text: str, asset_files: Set[Path]) -> None:
+        """Refuse each relative link in the entry file's body whose target, resolved lexically against the entry file's
+        directory, is not one of `asset_files`, the asset's regular files; a subagent's asset is its one file."""
+        document, body = split_frontmatter(text)
+        first_line_number = document.body_start_line if document.present and document.body_start_line else 1
+        for line_number, target in relative_link_targets(body.split("\n"), first_line_number):
+            resolved = Path(posixpath.normpath(posixpath.join(entry_file.parent.as_posix(), target)))
+            if resolved not in asset_files:
+                self.refuse(entry_file, "body.relative-link", f"line {line_number} links `{target}`, which is not a file of this asset; a skill links its own files relative to its root, and another skill by name")
+
     def check_skill_scripts(self, skill_root: Path) -> None:
         for relative_path, record in self.files_by_path.items():
             if relative_path.suffix != ".cs" or skill_root not in relative_path.parents or record.text is None:
@@ -797,6 +809,7 @@ class _SetValidator:
             self.check_frontmatter(file_path, document, name, fmt.SUBAGENT_FRONTMATTER_REQUIRED,
                                    fmt.SUBAGENT_FRONTMATTER_TYPES, fmt.SUBAGENT_FRONTMATTER_REFUSED_WHY)
             self.check_body(file_path, text, self.dynamic_injection_refusal("subagents", name))
+            self.check_relative_links(file_path, text, {file_path})
         return subagents
 
     def check_name_collisions(self, skills: Dict[str, AssetRecord], subagents: Dict[str, AssetRecord]) -> None:
