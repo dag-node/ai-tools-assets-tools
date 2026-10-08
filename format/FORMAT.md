@@ -84,7 +84,7 @@ a name, since an agent lists both kinds in one list.
 | `skills` | `skills/` | a directory holding `SKILL.md` | implemented |
 | `subagents` | `agents/` | a `<name>.md` file | implemented |
 | `orientation` | — | base's own; not a set kind | base-only |
-| `jobs`, `mcps`, `commands`, `instructions`, `hooks`, `lsps`, `output-styles`, `settings`, `workflows`, `themes`, `monitors`, `tools` | the kind's name | reserved: refused with content; a capability token allows each (see Forward compatibility) | reserved |
+| `jobs`, `mcps`, `commands`, `instructions`, `hooks`, `lsps`, `output-styles`, `settings`, `workflows`, `themes`, `monitors`, `tools` | the kind's name | reserved: refused where present, empty or not; a capability token allows each (see Forward compatibility) | reserved |
 
 The id `subagents` is stable; the directory is Claude Code's `agents/`,
 and `agents/` holds subagent files alone because Claude Code loads every `.md`
@@ -359,7 +359,7 @@ A publisher's own key in `set.conf`,
 of another shape outside the file's table is refused, and a requirement
 (`requires_base`, `requires_capabilities`, `requires_integrations`) is read,
 not skipped, so an unknown required capability refuses. An unknown top-level
-set entry fails validation; a reserved one is refused with content.
+set entry fails validation; a reserved one is refused where present.
 
 ## Limits
 
@@ -410,7 +410,7 @@ differ.
 | `set.conf.requires-integrations` | refuses | every required integration is written as `integration-<name>` |
 | `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
-| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; no capability of format 1 allows content at one |
+| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; a set holding one, empty or not, is refused |
 | `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |
 | `set.manifest.components` | refuses | a plugin manifest does not declare a component key |
 | `set.manifest.claude-plugin` | refuses | `.claude-plugin` holds `plugin.json` alone |
@@ -423,7 +423,7 @@ differ.
 | `name.collision` | refuses | a skill and a subagent do not share a name |
 | `name.composed-length` | warns | `<plugin>:<name>` is at most 64 characters, the OpenAI submission limit |
 | `kind.shape` | refuses | `skills/` and `agents/` are directories; an entry under `skills/` is a directory holding a `SKILL.md` file, and one under `agents/` a `.md` file |
-| `kind.reserved` | refuses | a reserved kind directory does not hold any content |
+| `kind.reserved` | refuses | a set does not hold a reserved kind directory, empty or not |
 | `skill.entry.unknown` | refuses | a skill holds `SKILL.md`, `scripts`, `references`, `assets`, `tests`, `UPSTREAM.conf`, `LICENSE` and `LICENSES` alone |
 | `skill.plugin-manifest` | refuses | a skill does not hold a `.claude-plugin` directory |
 | `skill.sidecar` | refuses | `agents/openai.yaml` is reserved inside a skill |
