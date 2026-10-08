@@ -30,7 +30,35 @@ def run(script: pathlib.Path, *arguments: str):
     return completed.returncode, completed.stdout, completed.stderr
 
 
-class RenderSetConfiguration(unittest.TestCase):
+def contents(text: str) -> list:
+    """The rendered `contents:` entries as (dst, type) pairs, in order; an entry without `type:` is a file."""
+    entries, inside = [], False
+    for line in text.splitlines():
+        if line == "contents:":
+            inside = True
+        elif inside and not line.startswith(" "):
+            break
+        elif inside and line.lstrip().startswith("- "):
+            entries.append({})
+        if inside and entries:
+            key, separator, value = line.strip().removeprefix("- ").partition(": ")
+            if separator and key in ("dst", "type"):
+                entries[-1][key] = json.loads(value) if value.startswith('"') else value
+    return [(entry["dst"], entry.get("type", "file")) for entry in entries]
+
+
+class TemplateRules:
+    """nFPM refuses a second entry at a tree's destination, since the tree writes that directory itself."""
+
+    def assert_no_entry_at_a_tree_destination(self, text: str):
+        entries = contents(text)
+        trees = [dst for dst, kind in entries if kind == "tree"]
+        self.assertTrue(trees)
+        for tree in trees:
+            self.assertEqual([dst for dst, _ in entries].count(tree), 1, f"{tree} has an entry beside its tree")
+
+
+class RenderSetConfiguration(TemplateRules, unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp()) / "acme-assets"
         (self.root / "sets").mkdir(parents=True)
@@ -77,6 +105,8 @@ class RenderSetConfiguration(unittest.TestCase):
         })
         self.assertIn(f"src: {json.dumps(str(self.staged.resolve()))}", text)
         self.assertIn('dst: "/usr/share/ai-tools-assets/acme"', text)
+        self.assert_no_entry_at_a_tree_destination(text)
+        self.assertIn(("/usr/share/ai-tools-assets", "dir"), contents(text))
 
     def test_a_version_other_than_the_tags_is_refused(self):
         status, _, stderr = self.render(version="0.2.0")
@@ -107,7 +137,7 @@ class RenderSetConfiguration(unittest.TestCase):
         self.assertIn("`version` is given twice", stderr)
 
 
-class RenderToolsConfiguration(unittest.TestCase):
+class RenderToolsConfiguration(TemplateRules, unittest.TestCase):
     def setUp(self):
         self.directory = pathlib.Path(tempfile.mkdtemp())
         self.output = self.directory / "nfpm.yaml"
@@ -125,6 +155,7 @@ class RenderToolsConfiguration(unittest.TestCase):
         self.assertEqual(sources, ["tools", "format", "fixtures", "formatters", "LICENSES", "LICENSE"])
         for source in sources:
             self.assertTrue((REPOSITORY / source).exists(), source)
+        self.assert_no_entry_at_a_tree_destination(text)
 
     def test_a_version_that_is_not_semantic_is_refused(self):
         status, _, stderr = run(RENDER, "tools", "--version", "1.0", "--output", str(self.output))
