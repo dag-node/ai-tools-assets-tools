@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: MIT
+"""Drives packaging/render-nfpm.py over a set tools/build-set staged from the passing fixture.
+
+The workflow steps around it (the tag check, the signing, the containers) run on the GitHub runner alone and are proven
+by a release; this file covers what a checkout can run: the rendered values, the refusals, and the quoting that keeps
+a value from becoming configuration.
+"""
+from __future__ import annotations
+
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+TESTS = pathlib.Path(__file__).resolve().parent
+REPOSITORY = TESTS.parent
+FIXTURES = REPOSITORY / "fixtures"
+TOOLS = REPOSITORY / "tools"
+RENDER = REPOSITORY / "packaging" / "render-nfpm.py"
+sys.path.insert(0, str(TESTS))
+
+from fixture_generator import PUBLISHER_CONF  # noqa: E402
+
+
+def run(script: pathlib.Path, *arguments: str):
+    completed = subprocess.run([sys.executable, str(script), *arguments], capture_output=True, text=True)
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+class RenderSetConfiguration(unittest.TestCase):
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp()) / "acme-assets"
+        (self.root / "sets").mkdir(parents=True)
+        shutil.copytree(FIXTURES / "pass" / "acme" / "acme", self.root / "sets" / "acme")
+        shutil.copytree(FIXTURES / "LICENSES", self.root / "LICENSES")
+        (self.root / "LICENSE").write_text((FIXTURES / "LICENSES" / "MIT.txt").read_text(encoding="utf-8"), encoding="utf-8")
+        (self.root / "publisher.conf").write_text(PUBLISHER_CONF.format(publisher="acme"), encoding="utf-8")
+        for command in (("sync-manifests",), ("build-set", "acme")):
+            status, _, stderr = run(TOOLS / command[0], *command[1:], "--root", str(self.root))
+            self.assertEqual(status, 0, stderr)
+        self.staged = self.root / "build" / "acme"
+        self.output = self.root / "build" / "nfpm.yaml"
+
+    def tearDown(self):
+        shutil.rmtree(self.root.parent)
+
+    def render(self, version="0.1.0", set_name="acme"):
+        return run(RENDER, "set", "--root", str(self.root), "--set", set_name, "--version", version,
+                   "--staged", str(self.staged), "--output", str(self.output))
+
+    def rendered(self) -> dict:
+        """The rendered top-level `key: value` lines whose value is a JSON string, by key."""
+        values = {}
+        for line in self.output.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition(": ")
+            if separator and not line.startswith((" ", "#")) and value.startswith('"'):
+                values[key] = json.loads(value)
+        return values
+
+    def test_the_staged_set_renders_its_package(self):
+        status, _, stderr = self.render()
+        self.assertEqual(status, 0, stderr)
+        text = self.output.read_text(encoding="utf-8")
+        self.assertNotRegex(text, r"@[A-Z_]+@")
+        self.assertEqual(self.rendered(), {
+            "name": "ai-tools-assets-acme",
+            "version": "0.1.0",
+            "release": "1",
+            "maintainer": "acme <tools@acme.example>",
+            "vendor": "acme",
+            "homepage": "https://github.com/acme/ai-tools-assets",
+            "license": "MIT",
+            "description": "Fixture skills and subagents",
+        })
+        self.assertIn(f"src: {json.dumps(str(self.staged.resolve()))}", text)
+        self.assertIn('dst: "/usr/share/ai-tools-assets/acme"', text)
+
+    def test_a_version_other_than_the_tags_is_refused(self):
+        status, _, stderr = self.render(version="0.2.0")
+        self.assertEqual(status, 1)
+        self.assertIn("not the tag's `0.2.0`", stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_a_set_other_than_the_tags_is_refused(self):
+        status, _, stderr = self.render(set_name="other")
+        self.assertEqual(status, 1)
+        self.assertIn("not the set `other`", stderr)
+
+    def test_a_value_stays_one_quoted_scalar(self):
+        set_conf = self.staged / "set.conf"
+        hostile = 'He said "hi": @VERSION@\\n  - src: /etc'
+        set_conf.write_text(set_conf.read_text(encoding="utf-8").replace(
+            'summary="Fixture skills and subagents"', f"summary='{hostile}'"), encoding="utf-8")
+        status, _, stderr = self.render()
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.rendered()["description"], hostile)
+        self.assertNotIn("/etc", [line.strip().removeprefix("- src: ") for line in self.output.read_text(encoding="utf-8").splitlines()])
+
+    def test_a_set_conf_the_reader_reports_is_refused(self):
+        set_conf = self.staged / "set.conf"
+        set_conf.write_text(set_conf.read_text(encoding="utf-8") + "version=0.1.0\n", encoding="utf-8")
+        status, _, stderr = self.render()
+        self.assertEqual(status, 1)
+        self.assertIn("`version` is given twice", stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
