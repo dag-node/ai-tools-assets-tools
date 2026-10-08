@@ -32,10 +32,12 @@
 # create-release compares the remote's refs/tags/<tag> with RELEASE_TAG_OBJECT immediately before `gh release create
 # --verify-tag`, which checks that the name exists, not which object it names.
 #
-# The signing key is imported into a keyring under /dev/shm, which must be tmpfs, and the EXIT
-# trap stops its gpg-agent and removes it. preflight refuses an imported key whose primary is not
-# ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files and sign-rpm verify against that primary's public key alone, so
-# a signature by another key fails the step that made it.
+# The signing key is imported into a keyring under /dev/shm, which must be tmpfs; a /dev/shm that is absent or
+# not tmpfs refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it.
+# preflight refuses an imported key whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files
+# and sign-rpm verify against that primary's public key alone, so a signature by another key fails the step that made
+# it. Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails
+# the step.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds the RPM
 # without a signature; SOURCE_DATE_EPOCH fixes every timestamp nFPM writes. sign-rpm installs rpm-sign and gnupg2 in an
@@ -43,15 +45,21 @@
 # present, signs the RPM with sign-rpms.sh beside this file in a container of that image, copies the signed file out
 # with `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK inside the EL9 and the EL10
 # container; the exit status alone passes an unsigned package. The secrets reach a container on stdin, since podman
-# records an `-e` value in the container's configuration on disk. The containers run through `sudo podman` with runc as
-# the OCI runtime, which the GitHub runner needs: its default crun rejects the generated OCI spec. el-repos.sh points
-# the EL9 container's repos at one ordered host list before its `dnf install`.
+# records an `-e` value in the container's configuration on disk. The container that holds the key and the two that
+# verify run with no network, so the key cannot leave them whatever the image runs, and the images are pinned by digest
+# (EL9_IMAGE, EL10_IMAGE), so the environment that signs is the one reviewed; a new point release is taken by replacing
+# the digest with the one `skopeo inspect docker://<image>:<tag>` prints. The containers run through `sudo podman` with
+# runc as the OCI runtime, which the GitHub runner needs: its default crun rejects the generated OCI spec. el-repos.sh
+# points the EL9 container's repos at one ordered host list before its `dnf install`.
 set -euo pipefail
 
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
-EL9_IMAGE=quay.io/rockylinux/rockylinux:9
-EL10_IMAGE=quay.io/rockylinux/rockylinux:10
+# The multi-arch index digests of the Rocky 9 and 10 images, resolved from quay.io on 2026-10-08.
+EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+# Every curl: HTTPS alone, no scheme change on a redirect, and a bound on the whole transfer.
+CURL=(curl -sSf --proto '=https' --proto-redir '=https' --max-time 120)
 SIGN_IMAGE=localhost/ai-tools-assets-sign:el9
 PACKAGING="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One pattern for the line rpm 4 and rpm 6 print for a valid signature; a digest-only line does not match.
@@ -76,12 +84,15 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# new_scratch: set `scratch` to a fresh directory under /dev/shm; a /dev/shm that is absent or not tmpfs refuses, so
-# a key, a passphrase or a token does not reach a disk-backed directory.
+# new_scratch: set `scratch` to a fresh directory under /dev/shm. A /dev/shm that is absent or not tmpfs refuses
+# before anything is created there, and the directory itself is checked after, so a key, a passphrase or a token does
+# not reach a disk-backed directory.
 new_scratch() {
+    [[ -d /dev/shm && "$(stat -f -c %T /dev/shm 2>/dev/null)" == tmpfs ]] \
+        || die "/dev/shm is absent or not tmpfs"
     scratch="$(mktemp -d -p /dev/shm)" || die "no directory could be created under /dev/shm"
     scratch_directories+=("$scratch")
-    [[ "$(stat -f -c %T "$scratch")" == tmpfs ]] || die "/dev/shm is not tmpfs"
+    [[ "$(stat -f -c %T "$scratch")" == tmpfs ]] || die "$scratch is not on tmpfs"
 }
 
 require_env() {
@@ -127,7 +138,7 @@ verify_tag() {
         || die "$tag peels to $commit; the event's commit is $event_commit and the checkout is $(git rev-parse HEAD)"
     new_scratch
     export GNUPGHOME="$scratch"
-    curl -sSf "$TAG_SIGNER_KEY_URL" | gpg --batch --quiet --import \
+    "${CURL[@]}" "$TAG_SIGNER_KEY_URL" | gpg --batch --quiet --import \
         || die "the tag signers' key did not import from $TAG_SIGNER_KEY_URL"
     status="$(git verify-tag --raw "$tag_object" 2>&1)" || die "$tag does not verify: $status"
     primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF; exit }')"
@@ -191,7 +202,7 @@ build_rpm() {
     new_scratch
     download="$scratch"
     tarball="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
-    curl -fsSL -o "$download/$tarball" "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/$tarball" \
+    "${CURL[@]}" -L -o "$download/$tarball" "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/$tarball" \
         || die "nFPM $NFPM_VERSION did not download"
     echo "$NFPM_TARBALL_SHA256  $download/$tarball" | sha256sum --check --quiet \
         || die "$tarball does not match the pinned SHA-256 $NFPM_TARBALL_SHA256"
@@ -234,9 +245,11 @@ sign_rpm() {
     sudo podman commit --quiet "$container" "$SIGN_IMAGE" >/dev/null
     sudo podman rm "$container" >/dev/null
 
+    # The key enters this container alone, and it has no network.
     container="ai-tools-assets-sign-$$"
     out="$(printf '%s\n%s\n' "$GPG_SIGNING_PASSPHRASE" "$GPG_SIGNING_KEY" \
-        | sudo podman run -i --name "$container" --entrypoint /usr/bin/bash -v "$work:/in:ro" "$SIGN_IMAGE" -c '
+        | sudo podman run -i --name "$container" --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" \
+            "$SIGN_IMAGE" -c '
             set -euo pipefail
             mkdir /out && cp "/in/$1" /out/
             bash /in/sign-rpms.sh --secrets-stdin /out/sign-rpms.pub "/out/$1"' _ "$name")" \
@@ -251,7 +264,7 @@ sign_rpm() {
     import_signing_key
     export_artifact_signer "$work/artifact-signer.asc"
     for image in "$EL9_IMAGE" "$EL10_IMAGE"; do
-        out="$(sudo podman run --rm --entrypoint /usr/bin/bash -v "$work:/in:ro" "$image" -c '
+        out="$(sudo podman run --rm --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" "$image" -c '
                 db="$(mktemp -d)"
                 rpmkeys --dbpath "$db" --import /in/artifact-signer.asc || exit 1
                 rpm --version
@@ -285,10 +298,11 @@ dispatch() {
     require_env RPM_REPO_DISPATCH_TOKEN GITHUB_REPOSITORY
     # preflight read dag-node/rpm with this token, so a failure here is transient and is retried with a backoff.
     for attempt in $(seq 1 "$attempts"); do
+        # -f sends each value as the string it is; -F would read a value starting with @ as a file name.
         if GH_TOKEN="$RPM_REPO_DISPATCH_TOKEN" gh api repos/dag-node/rpm/dispatches \
                 -f event_type=publish-rpm \
-                -F "client_payload[project]=$GITHUB_REPOSITORY" \
-                -F "client_payload[tag]=$tag"; then
+                -f "client_payload[project]=$GITHUB_REPOSITORY" \
+                -f "client_payload[tag]=$tag"; then
             echo "dispatched publish-rpm for $GITHUB_REPOSITORY $tag to dag-node/rpm"
             return 0
         fi

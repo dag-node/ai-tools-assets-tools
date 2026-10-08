@@ -41,10 +41,16 @@ must equal the tag's.
 | `artifact-signer-fingerprint` | the dag-node package-signing primary | the primary of the key in `GPG_SIGNING_KEY` |
 | `tools-repository` | `dag-node/ai-tools-assets-tools` | a fork the tools are checked out from, as `<owner>/<repo>` |
 
+`@v1` follows the latest release of the tools; a full commit SHA in its place
+holds the caller to one reviewed version until the caller changes it.
+
 ## The release environment
 
-The called job runs under the calling repository's `release` environment,
-which admits tags `*/v*` and no branch and holds three secrets:
+The called job runs under the calling repository's `release` environment.
+Create it before the first tag is pushed, with a deployment policy that admits
+tags `*/v*` and no branch: GitHub creates an environment a workflow names and
+the repository lacks, with no protection rule, and `secrets: inherit` hands the
+job every secret the repository holds. The environment holds three secrets:
 
 | Secret | Value |
 |---|---|

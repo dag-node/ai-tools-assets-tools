@@ -174,15 +174,17 @@ main() {
     command -v rpmkeys >/dev/null 2>&1 || die "rpmkeys not found (install rpm-sign)"
 
     # One scratch tree holds every secret (imported private keyring, passphrase file), under /dev/shm; a /dev/shm that
-    # is absent or not tmpfs refuses, so key material does not land in a disk-backed directory. gpg
-    # needs the private key in a keyring DIRECTORY (it cannot sign from a variable), and rpmsign forks gpg once
-    # per package, so the passphrase must stay re-readable here rather than a one-shot stream -- keeping it on the same
-    # RAM tree as the unavoidable keyring leaves disk exposure unchanged. The runner VM is ephemeral. Script-global, not
-    # local: the EXIT trap fires after main returns, where a local is out of scope -- an unbound reference
-    # under `set -u` -- and the wipe must still run.
+    # is absent or not tmpfs refuses before anything is created there, so key material does not land in a disk-backed
+    # directory. gpg needs the private key in a keyring DIRECTORY (it cannot sign from a variable), and rpmsign forks
+    # gpg once per package, so the passphrase must stay re-readable here rather than a one-shot stream -- keeping it on
+    # the same RAM tree as the unavoidable keyring leaves disk exposure unchanged. The runner VM is ephemeral.
+    # Script-global, not local: the EXIT trap fires after main returns, where a local is out of scope -- an unbound
+    # reference under `set -u` -- and the wipe must still run.
+    [[ -d /dev/shm && "$(stat -f -c %T /dev/shm 2>/dev/null)" == tmpfs ]] \
+        || die "/dev/shm is absent or not tmpfs"
     workdir="$(mktemp -d -p /dev/shm)" || die "no directory could be created under /dev/shm"
     trap 'GNUPGHOME="${workdir}/gnupg" gpgconf --kill gpg-agent 2>/dev/null; rm -rf "${workdir}"' EXIT
-    [[ "$(stat -f -c %T "${workdir}")" == tmpfs ]] || die "/dev/shm is not tmpfs"
+    [[ "$(stat -f -c %T "${workdir}")" == tmpfs ]] || die "${workdir} is not on tmpfs"
 
     SIGNER_FPR="$(import_signing_key "${workdir}/gnupg")"
     export GNUPGHOME="${workdir}/gnupg"
