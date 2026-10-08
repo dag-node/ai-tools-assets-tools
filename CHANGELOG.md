@@ -59,7 +59,9 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   names itself in `tools-repository`; GitHub Enterprise Server runs the tools
   from a local pin), and this repository's release workflow, which verifies one
   captured signed tag object, confirms the remote still names it before
-  publishing, and publishes the signed archive a consumer pins.
+  publishing, and publishes the signed archive a consumer pins and the signed
+  RPM `ai-tools-assets-tools`, which installs the tools, the format and the
+  fixtures under `/usr/share/ai-tools-assets-tools/`.
 - The reusable `set-release` workflow a publisher's release calls for a tag
   `<set>/v<semver>`: it verifies the signed tag, builds the set, signs the zip
   and `SHA256SUMS` with the org package-signing key, ships the set as the

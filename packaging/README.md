@@ -73,6 +73,7 @@ before the release signs `SHA256SUMS`; the zip's own `.asc` covers it whole.
 | File | What it does |
 |---|---|
 | `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml` |
-| `render-nfpm.py` | writes the nFPM configuration from `nfpm-set.yaml.in`, the staged `set.conf` and `publisher.conf` |
+| `render-nfpm.py` | writes the nFPM configuration of a set's RPM from `nfpm-set.yaml.in`, the staged `set.conf` and `publisher.conf`, or of the tools RPM from `nfpm-tools.yaml.in` |
 | `nfpm-set.yaml.in` | the package a set ships as |
+| `nfpm-tools.yaml.in` | the package this repository's tools ship as, built by `release.yml` from the release archive |
 | `sign-rpms.sh` | signs and verifies an RPM inside the EL container; a copy from ai-tools-base, `AGPL-3.0-only` |

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Drives packaging/render-nfpm.py over a set tools/build-set staged from the passing fixture.
+"""Drives packaging/render-nfpm.py over a set tools/build-set staged from the passing fixture, and over the tools RPM.
 
 The workflow steps around it (the tag check, the signing, the containers) run on the GitHub runner alone and are proven
 by a release; this file covers what a checkout can run: the rendered values, the refusals, and the quoting that keeps
@@ -105,6 +105,32 @@ class RenderSetConfiguration(unittest.TestCase):
         status, _, stderr = self.render()
         self.assertEqual(status, 1)
         self.assertIn("`version` is given twice", stderr)
+
+
+class RenderToolsConfiguration(unittest.TestCase):
+    def setUp(self):
+        self.directory = pathlib.Path(tempfile.mkdtemp())
+        self.output = self.directory / "nfpm.yaml"
+
+    def tearDown(self):
+        shutil.rmtree(self.directory)
+
+    def test_the_tag_version_renders_and_every_installed_path_is_in_the_tree(self):
+        status, _, stderr = run(RENDER, "tools", "--version", "1.0.0-rc.1", "--output", str(self.output))
+        self.assertEqual(status, 0, stderr)
+        text = self.output.read_text(encoding="utf-8")
+        self.assertIn('version: "1.0.0-rc.1"', text)
+        self.assertNotRegex(text, r"@[A-Z_]+@")
+        sources = [line.split("src: ", 1)[1] for line in text.splitlines() if line.strip().startswith("- src: ")]
+        self.assertEqual(sources, ["tools", "format", "fixtures", "formatters", "LICENSES", "LICENSE"])
+        for source in sources:
+            self.assertTrue((REPOSITORY / source).exists(), source)
+
+    def test_a_version_that_is_not_semantic_is_refused(self):
+        status, _, stderr = run(RENDER, "tools", "--version", "1.0", "--output", str(self.output))
+        self.assertEqual(status, 1)
+        self.assertIn("not a semantic version", stderr)
+        self.assertFalse(self.output.exists())
 
 
 if __name__ == "__main__":
