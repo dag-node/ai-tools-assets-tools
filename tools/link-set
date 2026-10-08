@@ -24,8 +24,10 @@
 # inventory digests as recorded -- and leaves every other entry where it is, reported, so a replacement at a recorded
 # name is not deleted on the record's word. The set and every name in `--only` and in the record are names, and a link's
 # target is composed from the root and those names alone, so neither an argument nor a tampered record reaches a path
-# outside `<root>/sets/<set>/skills/`. A record that is not a regular file, or holds a line that is not three fields
-# of a name, `link` or `copy`, and an identity, is refused whole. Standard library only.
+# outside `<root>/sets/<set>/skills/`. A record is refused whole when `lstat` reports anything but a regular file at
+# its name, or when a line fails the three-field shape of a name, `link` or `copy`, and an identity; the record is
+# written back as a directory entry (`tools/lib/safe_write.py`), so a link that appeared at its name after the read
+# is refused rather than written through. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -45,6 +47,7 @@ from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import allowlist_in_force  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
+from safe_write import replace_file  # noqa: E402
 from set_validation import PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
 
 MODE_LINK = "link"
@@ -79,9 +82,15 @@ def read_record(record: pathlib.Path, collector: FindingCollector) -> Optional[R
     return placed
 
 
-def write_record(record: pathlib.Path, placed: Record) -> None:
+def write_record(record: pathlib.Path, placed: Record, collector: FindingCollector) -> None:
+    """Replace the record as a directory entry (`safe_write.replace_file`), so a link or a second hard link that
+    appeared at its name since it was read is refused and reported, not written through."""
     if placed:
-        record.write_text("".join(f"{name}\t{mode}\t{identity}\n" for name, (mode, identity) in sorted(placed.items())), encoding="utf-8")
+        data = "".join(f"{name}\t{mode}\t{identity}\n" for name, (mode, identity) in sorted(placed.items())).encode("utf-8")
+        try:
+            replace_file(record.parent, pathlib.PurePath(record.name), data)
+        except RefusedRead as refusal:
+            collector.refuse(str(record), refusal.rule_id, refusal.message + "; the record was not written")
     elif record.is_symlink() or record.exists():
         record.unlink()
 
@@ -135,7 +144,7 @@ def remove_installed_skills(target: pathlib.Path, set_name: str, collector: Find
         else:
             shutil.rmtree(destination)
         print(f"link-set: removed {destination}")
-    write_record(record, remaining)
+    write_record(record, remaining, collector)
     return collector.report()
 
 
@@ -229,7 +238,7 @@ def main() -> int:
             destination.symlink_to(skill, target_is_directory=True)
             placed[skill.name] = (MODE_LINK, str(skill))
         print(f"link-set: {'copied' if args.copy else 'linked'} {destination}")
-    write_record(record, placed)
+    write_record(record, placed, collector)
     return collector.report()
 
 
