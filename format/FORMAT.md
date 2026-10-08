@@ -299,8 +299,9 @@ An asset does not name the agents it targets. It only requires profiles,
 in `requires_capabilities`. A profile token names the format the asset is
 written in (`skills.portable.v1`, `subagents.claude.v1`,
 `skills.dynamic.v1`). Agents implement
-profiles. A reader that filters assets per agent rejects any asset whose
-required profile the agent does not implement.
+profiles. A reader refuses an asset for every agent once one enabled agent
+that receives the asset's kind does not implement a profile the asset
+requires; an agent that does not receive the kind is not consulted.
 
 A skill's compatibility notes (agent, model, date) live as ordinary prose
 in its `compatibility` field; a subagent has no such field. Publisher-specific
