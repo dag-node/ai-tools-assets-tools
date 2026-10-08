@@ -27,18 +27,22 @@
 #
 # The job declares `environment: release`, so it runs under the caller's environment of that name: its deployment
 # policy admits tags and no branch, which keeps a branch push and a fork's pull request away from the secrets. The
-# environment's secrets GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE and RPM_REPO_DISPATCH_TOKEN reach this job through
-# `secrets: inherit`: a caller job that `uses:` a workflow cannot declare an environment, so it cannot pass an
-# environment secret by name. The calling job is named `ai-tools-assets`, as in the example, so the status check reads
-# `ai-tools-assets / release`, the name validate.yml's caller uses for its own check.
+# publisher creates that environment, with its tag-only policy, before the first tag is pushed: GitHub creates an
+# environment a workflow names and the repository lacks, with no protection rule. The environment's secrets
+# GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE and RPM_REPO_DISPATCH_TOKEN reach this job through `secrets: inherit`,
+# which hands the job every secret the caller holds: a caller job that `uses:` a workflow cannot declare an
+# environment, so it cannot pass an environment secret by name. The calling job is named `ai-tools-assets`, as in the
+# example, so the status check reads `ai-tools-assets / release`, the name validate.yml's caller uses for its own
+# check.
 #
 # The set is read from the tag; the version is the tag's and must equal set.conf's, or build-set's zip carries
 # another name and the build step stops. The tools run from a checkout of the repository and commit that define this
 # workflow file (job.workflow_repository and job.workflow_sha), as validate.yml's do, and the resolve step refuses
 # a repository other than dag-node/ai-tools-assets-tools unless the caller names its fork in tools-repository, and
-# a file path other than .github/workflows/set-release.yml. Neither checkout stores the job's write token in
-# .git/config: git reads the tags of a public repository without it, and `gh release create` takes it from GH_TOKEN
-# in its own step.
+# a file path other than .github/workflows/set-release.yml. The input widens nothing: the caller's `uses:` line
+# already chose the repository whose code runs with its secrets, and the step refuses a fork the caller did not name.
+# Neither checkout stores the job's write token in .git/config: git reads the tags of a public repository without it,
+# and `gh release create` takes it from GH_TOKEN in its own step.
 name: set-release
 
 on:
@@ -77,6 +81,7 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: release
     permissions:
       contents: write

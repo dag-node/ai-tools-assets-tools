@@ -15,7 +15,8 @@
 # CI secret cannot mint a release by itself. The tag object verified is the one archived, and the remote's
 # `refs/tags/<tag>` is compared with it immediately before the release is created, since `gh release create
 # --verify-tag` checks that the name exists, not which object it names: the repository ruleset that makes `v*.*.*`
-# tags immutable is the control that holds across the run, and that comparison confirms it is in force.
+# tags immutable is the control that holds across the run, and that comparison confirms it is in force. The tag is
+# held to v<semver> before anything else runs, as set-release.yml holds a set's tag to <set>/v<semver>.
 name: release
 
 on:
@@ -33,12 +34,24 @@ env:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: release
     permissions:
       contents: write
     env:
       TAG: ${{ github.ref_name }}
     steps:
+      - name: The run is for a tag v<semver>
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?)$ && "$TAG" != *--* ]] \
+            || { echo "::error::$TAG is not v<semver> without build metadata" >&2; exit 1; }
+          version="${BASH_REMATCH[1]}"
+          dispatch=true
+          [[ "$version" == *-* ]] && dispatch=false
+          printf 'VERSION=%s\nDISPATCH_RPM=%s\n' "$version" "$dispatch" >> "$GITHUB_ENV"
+          echo "version $version, dispatch $dispatch"
+
       # The write token is not stored in .git/config: git reads this public repository without it, and
       # `gh release create` takes it from GH_TOKEN in its own step.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -49,13 +62,7 @@ jobs:
       - name: The tag is annotated, names itself, points at this commit, and is signed by the pinned maintainer key
         env:
           EVENT_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          bash packaging/release-steps.sh verify-tag "$TAG" "$EVENT_SHA"
-          version="${TAG#v}"
-          dispatch=true
-          [[ "$version" == *-* ]] && dispatch=false
-          printf 'VERSION=%s\nDISPATCH_RPM=%s\n' "$version" "$dispatch" >> "$GITHUB_ENV"
+        run: bash packaging/release-steps.sh verify-tag "$TAG" "$EVENT_SHA"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
