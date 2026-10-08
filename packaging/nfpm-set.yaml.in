@@ -7,6 +7,8 @@
 # destination, so only the parent carries a dir entry. It declares no Requires. umask 0o022 clears group and other
 # write from every mode nFPM reads from the staged tree, where nFPM's default 0o002 keeps group write; buildhost
 # and SOURCE_DATE_EPOCH (from the environment) fix the header fields that would differ between two builds of one tag.
+# nFPM gives a file under a tree entry its staged mtime and does not apply a tree entry's `file_info.mtime` to it,
+# so the workflow sets every staged mtime to SOURCE_DATE_EPOCH before nFPM runs.
 name: @NAME@
 arch: all
 platform: linux

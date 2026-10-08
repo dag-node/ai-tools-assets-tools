@@ -193,6 +193,7 @@ jobs:
           set -euo pipefail
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$RELEASE_COMMIT")"
           export SOURCE_DATE_EPOCH
+          find "build/$SET" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
           python3 "$TOOLS/packaging/render-nfpm.py" set --set "$SET" --version "$VERSION" \
             --staged "build/$SET" --output "$RUNNER_TEMP/nfpm.yaml"
           bash "$TOOLS/packaging/release-steps.sh" build-rpm "$RUNNER_TEMP/nfpm.yaml" dist/rpm
