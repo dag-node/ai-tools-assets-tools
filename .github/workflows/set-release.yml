@@ -1,0 +1,215 @@
+# SPDX-License-Identifier: MIT
+# The signed release of one set, as a reusable workflow a publisher repository calls for its tags <set>/v<semver>:
+#
+#   on:
+#     push:
+#       tags: ['*/v*']
+#   jobs:
+#     ai-tools-assets:
+#       uses: dag-node/ai-tools-assets-tools/.github/workflows/set-release.yml@v1
+#       permissions:
+#         contents: write
+#       secrets: inherit
+#       with:
+#         dispatch-rpm: true              # notify dag-node/rpm, which publishes the RPM at rpm.dagnode.com
+#         tag-signer-fingerprints: ''     # space-separated primaries a release tag may be signed by
+#         tag-signer-key-url: ''          # where their public keys are fetched for the one check
+#         artifact-signer-fingerprint: '' # the primary of the key in the release environment's GPG_SIGNING_KEY
+#         tools-repository: ''            # a fork of this repository the tools are checked out from, as <owner>/<repo>
+#
+# The job verifies the tag, validates and builds the set with tools/build-set, signs SHA256SUMS and the zip with the
+# org package-signing key, packages the staged set as the RPM ai-tools-assets-<set> with nFPM, signs the RPM inside an
+# EL9 container and verifies it in EL9 and EL10, and creates the release with the zip, its .sha256 and .asc,
+# SHA256SUMS, SHA256SUMS.asc and the RPM; the zip holds the set build-set staged, and SHA256SUMS.asc is a release asset
+# beside it and a file in the RPM. Each step runs packaging/release-steps.sh, the same steps this repository's own
+# release.yml runs; that file states each step's checks and how the key material is held. A prerelease version
+# (<set>/v1.2.0-rc.1) creates a prerelease and does not dispatch.
+#
+# The job declares `environment: release`, so it runs under the caller's environment of that name: its deployment
+# policy admits tags and no branch, which keeps a branch push and a fork's pull request away from the secrets. The
+# environment's secrets GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE and RPM_REPO_DISPATCH_TOKEN reach this job through
+# `secrets: inherit`: a caller job that `uses:` a workflow cannot declare an environment, so it cannot pass an
+# environment secret by name. The calling job is named `ai-tools-assets`, as in the example, so the status check reads
+# `ai-tools-assets / release`, the name validate.yml's caller uses for its own check.
+#
+# The set is read from the tag; the version is the tag's and must equal set.conf's, or build-set's zip carries
+# another name and the build step stops. The tools run from a checkout of the repository and commit that define this
+# workflow file (job.workflow_repository and job.workflow_sha), as validate.yml's do, and the resolve step refuses
+# a repository other than dag-node/ai-tools-assets-tools unless the caller names its fork in tools-repository, and
+# a file path other than .github/workflows/set-release.yml. Neither checkout stores the job's write token in
+# .git/config: git reads the tags of a public repository without it, and `gh release create` takes it from GH_TOKEN
+# in its own step.
+name: set-release
+
+on:
+  workflow_call:
+    inputs:
+      dispatch-rpm:
+        description: send repository_dispatch publish-rpm to dag-node/rpm once the release exists; a prerelease does not dispatch
+        type: boolean
+        required: false
+        default: false
+      tag-signer-fingerprints:
+        description: space-separated primary fingerprints a release tag may be signed by
+        type: string
+        required: false
+        default: 225DFF22D0221D3DD68CCEFFFABAF500E7D90733
+      tag-signer-key-url:
+        description: the HTTPS URL their public keys are fetched from for the tag check
+        type: string
+        required: false
+        default: https://github.com/p4nda.gpg
+      artifact-signer-fingerprint:
+        description: the primary fingerprint of the key the release environment's GPG_SIGNING_KEY holds
+        type: string
+        required: false
+        default: 67F42DC18BF764B42D82F14256D2F802CF9832E4
+      tools-repository:
+        description: the fork of dag-node/ai-tools-assets-tools this workflow is called from, as <owner>/<repo>; the tools are checked out from it
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    env:
+      TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
+      TAG: ${{ github.ref_name }}
+      ARTIFACT_SIGNER_PRIMARY_FINGERPRINT: ${{ inputs.artifact-signer-fingerprint }}
+    steps:
+      - name: The run is for a tag <set>/v<semver>
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          DISPATCH_INPUT: ${{ inputs.dispatch-rpm }}
+        run: |
+          set -euo pipefail
+          [[ "$REF_TYPE" == tag ]] || { echo "::error::set-release runs for a tag push; this run is for a $REF_TYPE" >&2; exit 1; }
+          [[ "$TAG" =~ ^([a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)/v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?)$ && "$TAG" != *--* ]] \
+            || { echo "::error::$TAG is not <set>/v<semver>, with <set> a set name and no build metadata" >&2; exit 1; }
+          set_name="${BASH_REMATCH[1]}" version="${BASH_REMATCH[3]}"
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          dispatch=false
+          [[ "$DISPATCH_INPUT" == true && "$prerelease" == false ]] && dispatch=true
+          printf 'SET=%s\nVERSION=%s\nDISPATCH_RPM=%s\n' "$set_name" "$version" "$dispatch" >> "$GITHUB_ENV"
+          echo "set $set_name, version $version, prerelease $prerelease, dispatch $dispatch"
+
+      - name: Check out the repository being released
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve the tools repository and commit from the workflow file that defines this job
+        id: tools
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_FILE_PATH: ${{ job.workflow_file_path }}
+          TOOLS_REPOSITORY: ${{ inputs.tools-repository || 'dag-node/ai-tools-assets-tools' }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ] || [ -z "$WORKFLOW_FILE_PATH" ]; then
+            echo "::error::job.workflow_repository, job.workflow_sha or job.workflow_file_path is empty (GitHub Enterprise Server does not define them); the tools cannot be checked out at a known commit" >&2
+            exit 1
+          fi
+          # GitHub compares a repository name case-insensitively; so does this step.
+          if [ "${WORKFLOW_REPOSITORY,,}" != "${TOOLS_REPOSITORY,,}" ]; then
+            echo "::error::this workflow file is defined in $WORKFLOW_REPOSITORY, not in $TOOLS_REPOSITORY; a fork of the tools is named in the tools-repository input" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_FILE_PATH" != ".github/workflows/set-release.yml" ]; then
+            echo "::error::this job is defined by $WORKFLOW_FILE_PATH, not .github/workflows/set-release.yml; a copy of the workflow is not the tools" >&2
+            exit 1
+          fi
+          echo "repository=$WORKFLOW_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "sha=$WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tools at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ steps.tools.outputs.repository }}
+          ref: ${{ steps.tools.outputs.sha }}
+          path: .ai-tools-assets-tools
+          persist-credentials: false
+
+      - name: Keep the tools checkout out of the tree being released
+        run: echo '/.ai-tools-assets-tools/' >> .git/info/exclude
+
+      - name: The tag is annotated, names itself, points at this commit, and is signed by a pinned maintainer key
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          TAG_SIGNER_PRIMARY_FINGERPRINTS: ${{ inputs.tag-signer-fingerprints }}
+          TAG_SIGNER_KEY_URL: ${{ inputs.tag-signer-key-url }}
+        run: bash "$TOOLS/packaging/release-steps.sh" verify-tag "$TAG" "$EVENT_SHA"
+
+      - name: Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: The set validates, publisher.conf describes this repository, and build-set stages it at the tag's version
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT" || { echo "::error::the checkout moved off $RELEASE_COMMIT" >&2; exit 1; }
+          python3 "$TOOLS/tools/validate" --set "$SET"
+          python3 "$TOOLS/tools/check-publisher" --repository "$GITHUB_REPOSITORY"
+          # build-set creates files 0644 and directories 0755 under this umask, the modes the RPM and the zip carry.
+          umask 022
+          python3 "$TOOLS/tools/build-set" "$SET"
+          zip="dist/ai-tools-assets-$SET-$VERSION.zip"
+          for file in "$zip" "$zip.sha256" "build/$SET/SHA256SUMS"; do
+            test -f "$file" || { echo "::error::build-set did not write $file; set.conf's version is not the tag's $VERSION" >&2; exit 1; }
+          done
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+
+      - name: The signing key is the pinned artifact signer and the dispatch token reads dag-node/rpm
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
+          RPM_REPO_DISPATCH_TOKEN: ${{ secrets.RPM_REPO_DISPATCH_TOKEN }}
+        run: bash "$TOOLS/packaging/release-steps.sh" preflight
+
+      - name: Sign SHA256SUMS and the zip with the org package-signing key and re-verify
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
+        run: bash "$TOOLS/packaging/release-steps.sh" sign-files "build/$SET/SHA256SUMS" "$ZIP"
+
+      - name: Build the unsigned RPM of the staged set with the pinned nFPM, timestamps from the tag's commit
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$RELEASE_COMMIT")"
+          export SOURCE_DATE_EPOCH
+          python3 "$TOOLS/packaging/render-nfpm.py" set --set "$SET" --version "$VERSION" \
+            --staged "build/$SET" --output "$RUNNER_TEMP/nfpm.yaml"
+          bash "$TOOLS/packaging/release-steps.sh" build-rpm "$RUNNER_TEMP/nfpm.yaml" dist/rpm
+          rpms=(dist/rpm/*.rpm)
+          echo "RPM=${rpms[0]}" >> "$GITHUB_ENV"
+
+      - name: Sign the RPM in EL9 and verify its signature in EL9 and EL10
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
+        run: bash "$TOOLS/packaging/release-steps.sh" sign-rpm "$RPM"
+
+      - name: Create the release from the verified tag, once the remote still names that tag object
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash "$TOOLS/packaging/release-steps.sh" create-release "$TAG" \
+            "Set $SET $VERSION. The zip, SHA256SUMS and the RPM are signed by the package-signing key, primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; verify the zip with its .asc, the set with SHA256SUMS.asc, and the RPM with rpmkeys -K." \
+            "$ZIP" "$ZIP.sha256" "$ZIP.asc" "build/$SET/SHA256SUMS" "build/$SET/SHA256SUMS.asc" "$RPM"
+
+      - name: Notify dag-node/rpm to publish the RPM
+        if: env.DISPATCH_RPM == 'true'
+        env:
+          RPM_REPO_DISPATCH_TOKEN: ${{ secrets.RPM_REPO_DISPATCH_TOKEN }}
+        run: bash "$TOOLS/packaging/release-steps.sh" dispatch "$TAG"

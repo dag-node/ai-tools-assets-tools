@@ -60,6 +60,12 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   from a local pin), and this repository's release workflow, which verifies one
   captured signed tag object, confirms the remote still names it before
   publishing, and publishes the signed archive a consumer pins.
+- The reusable `set-release` workflow a publisher's release calls for a tag
+  `<set>/v<semver>`: it verifies the signed tag, builds the set, signs the zip
+  and `SHA256SUMS` with the org package-signing key, ships the set as the
+  signed RPM `ai-tools-assets-<set>`, attaches them to the GitHub release
+  and, when asked, has `dag-node/rpm` publish the RPM. See
+  `packaging/README.md`.
 - The formatters from ai-tools-base under `formatters/`, `AGPL-3.0-only`,
   taking the checker as `--checker <path>`.
 
