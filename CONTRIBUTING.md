@@ -58,7 +58,8 @@ and the `v1` tag moves to it.
 ## License
 
 Contributions are made under the MIT license (see `LICENSE`) unless the file
-states another licence in its SPDX header. The files under `formatters/` are
-`AGPL-3.0-only`, and a contribution to one of them is under that licence.
+states another licence in its SPDX header. The files under `formatters/` and
+`packaging/sign-rpms.sh` are `AGPL-3.0-only`, and a contribution to one of them
+is under that licence.
 `REUSE.toml` covers a file that does not state one, and `LICENSES/` holds
 the text of every identifier the repository uses.

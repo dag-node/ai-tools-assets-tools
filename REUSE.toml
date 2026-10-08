@@ -1,8 +1,9 @@
 # REUSE (https://reuse.software) licensing and copyright fallbacks.
 #
 # A file's own SPDX header takes priority; these annotations supply the copyright and the licence
-# a file does not state for itself. Every file under formatters/ carries an AGPL-3.0-only header
-# of its own, so the one annotation here is the MIT default for the rest of the repository.
+# a file does not state for itself. Every file under formatters/ and packaging/sign-rpms.sh
+# carries an AGPL-3.0-only header of its own, so the one annotation here is the MIT default for
+# the rest of the repository.
 
 version = 1
 SPDX-PackageName = "ai-tools-assets-tools"

@@ -446,8 +446,9 @@ class PublisherRepository(unittest.TestCase):
 
 
 class LicenseCheck(unittest.TestCase):
-    def test_this_repository_passes_with_the_formatters_exception(self):
-        status, _, stderr = run("check-licenses", "--root", str(REPOSITORY), "--exception", "formatters/**=AGPL-3.0-only")
+    def test_this_repository_passes_with_the_formatters_and_signer_exceptions(self):
+        status, _, stderr = run("check-licenses", "--root", str(REPOSITORY), "--exception", "formatters/**=AGPL-3.0-only",
+                                "--exception", "packaging/sign-rpms.sh=AGPL-3.0-only")
         self.assertEqual((status, stderr), (0, ""))
 
     def test_the_exception_is_needed_and_a_single_star_does_not_reach_a_subdirectory(self):
