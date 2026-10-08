@@ -38,19 +38,21 @@
 # a signature by another key fails the step that made it.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds the RPM
-# without a signature; SOURCE_DATE_EPOCH fixes every timestamp nFPM writes. sign-rpm signs it with sign-rpms.sh beside
-# this file inside an EL9 container, the older rpm, copies the signed file out with `podman cp`, and requires
-# `rpmkeys -Kv` to print a signature line ending in OK inside the EL9 and the EL10 container; the exit status alone
-# passes an unsigned package. The secrets reach a container on stdin, since podman records an `-e` value in the
-# container's configuration on disk. The containers run through `sudo podman` with runc as the OCI runtime, which
-# the GitHub runner needs: its default crun rejects the generated OCI spec. el-repos.sh points the EL9 container's repos
-# at one ordered host list before its `dnf install`.
+# without a signature; SOURCE_DATE_EPOCH fixes every timestamp nFPM writes. sign-rpm installs rpm-sign and gnupg2 in an
+# EL9 container (the older rpm) that does not receive the secrets, so no package scriptlet runs while the key is
+# present, signs the RPM with sign-rpms.sh beside this file in a container of that image, copies the signed file out
+# with `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK inside the EL9 and the EL10
+# container; the exit status alone passes an unsigned package. The secrets reach a container on stdin, since podman
+# records an `-e` value in the container's configuration on disk. The containers run through `sudo podman` with runc as
+# the OCI runtime, which the GitHub runner needs: its default crun rejects the generated OCI spec. el-repos.sh points
+# the EL9 container's repos at one ordered host list before its `dnf install`.
 set -euo pipefail
 
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
 EL9_IMAGE=quay.io/rockylinux/rockylinux:9
 EL10_IMAGE=quay.io/rockylinux/rockylinux:10
+SIGN_IMAGE=localhost/ai-tools-assets-sign:el9
 PACKAGING="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One pattern for the line rpm 4 and rpm 6 print for a valid signature; a digest-only line does not match.
 SIGNATURE_OK_PATTERN='signature.*:[[:space:]]*OK[[:space:]]*$'
@@ -223,17 +225,24 @@ sign_rpm() {
     cp "$rpm" "$work/$name"
     cp "$PACKAGING/sign-rpms.sh" "$PACKAGING/el-repos.sh" "$work/"
 
-    container="ai-tools-assets-sign-$$"
-    out="$(printf '%s\n%s\n' "$GPG_SIGNING_PASSPHRASE" "$GPG_SIGNING_KEY" \
-        | sudo podman run -i --name "$container" --entrypoint /usr/bin/bash -v "$work:/in:ro" "$EL9_IMAGE" -c '
+    container="ai-tools-assets-sign-tools-$$"
+    sudo podman run --name "$container" --entrypoint /usr/bin/bash -v "$work:/in:ro" "$EL9_IMAGE" -c '
             set -euo pipefail
             bash /in/el-repos.sh
-            dnf -y -q --setopt=install_weak_deps=False install rpm-sign gnupg2 </dev/null >/dev/null
+            dnf -y -q --setopt=install_weak_deps=False install rpm-sign gnupg2' </dev/null \
+        || die "rpm-sign and gnupg2 did not install in $EL9_IMAGE"
+    sudo podman commit --quiet "$container" "$SIGN_IMAGE" >/dev/null
+    sudo podman rm "$container" >/dev/null
+
+    container="ai-tools-assets-sign-$$"
+    out="$(printf '%s\n%s\n' "$GPG_SIGNING_PASSPHRASE" "$GPG_SIGNING_KEY" \
+        | sudo podman run -i --name "$container" --entrypoint /usr/bin/bash -v "$work:/in:ro" "$SIGN_IMAGE" -c '
+            set -euo pipefail
             mkdir /out && cp "/in/$1" /out/
             bash /in/sign-rpms.sh --secrets-stdin /out/sign-rpms.pub "/out/$1"' _ "$name")" \
-        || die "sign-rpms.sh failed in $EL9_IMAGE: $out"
+        || die "sign-rpms.sh failed in $SIGN_IMAGE: $out"
     printf '%s\n' "$out"
-    grep -q 'signed and verified' <<<"$out" || die "sign-rpms.sh did not run in $EL9_IMAGE"
+    grep -q 'signed and verified' <<<"$out" || die "sign-rpms.sh did not run in $SIGN_IMAGE"
     sudo podman cp "$container:/out/$name" "$work/$name"
     sudo podman rm "$container" >/dev/null
     container=""
