@@ -294,6 +294,7 @@ RULES: Dict[str, str] = {
     "frontmatter.metadata-prefix": "a `metadata` key this format reads starts with `ai-tools-`",
     "body.dynamic-injection": "a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not allow is refused",
     "body.absolute-path": "an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share`",
+    "body.relative-link": "a relative link in `SKILL.md` or a subagent file, outside code, names a regular file of the same asset",
     "file.symlink": "a set does not hold a symbolic link",
     "file.hardlink": "a file has one link",
     "file.special": "every entry is a regular file or a directory",

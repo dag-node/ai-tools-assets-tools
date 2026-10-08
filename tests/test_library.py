@@ -20,6 +20,7 @@ import set_validation  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from frontmatter import Scalar, split_frontmatter  # noqa: E402
 from key_value_config import parse_key_value_text, parse_list_value  # noqa: E402
+from markdown_links import relative_link_targets  # noqa: E402
 from portable_name import propose_portable_name  # noqa: E402
 from spdx_expression import evaluate_expression  # noqa: E402
 
@@ -315,6 +316,25 @@ class WalkReadsEachFileOnce(unittest.TestCase):
         reads, collector = self.validate_counting_reads()
         self.assertEqual(len(reads), fmt.SET_MAX_FILES, "the file after the budget is not opened")
         self.assertEqual([finding.rule_id for finding in collector.findings], ["file.size"])
+
+
+class MarkdownLinks(unittest.TestCase):
+    def targets(self, text: str):
+        return list(relative_link_targets(text.split("\n")))
+
+    def test_reads_inline_links_images_and_definitions(self):
+        text = ("[a](references/a.md) ![b](assets/b.txt \"title\") [c](<scripts/c d.py>)\n"
+                "[d]: ./references/d.md#part\n   [e]: <e.md>\n")
+        self.assertEqual(self.targets(text), [(1, "references/a.md"), (1, "assets/b.txt"), (1, "scripts/c d.py"),
+                                              (2, "./references/d.md"), (3, "e.md")])
+
+    def test_reads_past_a_uri_an_anchor_and_code(self):
+        text = ("[w](https://example.org/x.md) [m](mailto:a@b.example) [t](#top) `[s](span.md)` ``[s2](`x`.md)``\n"
+                "````markdown\n[f](fenced.md)\n```\nstill [g](fenced.md)\n````\n~~~\n[h](tilde.md)\n~~~\n[k](after.md)\n")
+        self.assertEqual(self.targets(text), [(10, "after.md")])
+
+    def test_numbers_lines_from_the_first_line_given(self):
+        self.assertEqual(list(relative_link_targets(["", "[a](a.md)"], 7)), [(8, "a.md")])
 
 
 class FormatRegistry(unittest.TestCase):
