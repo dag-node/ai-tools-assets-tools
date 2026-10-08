@@ -109,6 +109,11 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
     missing = [key for key in fmt.PUBLISHER_CONF_REQUIRED if not publisher_conf.get(key).strip()]
     if missing:
         collector.refuse("publisher.conf", "repo.publisher-conf", "missing or empty: " + ", ".join(f"`{key}=`" for key in missing))
+    # The same unknown-key rule as set.conf's, so a misspelt `licenses=` or `allow_dynamic_injection=` does not read
+    # as the default; a publisher's own key is `x_<key>`.
+    for key in publisher_conf.values:
+        if key not in fmt.PUBLISHER_CONF_REQUIRED and key not in fmt.PUBLISHER_CONF_OPTIONAL and not fmt.EXTENSION_KEY_PATTERN.match(key):
+            collector.refuse("publisher.conf", "repo.publisher-conf", f"`{key}` is not a key this format reads; a publisher's own key is `x_<key>`")
     _, setting_error = dynamic_injection_setting(publisher_conf)
     if setting_error:
         collector.refuse("publisher.conf", "repo.publisher-conf", setting_error)

@@ -254,7 +254,7 @@ SPDX_HEADER = re.compile(r"SPDX-License-Identifier:\s*(?P<expression>[^\r\n*]+?)
 # and FORMAT.md states each rule under its id; tests/test_rules.py holds the three to one another.
 RULES: Dict[str, str] = {
     "repo.layout": "the repository root holds `publisher.conf` and `sets/`",
-    "repo.publisher-conf": "`publisher.conf` reads as `KEY=value` with every required key",
+    "repo.publisher-conf": "`publisher.conf` reads as `KEY=value` with every required key and no key outside its table but an `x_<key>` extension key",
     "repo.marketplace": "`.claude-plugin/marketplace.json` equals what `sync-manifests` writes from `set.conf` and `publisher.conf`",
     "set.conf.missing": "a set directory holds `set.conf`",
     "set.conf.syntax": "`set.conf` reads as `KEY=value`: every line is `KEY=value` or a comment, a key is written once, a list is `[a, b]` or bare `a, b`",
