@@ -16,9 +16,10 @@ a set follows, the validator that applies it, the scaffolding and build
 commands, and the GitHub workflows that run them.
 
 **Status.** Format 1, the commands, the fixtures and the workflows are
-in the tree and unreleased: the first tag `v0.1.0` follows the signing slice,
-which adds the RPM and the signed set release to the workflows. Until then
-a consumer runs the tools from a checkout.
+in the tree and unreleased: the first tags, `v1.0.0` and `v1`, follow
+the signing slice, which adds the RPM and the signed set release to the
+workflows. Until then a publisher calls the workflows at a commit, and runs
+the tools from a checkout.
 
 ## Layout
 
@@ -30,14 +31,14 @@ fixtures/       conformance fixtures: sets that pass, and sets that fail
                 one named rule each
 formatters/     reflow prose at the column a checker names (AGPL-3.0-only)
 tests/          tests for tools/ and the fixtures
-.github/        validate.yml and release.yml, called from a publisher's
-                repository at a pinned tag
+.github/        validate.yml, which a publisher's repository calls, and
+                release.yml, this repository's own release
 ```
 
 ## Using the tools
 
-A publisher repository pins a release of this repository in `tools.pin`
-and calls the workflows from its own:
+A publisher repository calls the workflow from its own, pinned by the `v1`
+tag or by a full commit id:
 
 ```yaml
 jobs:
