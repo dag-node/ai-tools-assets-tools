@@ -370,8 +370,9 @@ the entry moves to the allowed table with its shape and rules, a rule
 requires a set carrying content at it to declare the token
 in `requires_capabilities`, and fixtures prove both directions. A reader
 without the token -- an earlier release of the tools, or of `ai-tools-base`
--- then refuses such a set whole, on the token, before reading the content;
-a reader with it refuses a set that carries the content and omits the token.
+-- then refuses such a set whole, on the token, whatever else it reads of
+the set; a reader with it refuses a set that carries the content and omits
+the token.
 No reader reads an entry it does not define, and none ignores one.
 
 A publisher's own key in `set.conf`,
@@ -383,10 +384,15 @@ set entry fails validation; a reserved one is refused where present.
 
 ## Limits
 
-The validator holds a set to these bounds and stops at the first it meets,
-with one `file.size` finding at the set root, so a tree too large to read
-whole is refused rather than judged in part. The bounds are bytes, lines
-and entries, which every reader measures the same way; none is a token
+The validator holds a set to these bounds. The bounds on the tree (files,
+directories, entries in one directory, depth and bytes in a set) stop the
+walk where one is met, with one `file.size` finding at the set root, so a
+tree too large to read whole is refused rather than judged in part. A
+single file over its bound is a `file.size` finding on that file and the
+walk goes on; a manifest over its bound is a `set.manifest.plugin` finding,
+and an SPDX expression over its bound a `license.expression` one. The
+bounds are bytes, lines and entries, which every reader measures the same
+way; none is a token
 count, since a tokenizer is the model's and two models count one file
 differently. An advisory token estimate, if one is added, is a warning rule
 beside these bounds and does not refuse a set.
