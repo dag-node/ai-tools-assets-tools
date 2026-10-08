@@ -239,6 +239,7 @@ FAIL_FIXTURES: List[Tuple[str, str, Mutation]] = [
     ("frontmatter.metadata-prefix", "warn", lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", "vendor-note: python/pdftext")),
     ("body.dynamic-injection", "fail", lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\n!`date`\n")),
     ("body.absolute-path", "fail", lambda tree: tree.__setitem__(f"{SKILL}/references/formats.md", "# Formats\n\nSee /opt/ai-tools/skills/other/README.md.\n")),
+    ("body.relative-link", "fail", lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + "\nSee [the field list](references/fields.md).\n")),
     ("file.binary", "fail", lambda tree: tree.__setitem__(f"{SKILL}/assets/logo.bin", b"\x00\x01\x02binary")),
     ("file.reserved-name", "fail", lambda tree: tree.__setitem__(f"{SKILL}/scripts/SHA256SUMS", "not an inventory\n")),
     ("file.name", "fail", lambda tree: tree.__setitem__(f"{SKILL}/references/two words.md", "# Notes\n")),
@@ -291,6 +292,8 @@ VARIANT_FIXTURES: List[Tuple[str, str, Mutation]] = [
     ("file.binary.arabic-letter-mark", "file.binary", lambda tree: tree.__setitem__(f"{SKILL}/references/formats.md", "# Formats\n\n" + chr(0x061C) + "PDF 1.4.\n")),
     ("file.binary.bom-first", "file.binary", lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", chr(0xFEFF) + tree[f"{SKILL}/SKILL.md"])),
     ("file.binary.bom-inside", "file.binary", lambda tree: tree.__setitem__(f"{SKILL}/references/formats.md", "# Formats\n\nPDF " + chr(0xFEFF) + "1.4.\n")),
+    ("body.relative-link.subagent", "body.relative-link",
+     lambda tree: tree.__setitem__("agents/acme-reviewer.md", tree["agents/acme-reviewer.md"] + "\nThe conventions are in [the guide](../skills/acme-pdf-processing/SKILL.md).\n")),
     ("file.name.non-ascii", "file.name", lambda tree: tree.__setitem__(f"{SKILL}/references/r" + chr(0xE9) + "sum" + chr(0xE9) + ".md", "# Notes\n")),
     ("file.name.backslash", "file.name", lambda tree: tree.__setitem__(f"{SKILL}/references/notes\\draft.md", "# Notes\n")),
     ("file.name.leading-hyphen", "file.name", lambda tree: tree.__setitem__(f"{SKILL}/references/-notes.md", "# Notes\n")),
@@ -358,6 +361,12 @@ PASS_VARIANT_FIXTURES: List[Tuple[str, Mutation]] = [
     ("acme.explicit-empty-list", lambda tree: (
         replace_in(tree, "metadata/subagents/upstream-triage/asset.conf", "requires_capabilities=[subagents.claude.v1]\n", "requires_capabilities=[subagents.claude.v1]\nrequires_integrations=[]\n"),
         replace_in(tree, "set.conf", "license=MIT\n", 'license="MIT" # the set\'s licence\nrequires_capabilities=[]\n'))),
+    # Every link form the rule reads past or accepts: a file of the skill, a fragment, a URI, an anchor, and a link
+    # written as code, in a span and in a fence.
+    ("acme.relative-links", lambda tree: tree.__setitem__(f"{SKILL}/SKILL.md", tree[f"{SKILL}/SKILL.md"] + (
+        "\nThe formats are [listed](references/formats.md#pdf) and [specified](https://pdfa.org/).\n"
+        "Back to [the top](#pdf-processing); a link to another file reads `[x](../other/SKILL.md)`.\n\n"
+        "[formats]: ./references/formats.md\n\n```markdown\n[y](../other/SKILL.md)\n```\n"))),
     ("acme.subagent-tools-scalar", lambda tree: replace_in(tree, "agents/acme-reviewer.md", "tools: [Read, Grep]", "tools: Read, Grep\nmaxTurns: 12")),
     ("acme.quoted-typed-scalars", lambda tree: (
         replace_in(tree, f"{SKILL}/SKILL.md", "ai-tools-libs: python/pdftext", 'ai-tools-libs: "true"\n  ai-tools-version: "1.0"'),

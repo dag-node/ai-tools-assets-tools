@@ -262,6 +262,14 @@ alone. A flow list holds plain items, none empty.
   `/usr/share` or `/usr/local/share`, anywhere in the file, an entry file's
   frontmatter included; a skill names its own files relative to its root
   and another skill by name.
+- A relative link in `SKILL.md` or a subagent file names a regular file
+  of the same asset: an inline link `[text](target)` or a reference definition
+  `[label]: target` whose target has no URI scheme and does not open with `#`
+  is resolved against the linking file's directory, its fragment removed,
+  and is refused unless a file of the asset stands there. A link inside a code
+  span or a fenced block is not read. A subagent is one file, so it does not
+  link a file by a relative path, and a skill names another skill by name;
+  a rename that leaves a link dangling fails here.
 - Every entry is a regular file or a directory: no symbolic link, no file
   with a second hard link, no special file. Every file is UTF-8 text without
   a control character (every `Cc` code point other than tab, LF and CR, the C1
@@ -450,6 +458,7 @@ differ.
 | `frontmatter.metadata-prefix` | warns | a `metadata` key this format reads starts with `ai-tools-` |
 | `body.dynamic-injection` | refuses | a line runs a command when the asset loads only where the asset declares `skills.dynamic.v1` and `publisher.conf` sets `allow_dynamic_injection=yes`; a declaration `publisher.conf` does not allow is refused |
 | `body.absolute-path` | refuses | an asset's `.md` file, an entry file's frontmatter included, does not name an absolute path into `/opt/ai-tools`, `/usr/share` or `/usr/local/share` |
+| `body.relative-link` | refuses | a relative link in `SKILL.md` or a subagent file, outside code, names a regular file of the same asset |
 | `file.symlink` | refuses | a set does not hold a symbolic link |
 | `file.hardlink` | refuses | a file has one link |
 | `file.special` | refuses | every entry is a regular file or a directory |
