@@ -418,7 +418,7 @@ differ.
 | Rule | Outcome | Requires |
 |---|---|---|
 | `repo.layout` | refuses | the repository root holds `publisher.conf` and `sets/` |
-| `repo.publisher-conf` | refuses | `publisher.conf` reads as `KEY=value` with every required key |
+| `repo.publisher-conf` | refuses | `publisher.conf` reads as `KEY=value` with every required key and no key outside its table but an `x_<key>` extension key |
 | `repo.marketplace` | refuses | `.claude-plugin/marketplace.json` equals what `sync-manifests` writes from `set.conf` and `publisher.conf` |
 | `set.conf.missing` | refuses | a set directory holds `set.conf` |
 | `set.conf.syntax` | refuses | `set.conf` reads as `KEY=value`: every line is `KEY=value` or a comment, a key is written once, a list is `[a, b]` or bare `a, b` |

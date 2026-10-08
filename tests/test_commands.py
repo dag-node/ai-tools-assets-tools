@@ -70,6 +70,18 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("repo.publisher-conf", stderr)
 
+    def test_a_publisher_conf_key_outside_its_table_is_refused_and_an_extension_key_is_not(self):
+        conf = self.root / "publisher.conf"
+        original = conf.read_text(encoding="utf-8")
+        conf.write_text(original + "x_review=quarterly\n", encoding="utf-8")
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual((status, stderr), (0, ""))
+        # A misspelt setting would otherwise read as absent, which is the permissive default.
+        conf.write_text(original + "allow_dynamic_injectoin=yes\n", encoding="utf-8")
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("repo.publisher-conf: `allow_dynamic_injectoin` is not a key this format reads", stderr)
+
     def test_a_directory_that_is_no_repository_is_refused(self):
         status, _, stderr = run("validate", "--root", str(self.root / "sets"))
         self.assertEqual(status, 1)
