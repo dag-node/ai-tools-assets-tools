@@ -66,8 +66,9 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   `<set>/v<semver>`: it verifies the signed tag, builds the set, signs the zip
   and `SHA256SUMS` with the org package-signing key, ships the set as the
   signed RPM `ai-tools-assets-<set>`, attaches them to the GitHub release
-  and, when asked, has `dag-node/rpm` publish the RPM. See
-  `packaging/README.md`.
+  and, when asked, has `dag-node/rpm` publish the RPM. Every file in the RPM,
+  and in the tools RPM, carries the tag commit's timestamp, so two builds
+  of one tag install the same payload. See `packaging/README.md`.
 - The formatters from ai-tools-base under `formatters/`, `AGPL-3.0-only`,
   taking the checker as `--checker <path>`.
 

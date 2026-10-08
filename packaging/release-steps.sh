@@ -40,8 +40,9 @@
 # the step.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds the RPM
-# without a signature; SOURCE_DATE_EPOCH fixes every timestamp nFPM writes. sign-rpm installs rpm-sign and gnupg2 in an
-# EL9 container (the older rpm) that does not receive the secrets, so no package scriptlet runs while the key is
+# without a signature; SOURCE_DATE_EPOCH fixes the header's timestamps and those of a `dir` or `file` entry, while
+# a file under a `tree` entry keeps its staged mtime, which the calling workflow sets to SOURCE_DATE_EPOCH. sign-rpm
+# installs rpm-sign and gnupg2 in an EL9 container (the older rpm) that does not receive the secrets, so no package scriptlet runs while the key is
 # present, signs the RPM with sign-rpms.sh beside this file in a container of that image, copies the signed file out
 # with `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK inside the EL9 and the EL10
 # container; the exit status alone passes an unsigned package. The secrets reach a container on stdin, since podman
