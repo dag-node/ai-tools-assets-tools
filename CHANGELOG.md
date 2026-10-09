@@ -16,6 +16,11 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   each component from a directory descriptor without following a link,
   as the reader does, and creates, writes and renames at that descriptor:
   a swapped component leaves the write in the directory that was inspected.
+- `check-licenses` read a file it could not inspect (a second hard link,
+  a special file, a permission failure, an unreadable `.license` sidecar)
+  as one with no header, and a matching `REUSE.toml` annotation then covered
+  it. Such a file is now refused under `license.file`. A tracked symbolic link
+  is not judged, as `reuse lint` does not judge one.
 
 ## [1.0.0] - 2026-10-08
 

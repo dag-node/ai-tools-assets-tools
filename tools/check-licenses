@@ -10,17 +10,21 @@
 # `SPDX-License-Identifier` header anywhere in the file (read whole, at most 1 MiB, a `REUSE-IgnoreStart` block left
 # out) or in its `<file>.license` sidecar, combined under the matching `[[annotations]]` table's `precedence` with the
 # expressions that table declares; a file with none is reported, a file over the bound is refused unjudged, and
-# every expression that applies is judged. Every identifier is on the list in force -- `publisher.conf` `licenses=`,
-# or the GPLv3-compatible permissive default, plus each `--allow` -- and has its text under `LICENSES/`. An `--exception`
-# accepts one identifier for the files its glob (REUSE's grammar: `**` crosses `/`, `*` does not) matches alone, which is
-# how this repository carries its `AGPL-3.0-only` `formatters/` beside an MIT tree. `LICENSE`, `LICENSES/`, `REUSE.toml`
-# and a `.license` sidecar are not judged: they are the texts and the declarations themselves. A `REUSE.toml` inside
-# a subdirectory is not read, and every file under it is reported. Standard library only.
+# every expression that applies is judged; a file the reader refuses (a second hard link, a special file) or cannot
+# open is refused, not judged on an annotation as though it declared no licence. Every identifier is on the list in
+# force -- `publisher.conf` `licenses=`, or the GPLv3-compatible permissive default, plus each `--allow` -- and has its
+# text under `LICENSES/`. An `--exception` accepts one identifier for the files its glob (REUSE's grammar: `**` crosses
+# `/`, `*` does not) matches alone, which is how this repository carries its `AGPL-3.0-only` `formatters/` beside an
+# MIT tree. `LICENSE`, `LICENSES/`, `REUSE.toml` and a `.license` sidecar are not judged: they are the texts and the
+# declarations themselves. A symbolic link is not judged either, as `reuse lint` does not judge one: it holds a path,
+# not content, and its target is judged where it is tracked. A `REUSE.toml` inside a subdirectory is not read, and
+# every file under it is reported. Standard library only.
 from __future__ import annotations
 
 import argparse
 import os
 import pathlib
+import stat
 import subprocess
 import sys
 
@@ -73,6 +77,17 @@ def main() -> int:
     return collector.report()
 
 
+def is_symbolic_link(root_fd: int, relative_path: pathlib.Path) -> bool:
+    """Whether the entry at `relative_path` under `root_fd` is a symbolic link: a path, not content, so not judged.
+
+    `lstat` reads the entry itself; a link at a component before it is the reader's refusal when the file is read.
+    """
+    try:
+        return stat.S_ISLNK(os.lstat(relative_path.as_posix(), dir_fd=root_fd).st_mode)
+    except OSError:
+        return False
+
+
 def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: list, collector: FindingCollector) -> None:
     try:
         publisher = parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("publisher.conf"), fmt.FILE_MAX_BYTES))
@@ -100,6 +115,8 @@ def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: lis
             collector.refuse(path_text, "license.file", f"lies under `{nested.as_posix()}/REUSE.toml`, which this check does not read; one REUSE.toml, at the root")
             continue
         if relative_path.name in NOT_JUDGED or relative_path.parts[0] == fmt.LICENSE_TEXTS_DIRECTORY or relative_path.suffix == LICENSE_SIDECAR_SUFFIX:
+            continue
+        if is_symbolic_link(root_fd, relative_path):
             continue
         try:
             expressions = applicable_expressions(root_fd, relative_path, tracked_names, annotations)
