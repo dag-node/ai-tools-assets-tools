@@ -7,6 +7,19 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-09
+
+### Changed
+
+- `dnf install ai-tools-assets-tools` installs the tooling from rpm.dagnode.com
+  on EL 9, EL 10 and Fedora 44. Each release builds one RPM per distribution,
+  `<name>-<version>-1.<dist>.noarch.rpm` with `<dist>` one of `el9`, `el10`
+  and `fc44`, and the repository serves each from the tree of its distribution.
+  A set released through `set-release.yml` is built and served the same way,
+  so its package installs with `dnf` too. The 1.0.0 RPM carries the Release `1`
+  without a distribution, so the repository does not serve it; it stays
+  attached to the 1.0.0 GitHub release.
+
 ### Fixed
 
 - The writer behind `new-set`, `new-asset`, `sync-manifests`, `build-set`
