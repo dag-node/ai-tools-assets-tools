@@ -21,6 +21,11 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   as one with no header, and a matching `REUSE.toml` annotation then covered
   it. Such a file is now refused under `license.file`. A tracked symbolic link
   is not judged, as `reuse lint` does not judge one.
+- `verify-reflow.py` reported a `--base` revision git could not resolve,
+  or an `--against` directory that does not exist, as every path skipped
+  and exited 0. The base is now verified before any path is read and such a run
+  exits 1; a path the tree does not hold is a failure, and a skip is a path
+  the tree holds and the base does not.
 
 ## [1.0.0] - 2026-10-08
 
