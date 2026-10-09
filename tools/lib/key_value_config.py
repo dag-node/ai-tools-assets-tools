@@ -40,7 +40,7 @@ class KeyValueDocument:
     def get(self, key: str, default: str = "") -> str:
         return self.values.get(key, default)
 
-    def list_value(self, key: str) -> Tuple[Tuple[str, ...], Optional[str]]:
+    def get_list(self, key: str) -> Tuple[Tuple[str, ...], Optional[str]]:
         """The items of a list key, and the reason the list is invalid where it is (the items are then empty)."""
         if key not in self.values:
             return (), None

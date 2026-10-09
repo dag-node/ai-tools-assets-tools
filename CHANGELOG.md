@@ -7,6 +7,43 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-09
+
+### Changed
+
+- `dnf install ai-tools-assets-tools` installs the tooling from rpm.dagnode.com
+  on EL 9, EL 10 and Fedora 44. Each release builds one RPM per distribution,
+  `<name>-<version>-1.<dist>.noarch.rpm` with `<dist>` one of `el9`, `el10`
+  and `fc44`, and the repository serves each from the tree of its distribution.
+  A set released through `set-release.yml` is built and served the same way,
+  so its package installs with `dnf` too. The 1.0.0 RPM carries the Release `1`
+  without a distribution, so the repository does not serve it; it stays
+  attached to the 1.0.0 GitHub release.
+
+### Fixed
+
+- The writer behind `new-set`, `new-asset`, `sync-manifests`, `build-set`
+  and `link-set` opened the directory it wrote into by path after checking its
+  components, so a component replaced with a symbolic link between the check
+  and the write redirected the file to the link's target. The writer now opens
+  each component from a directory descriptor without following a link,
+  as the reader does, and creates, writes and renames at that descriptor:
+  a swapped component leaves the write in the directory that was inspected.
+- `check-licenses` read a file it could not inspect (a second hard link,
+  a special file, a permission failure, an unreadable `.license` sidecar)
+  as one with no header, and a matching `REUSE.toml` annotation then covered
+  it. Such a file is now refused under `license.file`. A tracked symbolic link
+  is not judged, as `reuse lint` does not judge one.
+- `verify-reflow.py` reported a `--base` revision git could not resolve,
+  or an `--against` directory that does not exist, as every path skipped
+  and exited 0. The base is now verified before any path is read and such a run
+  exits 1; a path the tree does not hold is a failure, and a skip is a path
+  the tree holds and the base does not.
+- `align-tables.py` raised a `TypeError` and stopped on a fenced block
+  that immediately followed a comment table, leaving later files unprocessed.
+  A fence now ends the table before it, and fenced lines are never part
+  of a block.
+
 ## [1.0.0] - 2026-10-08
 
 ### Added

@@ -24,10 +24,11 @@ jobs:
 The job reads the set and the version from the tag, verifies the tag against
 the pinned maintainer keys, runs `tools/validate`, `tools/check-publisher
 --repository` and `tools/build-set`, signs `SHA256SUMS` and the zip with the
-org package-signing key, builds the RPM `ai-tools-assets-<set>` with nFPM,
-signs it in an EL9 container and verifies it in EL9 and EL10, and creates the
-GitHub release. With `dispatch-rpm: true` it then asks `dag-node/rpm` to
-publish the RPM at `rpm.dagnode.com`; a prerelease tag (`<set>/v1.2.0-rc.1`)
+org package-signing key, builds the RPM `ai-tools-assets-<set>` with nFPM
+once for each distribution `rpm.dagnode.com` serves (EL9, EL10, Fedora 44),
+signs the RPMs in an EL9 container and verifies each in its own distribution,
+and creates the GitHub release. With `dispatch-rpm: true` it then asks
+`dag-node/rpm` to publish the RPMs at `rpm.dagnode.com`; a prerelease tag (`<set>/v1.2.0-rc.1`)
 creates a prerelease and does not dispatch. The set's `version` in `set.conf`
 must equal the tag's.
 
@@ -69,7 +70,7 @@ The status check is `ai-tools-assets / release`, from the calling job's name.
 | `ai-tools-assets-<set>-<version>.zip` | the staged set, plugin root at the top, as `tools/build-set` wrote it |
 | `….zip.sha256`, `….zip.asc` | its SHA-256 and its detached signature |
 | `SHA256SUMS`, `SHA256SUMS.asc` | the staged set's inventory and its detached signature |
-| `ai-tools-assets-<set>-<version>-1.noarch.rpm` | the staged set under `/usr/share/ai-tools-assets/<set>/`, `SHA256SUMS.asc` included, with an RPM header signature |
+| `ai-tools-assets-<set>-<version>-1.<dist>.noarch.rpm` | the staged set under `/usr/share/ai-tools-assets/<set>/`, `SHA256SUMS.asc` included, with an RPM header signature; one per `<dist>` of `el9`, `el10` and `fc44`, which `dag-node/rpm` places in the tree of that distribution |
 
 The zip does not carry `SHA256SUMS.asc`, since `build-set` writes the zip
 before the release signs `SHA256SUMS`; the zip's own `.asc` covers it whole.
@@ -78,8 +79,8 @@ before the release signs `SHA256SUMS`; the zip's own `.asc` covers it whole.
 
 | File | What it does |
 |---|---|
-| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml` |
-| `render-nfpm.py` | writes the nFPM configuration of a set's RPM from `nfpm-set.yaml.in`, the staged `set.conf` and `publisher.conf`, or of the tools RPM from `nfpm-tools.yaml.in` |
+| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml`; lists the distributions an RPM is built for |
+| `render-nfpm.py` | writes the nFPM configuration of a set's RPM for one distribution from `nfpm-set.yaml.in`, the staged `set.conf` and `publisher.conf`, or of the tools RPM from `nfpm-tools.yaml.in` |
 | `nfpm-set.yaml.in` | the package a set ships as |
 | `nfpm-tools.yaml.in` | the package this repository's tools ship as, built by `release.yml` from the release archive |
 | `sign-rpms.sh` | signs and verifies an RPM inside the EL container; a copy from ai-tools-base, `AGPL-3.0-only` |

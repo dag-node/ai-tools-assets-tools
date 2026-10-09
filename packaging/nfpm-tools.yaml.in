@@ -10,7 +10,7 @@ arch: all
 platform: linux
 version: @VERSION@
 version_schema: semver
-release: "1"
+release: @RELEASE@
 maintainer: "dag-node <tools@dagnode.com>"
 vendor: dag-node
 homepage: https://github.com/dag-node/ai-tools-assets-tools

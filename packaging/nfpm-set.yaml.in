@@ -14,7 +14,7 @@ arch: all
 platform: linux
 version: @VERSION@
 version_schema: semver
-release: "1"
+release: @RELEASE@
 maintainer: @MAINTAINER@
 vendor: @VENDOR@
 homepage: @HOMEPAGE@

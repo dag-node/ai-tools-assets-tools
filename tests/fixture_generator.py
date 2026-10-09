@@ -31,7 +31,7 @@ REPOSITORY = TESTS.parent
 sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 
 from key_value_config import parse_key_value_text  # noqa: E402
-from manifests import claude_plugin_document, portable_plugin_document, render_json  # noqa: E402
+from manifests import build_claude_plugin_document, build_portable_plugin_document, render_json  # noqa: E402
 
 FIXTURES = REPOSITORY / "fixtures"
 FileContent = Union[str, bytes]
@@ -150,8 +150,8 @@ def base_tree(publisher: str, set_name: str) -> Tree:
         "set.conf": SET_CONF.format(set_name=set_name, publisher=publisher),
         "CHANGELOG.md": f"# Changelog: {set_name}\n\n## [Unreleased]\n\n### Added\n\n- The fixture set.\n",
         "README.md": f"# {set_name}\n\nA fixture set.\n",
-        "plugin.json": render_json(portable_plugin_document(set_conf, publisher_conf)),
-        ".claude-plugin/plugin.json": render_json(claude_plugin_document(set_conf, publisher_conf)),
+        "plugin.json": render_json(build_portable_plugin_document(set_conf, publisher_conf)),
+        ".claude-plugin/plugin.json": render_json(build_claude_plugin_document(set_conf, publisher_conf)),
         f"skills/{prefix}pdf-processing/SKILL.md": SKILL_MD.format(prefix=prefix),
         f"skills/{prefix}pdf-processing/scripts/extract.py": EXTRACT_PY,
         f"skills/{prefix}pdf-processing/scripts/report.cs": REPORT_CS,
@@ -178,8 +178,8 @@ def rerender_manifests(tree: Tree, publisher: str, set_name: str) -> None:
     set_conf = parse_key_value_text(tree["set.conf"])
     set_conf.values["name"] = set_name
     publisher_conf = parse_key_value_text(PUBLISHER_CONF.format(publisher=publisher))
-    tree["plugin.json"] = render_json(portable_plugin_document(set_conf, publisher_conf))
-    tree[".claude-plugin/plugin.json"] = render_json(claude_plugin_document(set_conf, publisher_conf))
+    tree["plugin.json"] = render_json(build_portable_plugin_document(set_conf, publisher_conf))
+    tree[".claude-plugin/plugin.json"] = render_json(build_claude_plugin_document(set_conf, publisher_conf))
 
 
 def replace_in(tree: Tree, path: str, old: str, new: str) -> None:

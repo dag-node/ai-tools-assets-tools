@@ -9,8 +9,8 @@
 # bash packaging/release-steps.sh verify-tag <tag> <event-commit>
 # bash packaging/release-steps.sh preflight
 # bash packaging/release-steps.sh sign-files <file>...
-# bash packaging/release-steps.sh build-rpm <nfpm-config> <output-directory>
-# bash packaging/release-steps.sh sign-rpm <rpm>
+# bash packaging/release-steps.sh build-rpm <output-directory> <render-nfpm.py arguments>...
+# bash packaging/release-steps.sh sign-rpm <rpm>...
 # bash packaging/release-steps.sh create-release <tag> <notes> <file>...
 # bash packaging/release-steps.sh dispatch <tag>
 # ```
@@ -39,26 +39,33 @@
 # it. Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails
 # the step.
 #
-# build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds the RPM
-# without a signature; SOURCE_DATE_EPOCH fixes the header's timestamps and those of a `dir` or `file` entry, while
-# a file under a `tree` entry keeps its staged mtime, which the calling workflow sets to SOURCE_DATE_EPOCH. sign-rpm
-# installs rpm-sign and gnupg2 in an EL9 container (the older rpm) that does not receive the secrets, so no package scriptlet runs while the key is
-# present, signs the RPM with sign-rpms.sh beside this file in a container of that image, copies the signed file out
-# with `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK inside the EL9 and the EL10
-# container; the exit status alone passes an unsigned package. The secrets reach a container on stdin, since podman
-# records an `-e` value in the container's configuration on disk. The container that holds the key and the two that
-# verify run with no network, so the key cannot leave them whatever the image runs, and the images are pinned by digest
-# (EL9_IMAGE, EL10_IMAGE), so the environment that signs is the one reviewed; a new point release is taken by replacing
-# the digest with the one `skopeo inspect docker://<image>:<tag>` prints. The containers run through `sudo podman` with
-# runc as the OCI runtime, which the GitHub runner needs: its default crun rejects the generated OCI spec. el-repos.sh
-# points the EL9 container's repos at one ordered host list before its `dnf install`.
+# build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds one
+# RPM without a signature per distribution DIST_IMAGES lists, each from the configuration render-nfpm.py writes for
+# that dist tag; dag-node/rpm places a package by the dist tag in its file name, so a distribution rpm.dagnode.com
+# serves is added to DIST_IMAGES and to dag-node/rpm's served trees together. SOURCE_DATE_EPOCH fixes the header's
+# timestamps and those of a `dir` or `file` entry, while a file under a `tree` entry keeps its staged mtime, which
+# the calling workflow sets to SOURCE_DATE_EPOCH. sign-rpm installs rpm-sign and gnupg2 in an EL9 container (the oldest
+# rpm the RPMs install with) that does not receive the secrets, so no package scriptlet runs while the key is present,
+# signs every RPM with sign-rpms.sh beside this file in one container of that image, copies the signed files out with
+# `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK for each RPM inside the image of the
+# distribution its dist tag names; the exit status alone passes an unsigned package. The secrets reach a container
+# on stdin, since podman records an `-e` value in the container's configuration on disk. The container that holds
+# the key and those that verify run with no network, so the key cannot leave them whatever the image runs, and
+# the images are pinned by digest, so the environment that signs is the one reviewed; a new point release is taken
+# by replacing the digest with the one `skopeo inspect docker://<image>:<tag>` prints. The containers run through
+# `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its default crun rejects the generated OCI
+# spec. el-repos.sh points the EL9 container's repos at one ordered host list before its `dnf install`.
 set -euo pipefail
 
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
-# The multi-arch index digests of the Rocky 9 and 10 images, resolved from quay.io on 2026-10-08.
+# The multi-arch index digests of the Rocky 9 and 10 images, resolved from quay.io on 2026-10-08, and of the Fedora 44
+# image, resolved on 2026-10-09.
 EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
 EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+FC44_IMAGE=quay.io/fedora/fedora:44@sha256:8ade22c0f76f6b2f0892290b1fb39fa1bda1566ba6e276a2ed427f45589c159b
+# The distributions an RPM is built for, by dist tag, each with the image its signature is verified in.
+declare -A DIST_IMAGES=([el9]="$EL9_IMAGE" [el10]="$EL10_IMAGE" [fc44]="$FC44_IMAGE")
 # Every curl: HTTPS alone, no scheme change on a redirect, and a bound on the whole transfer.
 CURL=(curl -sSf --proto '=https' --proto-redir '=https' --max-time 120)
 SIGN_IMAGE=localhost/ai-tools-assets-sign:el9
@@ -193,11 +200,11 @@ sign_files() {
 }
 
 build_rpm() {
-    [[ "$#" -eq 2 ]] || die "usage: build-rpm <nfpm-config> <output-directory>"
-    local config="$1" output="$2" download tarball nfpm rpms
+    [[ "$#" -ge 2 ]] || die "usage: build-rpm <output-directory> <render-nfpm.py arguments>..."
+    local output="$1" download tarball nfpm dist config rpms
+    shift
     require_env SOURCE_DATE_EPOCH
     [[ "$(uname -m)" == x86_64 ]] || die "the pinned nFPM checksum is for Linux x86_64, not $(uname -m)"
-    [[ -f "$config" ]] || die "$config is not a file"
     mkdir -p "$output"
     compgen -G "$output/*.rpm" >/dev/null && die "$output already holds an RPM; build-rpm writes into an empty directory"
     new_scratch
@@ -210,11 +217,27 @@ build_rpm() {
     tar -xzf "$download/$tarball" -C "$download" || die "$tarball did not extract"
     nfpm="$download/nfpm"
     [[ -f "$nfpm" ]] || die "$tarball holds no nfpm binary at its top level"
-    "$nfpm" package --config "$config" --packager rpm --target "$output/" </dev/null \
-        || die "nFPM did not build the RPM from $config"
+    for dist in "${!DIST_IMAGES[@]}"; do
+        config="$download/nfpm-$dist.yaml"
+        python3 "$PACKAGING/render-nfpm.py" "$@" --dist "$dist" --output "$config" \
+            || die "render-nfpm.py did not write the $dist configuration"
+        "$nfpm" package --config "$config" --packager rpm --target "$output/" </dev/null \
+            || die "nFPM did not build the $dist RPM from $config"
+        rpms=("$output"/*."$dist".noarch.rpm)
+        [[ "${#rpms[@]}" -eq 1 && -f "${rpms[0]}" ]] \
+            || die "nFPM wrote ${#rpms[@]} files matching $output/*.$dist.noarch.rpm, not one"
+        echo "built ${rpms[0]} with nFPM $NFPM_VERSION, SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+    done
     rpms=("$output"/*.rpm)
-    [[ "${#rpms[@]}" -eq 1 && -f "${rpms[0]}" ]] || die "nFPM wrote ${#rpms[@]} files matching $output/*.rpm, not one"
-    echo "built ${rpms[0]} with nFPM $NFPM_VERSION, SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+    [[ "${#rpms[@]}" -eq "${#DIST_IMAGES[@]}" ]] \
+        || die "$output holds ${#rpms[@]} RPMs, not one for each of ${!DIST_IMAGES[*]}"
+}
+
+# dist_image <rpm-file-name>: set `image` to the image of the distribution the file name's dist tag names.
+dist_image() {
+    [[ "$1" =~ \.([a-z]+[0-9]+)\.noarch\.rpm$ && -n "${DIST_IMAGES[${BASH_REMATCH[1]}]:-}" ]] \
+        || die "$1 does not end in .<dist>.noarch.rpm with a dist tag of ${!DIST_IMAGES[*]}"
+    image="${DIST_IMAGES[${BASH_REMATCH[1]}]}"
 }
 
 ensure_podman() {
@@ -226,15 +249,22 @@ ensure_podman() {
 }
 
 sign_rpm() {
-    [[ "$#" -eq 1 ]] || die "usage: sign-rpm <rpm>"
-    local rpm="$1" name work out image
+    [[ "$#" -ge 1 ]] || die "usage: sign-rpm <rpm>..."
+    local rpm name names=() work out image
     require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
-    [[ -f "$rpm" ]] || die "$rpm is not a file"
-    name="$(basename "$rpm")"
+    for rpm in "$@"; do
+        [[ -f "$rpm" ]] || die "$rpm is not a file"
+        dist_image "$(basename "$rpm")"
+    done
     ensure_podman
     new_scratch
     work="$scratch"
-    cp "$rpm" "$work/$name"
+    for rpm in "$@"; do
+        name="$(basename "$rpm")"
+        [[ -e "$work/$name" ]] && die "two RPMs are named $name"
+        cp "$rpm" "$work/$name"
+        names+=("$name")
+    done
     cp "$PACKAGING/sign-rpms.sh" "$PACKAGING/el-repos.sh" "$work/"
 
     container="ai-tools-assets-sign-tools-$$"
@@ -252,19 +282,23 @@ sign_rpm() {
         | sudo podman run -i --name "$container" --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" \
             "$SIGN_IMAGE" -c '
             set -euo pipefail
-            mkdir /out && cp "/in/$1" /out/
-            bash /in/sign-rpms.sh --secrets-stdin /out/sign-rpms.pub "/out/$1"' _ "$name")" \
+            mkdir /out
+            for name in "$@"; do cp "/in/$name" /out/; done
+            bash /in/sign-rpms.sh --secrets-stdin /out/sign-rpms.pub "${@/#//out/}"' _ "${names[@]}")" \
         || die "sign-rpms.sh failed in $SIGN_IMAGE: $out"
     printf '%s\n' "$out"
     grep -q 'signed and verified' <<<"$out" || die "sign-rpms.sh did not run in $SIGN_IMAGE"
-    sudo podman cp "$container:/out/$name" "$work/$name"
+    for name in "${names[@]}"; do
+        sudo podman cp "$container:/out/$name" "$work/$name"
+        sudo chown "$(id -u):$(id -g)" "$work/$name"
+    done
     sudo podman rm "$container" >/dev/null
     container=""
-    sudo chown "$(id -u):$(id -g)" "$work/$name"
 
     import_signing_key
     export_artifact_signer "$work/artifact-signer.asc"
-    for image in "$EL9_IMAGE" "$EL10_IMAGE"; do
+    for name in "${names[@]}"; do
+        dist_image "$name"
         out="$(sudo podman run --rm --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" "$image" -c '
                 db="$(mktemp -d)"
                 rpmkeys --dbpath "$db" --import /in/artifact-signer.asc || exit 1
@@ -275,8 +309,10 @@ sign_rpm() {
         grep -Eqi "$SIGNATURE_OK_PATTERN" <<<"$out" \
             || die "$name carries no signature that verifies in $image against $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
     done
-    cp "$work/$name" "$rpm"
-    echo "$rpm signed in $EL9_IMAGE and verified in $EL9_IMAGE and $EL10_IMAGE"
+    for rpm in "$@"; do
+        cp "$work/$(basename "$rpm")" "$rpm"
+        echo "$rpm signed in $EL9_IMAGE and verified in the image of its distribution"
+    done
 }
 
 create_release() {

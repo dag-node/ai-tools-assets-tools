@@ -75,7 +75,7 @@ def read_text(relative_path):
 
 def maintainers_of(path, conf):
     """The `maintainers` list of a config document, or None after a finding that it is not a list."""
-    items, reason = conf.list_value("maintainers")
+    items, reason = conf.get_list("maintainers")
     if reason is not None:
         finding(path, f"`maintainers` is not a list ({reason})")
         return None
