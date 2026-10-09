@@ -53,7 +53,7 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
-def parts(line: str) -> tuple[str, str, str] | None:
+def parse_comment_line(line: str) -> tuple[str, str, str] | None:
     """(marker, indent, body) of a comment line, or None where `line` is not one."""
     match = COMMENT.match(line)
     return (match.group(1), match.group(2), match.group(3)) if match else None
@@ -71,11 +71,11 @@ def split_row(body: str) -> list[str]:
 
 def carries_table(line: str) -> bool:
     """Whether `line` is a comment line holding a table row or its rule."""
-    read = parts(line)
+    read = parse_comment_line(line)
     return bool(read) and ("|" in read[2] or (is_rule(read[2]) and "+" in read[2]))
 
 
-def numeric_column(cells: list[str]) -> bool:
+def is_numeric_column(cells: list[str]) -> bool:
     """Whether `cells` are a column of numbers: one number at least, and no other content.
 
     A `-` placeholder and an empty cell are neither, so a column of counts with a gap in it is
@@ -171,18 +171,18 @@ def table_blocks(lines: list[str]) -> Iterator[tuple[int, int]]:
                 fence = None
             continue
         held = index not in data and not mark and carries_table(line)
-        if held and (start is None or parts(line)[0] == marker):
+        if held and (start is None or parse_comment_line(line)[0] == marker):
             if start is None:
-                start, marker = index, parts(line)[0]
+                start, marker = index, parse_comment_line(line)[0]
             continue
         if start is not None and index - start > 1 and is_table(lines[start:index]):
             yield start, index
-        start, marker = (index, parts(line)[0]) if held else (None, None)
+        start, marker = (index, parse_comment_line(line)[0]) if held else (None, None)
         if mark and index not in data:
             fence = mark.group(1)
 
 
-def widths(rows: list[list[str]], rules: list[bool]) -> list[int]:
+def compute_column_widths(rows: list[list[str]], rules: list[bool]) -> list[int]:
     """The width of each column: its widest cell, and the widest field its rows were written at.
 
     Keeping the written width is what makes a repair minimal -- a column padded wider than its
@@ -199,19 +199,19 @@ def widths(rows: list[list[str]], rules: list[bool]) -> list[int]:
 
 def aligned(lines: list[str], start: int, end: int) -> list[str]:
     """The block rewritten with one width per column, each cell under its own alignment."""
-    read = [parts(line) for line in lines[start:end]]
+    read = [parse_comment_line(line) for line in lines[start:end]]
     indent = min(len(one[1]) for one in read)
     prefix = read[0][0] + " " * indent
     bodies = [" " * (len(one[1]) - indent) + one[2] for one in read]
     rows = [split_row(body) for body in bodies]
     rules = [is_rule(body) for body in bodies]
-    width = widths(rows, rules)
+    width = compute_column_widths(rows, rules)
 
     ruled = next((index for index, rule in enumerate(rules) if rule), None)
     heading = ruled - 1 if ruled else None
     body_rows = [row for index, (row, rule) in enumerate(zip(rows, rules))
                  if not rule and index != heading]
-    numeric = [numeric_column([row[column] for row in body_rows if column < len(row)])
+    numeric = [is_numeric_column([row[column] for row in body_rows if column < len(row)])
                for column in range(len(width))]
 
     out = []

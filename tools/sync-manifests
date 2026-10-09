@@ -25,7 +25,7 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
-from manifests import expected_manifest_files, stale_manifest_files  # noqa: E402
+from manifests import render_manifest_files, find_stale_manifest_files  # noqa: E402
 from safe_read import RefusedRead, open_directory, read_text_under  # noqa: E402
 from safe_write import replace_file  # noqa: E402
 
@@ -102,15 +102,15 @@ def sync(root_fd: int, root: pathlib.Path, check: bool, collector: FindingCollec
     publisher, sets = read_inputs(root_fd, collector)
     if publisher is None or collector.has_refusals():
         return collector.report()
-    expected = expected_manifest_files(publisher, sets)
+    expected = render_manifest_files(publisher, sets)
     if check:
-        for relative_path, reason in stale_manifest_files(root_fd, expected):
+        for relative_path, reason in find_stale_manifest_files(root_fd, expected):
             collector.refuse(str(relative_path), "set.manifest.plugin" if relative_path.name == "plugin.json" else "repo.marketplace",
                              f"{reason}; run `python3 tools/sync-manifests`")
         return collector.report()
     # A stale copy is replaced as a directory entry, never written through a link or into an inode a second hard link
     # names, on a path whose components are checked; a copy that is not one regular file is reported and left.
-    for relative_path, _ in stale_manifest_files(root_fd, expected):
+    for relative_path, _ in find_stale_manifest_files(root_fd, expected):
         try:
             replace_file(root, relative_path, expected[relative_path].encode("utf-8"))
         except RefusedRead as refusal:

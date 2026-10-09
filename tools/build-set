@@ -44,7 +44,7 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
-from license_policy import allowlist_in_force  # noqa: E402
+from license_policy import resolve_license_allowlist  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_file_under, read_text_under  # noqa: E402
 from safe_write import create_file, replace_file  # noqa: E402
 from set_validation import PROFILE_RELEASE, PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
@@ -107,12 +107,12 @@ def stage_license_texts(root_fd: int, set_name: str, staged: Dict[str, bytes], i
             pass
 
 
-def inventory_text(staged: Dict[str, bytes]) -> str:
+def render_checksum_inventory(staged: Dict[str, bytes]) -> str:
     return "".join(f"{hashlib.sha256(data).hexdigest()}  {relative}\n"
                    for relative, data in sorted(staged.items()) if relative.split("/")[-1] not in INVENTORY_EXCLUDED)
 
 
-def zip_bytes(staged: Dict[str, bytes]) -> bytes:
+def build_zip_archive(staged: Dict[str, bytes]) -> bytes:
     """The deterministic archive of the staged files: sorted entries, fixed timestamps, the plugin root at the top."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -124,7 +124,7 @@ def zip_bytes(staged: Dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def destination_is_a_build(build_root: pathlib.Path, set_name: str) -> bool:
+def is_managed_build_directory(build_root: pathlib.Path, set_name: str) -> bool:
     """True when `build/<set>` is a real directory beside a marker naming this set under this marker version."""
     destination = build_root / set_name
     marker = marker_path(build_root, set_name)
@@ -172,7 +172,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
         return collector.report()
     build_root = check_output_root(root, build_given, "build", collector)
     dist_root = check_output_root(root, dist_given, "dist", collector)
-    allowlist, allowlist_error = allowlist_in_force(publisher)
+    allowlist, allowlist_error = resolve_license_allowlist(publisher)
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
     if collector.has_refusals():
@@ -193,7 +193,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
     stage_license_texts(root_fd, set_name, staged, summary.declared_licenses, collector)
     if collector.has_refusals():
         return collector.report()
-    staged["SHA256SUMS"] = inventory_text(staged).encode("utf-8")
+    staged["SHA256SUMS"] = render_checksum_inventory(staged).encode("utf-8")
 
     build_root.mkdir(parents=True, exist_ok=True)
     staging_root = pathlib.Path(tempfile.mkdtemp(prefix=f".{set_name}.", dir=build_root))
@@ -210,7 +210,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
             return collector.report()
         destination = build_root / set_name
         if destination.exists() or destination.is_symlink():
-            if not destination_is_a_build(build_root, set_name):
+            if not is_managed_build_directory(build_root, set_name):
                 collector.refuse(str(destination), "repo.layout",
                                  f"exists and is not a build of `{set_name}` by this command (no `{marker_path(build_root, set_name).name}` beside it names it); remove it or name another --build")
                 return collector.report()
@@ -227,7 +227,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
     dist_root.mkdir(parents=True, exist_ok=True)
     archive_path = dist_root / f"{fmt.PLUGIN_NAME_PREFIX}{set_name}-{summary.set_conf.get('version')}.zip"
     checksum_path = archive_path.with_suffix(".zip.sha256")
-    archive = zip_bytes(staged)
+    archive = build_zip_archive(staged)
     try:
         replace_file(dist_root, pathlib.PurePath(archive_path.name), archive)
         replace_file(dist_root, pathlib.PurePath(checksum_path.name), f"{hashlib.sha256(archive).hexdigest()}  {archive_path.name}\n".encode("utf-8"))

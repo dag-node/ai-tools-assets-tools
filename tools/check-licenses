@@ -34,8 +34,9 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
-from license_policy import (LICENSE_SIDECAR_SUFFIX, allowlist_in_force, applicable_expressions, check_declared_license,  # noqa: E402
-                            check_license_texts, exception_for, read_reuse_annotations, reuse_glob_problem)
+from license_policy import (LICENSE_SIDECAR_SUFFIX, applicable_expressions, check_declared_license,  # noqa: E402
+                            check_license_texts, exception_for, read_reuse_annotations, resolve_license_allowlist,
+                            reuse_glob_problem)
 from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
 
 NOT_JUDGED = ("LICENSE", "REUSE.toml")
@@ -96,7 +97,7 @@ def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: lis
     except RefusedRead as refusal:
         collector.refuse("publisher.conf", "license.allowlist", f"{refusal.message}; every licence is refused until it is readable")
         return
-    allowlist, allowlist_error = allowlist_in_force(publisher)
+    allowlist, allowlist_error = resolve_license_allowlist(publisher)
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
     allowlist = tuple(allowlist) + allowed

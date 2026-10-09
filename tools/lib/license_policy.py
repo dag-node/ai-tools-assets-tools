@@ -58,11 +58,11 @@ class ReuseAnnotation:
     precedence: str = REUSE_PRECEDENCE_DEFAULT
 
 
-def allowlist_in_force(publisher: Optional[KeyValueDocument]) -> Tuple[Tuple[str, ...], Optional[str]]:
+def resolve_license_allowlist(publisher: Optional[KeyValueDocument]) -> Tuple[Tuple[str, ...], Optional[str]]:
     """The identifiers in force, and the reason the publisher's list is invalid where it is (the list is then empty)."""
     if publisher is None or not publisher.has("licenses"):
         return DEFAULT_LICENSE_ALLOWLIST, None
-    items, reason = publisher.list_value("licenses")
+    items, reason = publisher.get_list("licenses")
     if reason is not None:
         return (), f"publisher.conf `licenses` is not a list ({reason}); every licence is refused until it is fixed"
     return tuple(items), None

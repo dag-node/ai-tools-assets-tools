@@ -24,33 +24,33 @@ def plugin_name(set_name: str) -> str:
     return PLUGIN_NAME_PREFIX + set_name
 
 
-def author_document(publisher: KeyValueDocument) -> Dict[str, str]:
+def build_author_document(publisher: KeyValueDocument) -> Dict[str, str]:
     return {"name": publisher.get("publisher"), "email": publisher.get("contact")}
 
 
-def portable_plugin_document(set_conf: KeyValueDocument, publisher: KeyValueDocument) -> Dict[str, object]:
+def build_portable_plugin_document(set_conf: KeyValueDocument, publisher: KeyValueDocument) -> Dict[str, object]:
     return {
         "$schema": PORTABLE_PLUGIN_SCHEMA,
         "name": plugin_name(set_conf.get("name")),
         "version": set_conf.get("version"),
         "description": set_conf.get("summary"),
-        "author": author_document(publisher),
+        "author": build_author_document(publisher),
         "homepage": publisher.get("source"),
         "repository": publisher.get("source"),
         "license": set_conf.get("license"),
     }
 
 
-def claude_plugin_document(set_conf: KeyValueDocument, publisher: KeyValueDocument) -> Dict[str, object]:
-    document = portable_plugin_document(set_conf, publisher)
+def build_claude_plugin_document(set_conf: KeyValueDocument, publisher: KeyValueDocument) -> Dict[str, object]:
+    document = build_portable_plugin_document(set_conf, publisher)
     del document["$schema"]
     return document
 
 
-def marketplace_document(publisher: KeyValueDocument, sets: Sequence[Tuple[str, KeyValueDocument]]) -> Dict[str, object]:
+def build_marketplace_document(publisher: KeyValueDocument, sets: Sequence[Tuple[str, KeyValueDocument]]) -> Dict[str, object]:
     return {
         "name": publisher.get("publisher") + MARKETPLACE_NAME_SUFFIX,
-        "owner": author_document(publisher),
+        "owner": build_author_document(publisher),
         "description": publisher.get("description"),
         "plugins": [
             {
@@ -68,19 +68,19 @@ def render_json(document: Dict[str, object]) -> str:
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
 
 
-def expected_manifest_files(publisher: KeyValueDocument, sets: Sequence[Tuple[str, KeyValueDocument]]) -> Dict[Path, str]:
+def render_manifest_files(publisher: KeyValueDocument, sets: Sequence[Tuple[str, KeyValueDocument]]) -> Dict[Path, str]:
     """Every generated file of a repository, keyed by its path relative to the repository root."""
-    files: Dict[Path, str] = {MARKETPLACE_PATH: render_json(marketplace_document(publisher, sets))}
+    files: Dict[Path, str] = {MARKETPLACE_PATH: render_json(build_marketplace_document(publisher, sets))}
     for set_name, set_conf in sets:
         set_directory = Path("sets") / set_name
-        files[set_directory / PORTABLE_PLUGIN_MANIFEST] = render_json(portable_plugin_document(set_conf, publisher))
+        files[set_directory / PORTABLE_PLUGIN_MANIFEST] = render_json(build_portable_plugin_document(set_conf, publisher))
         files[set_directory / CLAUDE_PLUGIN_DIRECTORY / CLAUDE_PLUGIN_MANIFEST] = render_json(
-            claude_plugin_document(set_conf, publisher))
+            build_claude_plugin_document(set_conf, publisher))
     return files
 
 
-def stale_manifest_files(root_fd: int, expected: Dict[Path, str]) -> List[Tuple[Path, str]]:
-    """The expected files whose committed copy under `root_fd` is absent, unreadable or differs, each with the reason."""
+def find_stale_manifest_files(root_fd: int, expected: Dict[Path, str]) -> List[Tuple[Path, str]]:
+    """The expected files whose committed copy under `root_fd` is absent, unreadable or differs, with the reason."""
     stale: List[Tuple[Path, str]] = []
     for relative_path, text in expected.items():
         try:
