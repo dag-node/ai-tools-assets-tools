@@ -15,9 +15,9 @@ names it. This repository holds what every such repository shares: the format
 a set follows, the validator that applies it, the scaffolding and build
 commands, and the GitHub workflows that run them.
 
-**Status.** Format 1, the commands, the fixtures, the workflows and the
-signed set release are released as `v1.0.0`, which `v1` names. A publisher
-calls the workflows at `v1` or at a commit, and runs the tools from the RPM
+**Status.** Format 1, the commands, the fixtures, the workflows and the signed
+set release are released as `v1.1.0`, which `v1` names. A publisher calls
+the workflows at `v1` or at a commit, and runs the tools from the RPM
 `ai-tools-assets-tools` or from a checkout.
 
 ## Layout
