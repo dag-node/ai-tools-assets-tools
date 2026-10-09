@@ -64,7 +64,7 @@ def render(template: str, values: Dict[str, str]) -> str:
     return PLACEHOLDER.sub(lambda match: json.dumps(values[match.group(1)]), template)
 
 
-def release(dist: str) -> str:
+def format_rpm_release(dist: str) -> str:
     if not DIST_TAG.fullmatch(dist):
         raise RenderError(f"`{dist}` is not a dist tag elN or fcN")
     return f"1.{dist}"
@@ -81,7 +81,7 @@ def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.
     return {
         "NAME": PACKAGE_PREFIX + set_name,
         "VERSION": version,
-        "RELEASE": release(dist),
+        "RELEASE": format_rpm_release(dist),
         "SUMMARY": set_conf.get("summary"),
         "LICENSE": set_conf.get("license"),
         "MAINTAINER": f"{publisher} <{publisher_conf.get('contact')}>",
@@ -96,7 +96,7 @@ def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.
 def tools_values(version: str, dist: str) -> Dict[str, str]:
     if not SEMVER_PATTERN.match(version):
         raise RenderError(f"`{version}` is not a semantic version")
-    return {"VERSION": version, "RELEASE": release(dist)}
+    return {"VERSION": version, "RELEASE": format_rpm_release(dist)}
 
 
 def main() -> int:

@@ -25,8 +25,8 @@ from findings import FindingCollector
 from frontmatter import FrontmatterDocument, FrontmatterValue, Scalar, split_frontmatter
 from key_value_config import KeyValueDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
-from manifests import claude_plugin_document, portable_plugin_document, render_json
-from markdown_links import relative_link_targets
+from manifests import build_claude_plugin_document, build_portable_plugin_document, render_json
+from markdown_links import iter_relative_link_targets
 from portable_name import propose_portable_name
 from safe_read import RefusedRead, open_directory, open_root, read_file
 
@@ -410,7 +410,7 @@ class _SetValidator:
             self.refuse(relative_path, "set.conf.version", f"`version={set_conf.get('version')}` is not a semantic version")
         for key in fmt.SET_CONF_LIST_KEYS:
             if set_conf.has(key):
-                items, reason = set_conf.list_value(key)
+                items, reason = set_conf.get_list(key)
                 if reason is not None:
                     self.refuse(relative_path, "set.conf.syntax", f"`{key}` is not a list ({reason}); write it as [a, b]")
                 elif not items and key in fmt.SET_CONF_REQUIRED:
@@ -491,7 +491,7 @@ class _SetValidator:
             if unknown:
                 self.refuse(relative_path, "set.manifest.plugin", "carries " + ", ".join(f"`{key}`" for key in unknown) + "; a set manifest carries " + ", ".join(sorted(fmt.PLUGIN_MANIFEST_ALLOWED_KEYS)) + " alone")
             if self.options.publisher_conf is not None and not declared and not unknown:
-                rendered = render_json((portable_plugin_document if is_portable else claude_plugin_document)(set_conf, self.options.publisher_conf))
+                rendered = render_json((build_portable_plugin_document if is_portable else build_claude_plugin_document)(set_conf, self.options.publisher_conf))
                 if record.text != rendered:
                     self.refuse(relative_path, "set.manifest.plugin", "differs from what sync-manifests writes from set.conf and publisher.conf")
 
@@ -722,7 +722,7 @@ class _SetValidator:
         document = parse_key_value_text(record.text)
         if document.syntax_errors():
             return set()
-        items, reason = document.list_value("requires_capabilities")
+        items, reason = document.get_list("requires_capabilities")
         return set(items) if reason is None else set()
 
     def check_body(self, relative_path: Path, text: str, injection_refusal: Optional[str]) -> None:
@@ -741,7 +741,7 @@ class _SetValidator:
         directory, is not one of `asset_files`, the asset's regular files; a subagent's asset is its one file."""
         document, body = split_frontmatter(text)
         first_line_number = document.body_start_line if document.present and document.body_start_line else 1
-        for line_number, target in relative_link_targets(body.split("\n"), first_line_number):
+        for line_number, target in iter_relative_link_targets(body.split("\n"), first_line_number):
             resolved = Path(posixpath.normpath(posixpath.join(entry_file.parent.as_posix(), target)))
             if resolved not in asset_files:
                 self.refuse(entry_file, "body.relative-link", f"line {line_number} links `{target}`, which is not a file of this asset; a skill links its own files relative to its root, and another skill by name")
@@ -863,7 +863,7 @@ class _SetValidator:
         for key in fmt.ASSET_CONF_LIST_KEYS:
             if not document.has(key):
                 continue
-            items, reason = document.list_value(key)
+            items, reason = document.get_list(key)
             if reason is not None:
                 self.refuse(relative_path, "metadata.asset-conf", f"`{key}` is not a list ({reason})")
                 continue

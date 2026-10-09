@@ -21,7 +21,7 @@ REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]\n]+\]:[ \t]*(<[^<>\n]*>|\S+)")
 URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
-def relative_link_targets(lines: Sequence[str], first_line_number: int = 1) -> Iterator[Tuple[int, str]]:
+def iter_relative_link_targets(lines: Sequence[str], first_line_number: int = 1) -> Iterator[Tuple[int, str]]:
     """Each relative link target in `lines`, fragment removed, with the number of the line it stands on."""
     fence = ""
     for line_number, line in enumerate(lines, start=first_line_number):

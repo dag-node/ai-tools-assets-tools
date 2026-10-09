@@ -45,7 +45,7 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
-from license_policy import allowlist_in_force  # noqa: E402
+from license_policy import resolve_license_allowlist  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
 from safe_write import replace_file  # noqa: E402
 from set_validation import PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
@@ -95,7 +95,7 @@ def write_record(record: pathlib.Path, placed: Record, collector: FindingCollect
         record.unlink()
 
 
-def copy_inventory_digest(directory: pathlib.Path) -> str:
+def compute_directory_digest(directory: pathlib.Path) -> str:
     """The SHA-256 over every entry under `directory`: its relative path and, for a regular file, its content's digest;
     another entry type contributes its type, so a link or a special file placed into a copy changes the digest."""
     inventory = hashlib.sha256()
@@ -119,7 +119,7 @@ def matches_installation_record(destination: pathlib.Path, mode: str, identity: 
     """True while the entry at `destination` is the link or the copy the record describes."""
     if mode == MODE_LINK:
         return destination.is_symlink() and os.readlink(destination) == identity
-    return destination.is_dir() and not destination.is_symlink() and copy_inventory_digest(destination) == identity
+    return destination.is_dir() and not destination.is_symlink() and compute_directory_digest(destination) == identity
 
 
 def remove_installed_skills(target: pathlib.Path, set_name: str, collector: FindingCollector) -> int:
@@ -148,7 +148,7 @@ def remove_installed_skills(target: pathlib.Path, set_name: str, collector: Find
     return collector.report()
 
 
-def validated_skill_names(root: pathlib.Path, set_name: str, collector: FindingCollector) -> Optional[list]:
+def validate_set_and_list_skill_names(root: pathlib.Path, set_name: str, collector: FindingCollector) -> Optional[list]:
     """The names of the skills the validator recorded for the set, or None when the set did not validate.
 
     The root is the operator's argument; `sets/` and the set are opened from its descriptor without following a link,
@@ -169,7 +169,7 @@ def validated_skill_names(root: pathlib.Path, set_name: str, collector: FindingC
         except RefusedRead as refusal:
             collector.refuse("publisher.conf or sets", "repo.layout", refusal.message)
             return None
-        allowlist, allowlist_error = allowlist_in_force(publisher)
+        allowlist, allowlist_error = resolve_license_allowlist(publisher)
         if allowlist_error:
             collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
         options = ValidationOptions(publisher=publisher.get("publisher") or None, profile=PROFILE_SOURCE,
@@ -207,7 +207,7 @@ def main() -> int:
     target = args.target.expanduser().resolve()
     if args.remove:
         return remove_installed_skills(target, args.set, collector)
-    names = validated_skill_names(root, args.set, collector)
+    names = validate_set_and_list_skill_names(root, args.set, collector)
     if names is None:
         return collector.report()
     skills_root = root / "sets" / args.set / "skills"
@@ -233,7 +233,7 @@ def main() -> int:
             continue
         if args.copy:
             shutil.copytree(skill, destination, symlinks=False)
-            placed[skill.name] = (MODE_COPY, copy_inventory_digest(destination))
+            placed[skill.name] = (MODE_COPY, compute_directory_digest(destination))
         else:
             destination.symlink_to(skill, target_is_directory=True)
             placed[skill.name] = (MODE_LINK, str(skill))

@@ -21,7 +21,7 @@ import set_validation  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from frontmatter import Scalar, split_frontmatter  # noqa: E402
 from key_value_config import parse_key_value_text, parse_list_value  # noqa: E402
-from markdown_links import relative_link_targets  # noqa: E402
+from markdown_links import iter_relative_link_targets  # noqa: E402
 from portable_name import propose_portable_name  # noqa: E402
 from spdx_expression import evaluate_expression  # noqa: E402
 
@@ -33,7 +33,7 @@ class KeyValueGrammar(unittest.TestCase):
         document = parse_key_value_text('# c\nformat=1\nname = core\nsummary="Community baseline" # x\nempty=\nq="[a]"\n')
         self.assertEqual(document.values, {"format": "1", "name": "core", "summary": "Community baseline", "empty": "", "q": "[a]"})
         self.assertTrue(document.has("empty"))
-        self.assertEqual(document.list_value("q"), ((), "a bracketed list is written without quotes around it"))
+        self.assertEqual(document.get_list("q"), ((), "a bracketed list is written without quotes around it"))
         self.assertEqual(document.syntax_errors(), [])
 
     def test_reports_a_line_without_equals_and_a_repeated_key(self):
@@ -399,7 +399,7 @@ class WalkReadsEachFileOnce(unittest.TestCase):
 
 class MarkdownLinks(unittest.TestCase):
     def targets(self, text: str):
-        return list(relative_link_targets(text.split("\n")))
+        return list(iter_relative_link_targets(text.split("\n")))
 
     def test_reads_inline_links_images_and_definitions(self):
         text = ("[a](references/a.md) ![b](assets/b.txt \"title\") [c](<scripts/c d.py>)\n"
@@ -413,7 +413,7 @@ class MarkdownLinks(unittest.TestCase):
         self.assertEqual(self.targets(text), [(10, "after.md")])
 
     def test_numbers_lines_from_the_first_line_given(self):
-        self.assertEqual(list(relative_link_targets(["", "[a](a.md)"], 7)), [(8, "a.md")])
+        self.assertEqual(list(iter_relative_link_targets(["", "[a](a.md)"], 7)), [(8, "a.md")])
 
 
 class FormatRegistry(unittest.TestCase):

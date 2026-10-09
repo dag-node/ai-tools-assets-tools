@@ -131,7 +131,7 @@ def main() -> int:
                          "the summary carries both quote characters; the KEY=value grammar has no escape, so a value carries one kind at most")
     if collector.has_refusals():
         return collector.report()
-    maintainers, reason = publisher.list_value("maintainers")
+    maintainers, reason = publisher.get_list("maintainers")
     if reason is not None:
         collector.refuse("publisher.conf", "repo.publisher-conf", f"`maintainers` does not read as a list ({reason})")
         return collector.report()

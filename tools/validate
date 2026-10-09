@@ -41,8 +41,8 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
-from license_policy import allowlist_in_force  # noqa: E402
-from manifests import MARKETPLACE_PATH, expected_manifest_files, stale_manifest_files  # noqa: E402
+from license_policy import resolve_license_allowlist  # noqa: E402
+from manifests import MARKETPLACE_PATH, render_manifest_files, find_stale_manifest_files  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
 from set_validation import (PROFILE_SOURCE, PROFILES, ValidationOptions, dynamic_injection_setting,  # noqa: E402
                             read_reserved_words, validate_set_directory)
@@ -117,7 +117,7 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
     _, setting_error = dynamic_injection_setting(publisher_conf)
     if setting_error:
         collector.refuse("publisher.conf", "repo.publisher-conf", setting_error)
-    allowlist, allowlist_error = allowlist_in_force(publisher_conf)
+    allowlist, allowlist_error = resolve_license_allowlist(publisher_conf)
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
 
@@ -154,8 +154,8 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
     if not only_sets:
         # Each set's manifests were compared inside its validation (the options carry publisher.conf); the marketplace
         # is the repository's one generated file left.
-        expected = {MARKETPLACE_PATH: expected_manifest_files(publisher_conf, validated)[MARKETPLACE_PATH]}
-        for relative_path, reason in stale_manifest_files(root_fd, expected):
+        expected = {MARKETPLACE_PATH: render_manifest_files(publisher_conf, validated)[MARKETPLACE_PATH]}
+        for relative_path, reason in find_stale_manifest_files(root_fd, expected):
             collector.refuse(str(relative_path), "repo.marketplace", f"{reason}; run `python3 tools/sync-manifests`")
 
 
