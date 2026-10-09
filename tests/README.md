@@ -13,6 +13,7 @@ holds one concern:
 | `test_fixtures.py` | `tools/validate` over every fixture under `fixtures/`, each to its `fixture.conf`; the trees git does not carry (a hard link, a special file, an over-size file), built in a temporary directory |
 | `test_commands.py` | the commands over a publisher repository composed from the passing fixture: scaffolding, the stale-manifest check, the build's inventory and zip, `link-set`, `check-licenses`, `check-signoff` over a synthetic history |
 | `test_packaging.py` | `packaging/render-nfpm.py` over a set `build-set` staged: the rendered package fields, the refusals, and a value that stays one quoted scalar |
+| `test_formatters.py` | `formatters/verify-reflow.py` over a scratch repository: a pure reflow, a changed word, a base that does not exist, a path one copy does not hold |
 | `test_rules_documented.py` | the rule registry, `format/FORMAT.md` and the fixtures agree: every rule is documented and has a fixture or a named test |
 | `fixture_generator.py` | not a test: writes the fixtures from one base tree (`generate`), and `check` fails when a committed fixture differs |
 

@@ -51,10 +51,13 @@ its reader as written and a page's rules would report the fill itself:
   it at the end of the line it marks.
 
 Exits 0 when every path passes and 1 otherwise, printing the path, the check that failed, and the
-position. A path the base does not hold is reported as skipped rather than as a pass. Both copies
-are read through `formatters/text_file.py`, so a copy that is not plain text is reported as a failure
-with its reason and no token of it reaches the terminal; a path that resolves outside the tree or
-the base directory is refused the same way. This is the mechanical half of the reflow gate;
+position. The base is verified before any path is read -- `--base` names a tree of the repository,
+`--against` names a directory -- and a run whose base does not exist exits 1 on that alone, so a
+misspelt revision is an error rather than a run of skipped paths. A path the tree holds and the base
+does not is reported as skipped rather than as a pass; a path the tree does not hold is a failure.
+Both copies are read through `formatters/text_file.py`, so a copy that is not plain text is reported
+as a failure with its reason and no token of it reaches the terminal; a path that resolves outside
+the tree or the base directory is refused the same way. This is the mechanical half of the reflow gate;
 `prose-check.py --kept` is the other half and judges a REWRITE, which a reflow that passes here
 has not made.
 """
@@ -217,9 +220,32 @@ def inside(root: pathlib.Path, path: str) -> pathlib.Path:
     return resolved
 
 
+def base_problem(repo: pathlib.Path, revision: str | None, against: pathlib.Path | None) -> str | None:
+    """What keeps the base from being read at all, or None: `--against` does not name a directory, or `--base`
+    does not name a tree of `repo` (a misspelt revision, a repository that is none, a git that cannot run).
+
+    Checked once before any path, since `base_text` reads a nonzero `git show` as a path the base
+    does not hold, and that reading is sound only once the revision itself is known to resolve.
+    """
+    if against is not None:
+        return None if against.is_dir() else f"--against {against} is not a directory"
+    try:
+        verified = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", "--end-of-options", f"{revision}^{{tree}}"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT, check=False)
+    except OSError as exc:
+        return f"git cannot run: {exc.strerror}"
+    if verified.returncode:
+        return f"--base {revision}: " + (verified.stderr.strip() or f"not a tree of {repo}")
+    return None
+
+
 def base_text(repo: pathlib.Path, revision: str | None, against: pathlib.Path | None,
               path: str) -> str | None:
-    """The base copy of `path`, or None where the base does not hold it."""
+    """The base copy of `path`, or None where the base does not hold it.
+
+    The base itself is one `base_problem` has passed, so a nonzero `git show` is the path's absence.
+    """
     if against is not None:
         try:
             return text_file.read(str(inside(against, path)))[0]
@@ -240,12 +266,12 @@ def verify(repo: pathlib.Path, revision: str | None, against: pathlib.Path | Non
     """
     source = not path.endswith(PROSE_WHOLE_FILE) if force is None else force
     try:
-        tree = inside(repo, path)
+        # The tree copy first: a path the tree does not hold is unreadable, not a skip.
+        after = partition(text_file.read(str(inside(repo, path)))[0], source)
         base = base_text(repo, revision, against, path)
         if base is None:
             return "skipped", f"the base does not hold {path}"
         before = partition(base, source)
-        after = partition(text_file.read(str(tree))[0], source)
     except text_file.Refused as exc:
         return "refused", exc.reason
     except OSError as exc:
@@ -282,6 +308,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     repo = pathlib.Path(args.repo).resolve()
     against = pathlib.Path(args.against).resolve() if args.against else None
+    problem = base_problem(repo, args.revision, against)
+    if problem is not None:
+        print(f"verify-reflow: {problem}", file=sys.stderr)
+        return 1
 
     failed = skipped = passed = 0
     for path in args.paths:
