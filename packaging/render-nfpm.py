@@ -4,9 +4,13 @@
 # set.conf and the repository's publisher.conf, or of this repository's tools RPM from nfpm-tools.yaml.in.
 #
 # ```bash
-# python3 packaging/render-nfpm.py set --root . --set <set> --version <version> --staged build/<set> --output <file>
-# python3 packaging/render-nfpm.py tools --version <version> --output <file>
+# python3 packaging/render-nfpm.py set --set <set> --version <version> --staged build/<set> --dist el9 --output <file>
+# python3 packaging/render-nfpm.py tools --version <version> --dist el9 --output <file>
 # ```
+#
+# `--dist` is the dist tag of one served distribution (el9, fc44), and the package's Release is `1.<dist>`:
+# dag-node/rpm places a package into the tree its file name's dist tag names and skips a package without one, so
+# release-steps.sh build-rpm renders one configuration per distribution it lists.
 #
 # The release workflow runs it after tools/build-set has validated and staged the set, so the values come from the
 # set.conf that ships. It refuses a set.conf the KEY=value reader reports a problem in, a `name` other than `--set` and
@@ -31,6 +35,7 @@ from asset_format import SEMVER_PATTERN  # noqa: E402
 from key_value_config import KeyValueDocument, parse_key_value_text  # noqa: E402
 
 PLACEHOLDER = re.compile(r"@([A-Z_]+)@")
+DIST_TAG = re.compile(r"(el|fc)[1-9][0-9]*")
 PACKAGE_PREFIX = "ai-tools-assets-"
 INSTALL_ROOT = "/usr/share/ai-tools-assets"
 
@@ -59,7 +64,13 @@ def render(template: str, values: Dict[str, str]) -> str:
     return PLACEHOLDER.sub(lambda match: json.dumps(values[match.group(1)]), template)
 
 
-def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.Path) -> Dict[str, str]:
+def release(dist: str) -> str:
+    if not DIST_TAG.fullmatch(dist):
+        raise RenderError(f"`{dist}` is not a dist tag elN or fcN")
+    return f"1.{dist}"
+
+
+def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.Path, dist: str) -> Dict[str, str]:
     set_conf = read_config(staged / "set.conf")
     publisher_conf = read_config(root / "publisher.conf")
     if set_conf.get("name") != set_name:
@@ -70,6 +81,7 @@ def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.
     return {
         "NAME": PACKAGE_PREFIX + set_name,
         "VERSION": version,
+        "RELEASE": release(dist),
         "SUMMARY": set_conf.get("summary"),
         "LICENSE": set_conf.get("license"),
         "MAINTAINER": f"{publisher} <{publisher_conf.get('contact')}>",
@@ -81,10 +93,10 @@ def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.
     }
 
 
-def tools_values(version: str) -> Dict[str, str]:
+def tools_values(version: str, dist: str) -> Dict[str, str]:
     if not SEMVER_PATTERN.match(version):
         raise RenderError(f"`{version}` is not a semantic version")
-    return {"VERSION": version}
+    return {"VERSION": version, "RELEASE": release(dist)}
 
 
 def main() -> int:
@@ -95,16 +107,17 @@ def main() -> int:
     set_command.add_argument("--set", dest="set_name", required=True, help="the set the tag names")
     set_command.add_argument("--version", required=True, help="the version the tag names")
     set_command.add_argument("--staged", type=pathlib.Path, required=True, help="the set tools/build-set staged")
-    set_command.add_argument("--output", type=pathlib.Path, required=True, help="the configuration file to write")
     tools_command = commands.add_parser("tools", help="this repository's tools RPM")
     tools_command.add_argument("--version", required=True, help="the version the tag names")
-    tools_command.add_argument("--output", type=pathlib.Path, required=True, help="the configuration file to write")
+    for command in (set_command, tools_command):
+        command.add_argument("--dist", required=True, help="the dist tag of the RPM's distribution, elN or fcN")
+        command.add_argument("--output", type=pathlib.Path, required=True, help="the configuration file to write")
     arguments = parser.parse_args()
     try:
         if arguments.command == "set":
-            values = set_values(arguments.root, arguments.set_name, arguments.version, arguments.staged)
+            values = set_values(arguments.root, arguments.set_name, arguments.version, arguments.staged, arguments.dist)
         else:
-            values = tools_values(arguments.version)
+            values = tools_values(arguments.version, arguments.dist)
         template = PACKAGING / f"nfpm-{arguments.command}.yaml.in"
         text = render(template.read_text(encoding="utf-8"), values)
         arguments.output.write_text(text, encoding="utf-8")

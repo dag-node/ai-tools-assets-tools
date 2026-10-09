@@ -75,9 +75,9 @@ class RenderSetConfiguration(TemplateRules, unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root.parent)
 
-    def render(self, version="0.1.0", set_name="acme"):
+    def render(self, version="0.1.0", set_name="acme", dist="el9"):
         return run(RENDER, "set", "--root", str(self.root), "--set", set_name, "--version", version,
-                   "--staged", str(self.staged), "--output", str(self.output))
+                   "--staged", str(self.staged), "--dist", dist, "--output", str(self.output))
 
     def rendered(self) -> dict:
         """The rendered top-level `key: value` lines whose value is a JSON string, by key."""
@@ -96,7 +96,7 @@ class RenderSetConfiguration(TemplateRules, unittest.TestCase):
         self.assertEqual(self.rendered(), {
             "name": "ai-tools-assets-acme",
             "version": "0.1.0",
-            "release": "1",
+            "release": "1.el9",
             "maintainer": "acme <tools@acme.example>",
             "vendor": "acme",
             "homepage": "https://github.com/acme/ai-tools-assets",
@@ -113,6 +113,19 @@ class RenderSetConfiguration(TemplateRules, unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("not the tag's `0.2.0`", stderr)
         self.assertFalse(self.output.exists())
+
+    def test_each_dist_tag_names_the_release(self):
+        for dist in ("el10", "fc44"):
+            status, _, stderr = self.render(dist=dist)
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(self.rendered()["release"], f"1.{dist}")
+
+    def test_a_dist_that_is_not_a_dist_tag_is_refused(self):
+        for dist in ("", "el", "el09", "noarch", "el9.x", "fc44\n"):
+            status, _, stderr = self.render(dist=dist)
+            self.assertEqual(status, 1, dist)
+            self.assertIn("is not a dist tag", stderr)
+            self.assertFalse(self.output.exists())
 
     def test_a_set_other_than_the_tags_is_refused(self):
         status, _, stderr = self.render(set_name="other")
@@ -146,10 +159,12 @@ class RenderToolsConfiguration(TemplateRules, unittest.TestCase):
         shutil.rmtree(self.directory)
 
     def test_the_tag_version_renders_and_every_installed_path_is_in_the_tree(self):
-        status, _, stderr = run(RENDER, "tools", "--version", "1.0.0-rc.1", "--output", str(self.output))
+        status, _, stderr = run(RENDER, "tools", "--version", "1.0.0-rc.1", "--dist", "fc44",
+                                "--output", str(self.output))
         self.assertEqual(status, 0, stderr)
         text = self.output.read_text(encoding="utf-8")
         self.assertIn('version: "1.0.0-rc.1"', text)
+        self.assertIn('release: "1.fc44"', text)
         self.assertNotRegex(text, r"@[A-Z_]+@")
         sources = [line.split("src: ", 1)[1] for line in text.splitlines() if line.strip().startswith("- src: ")]
         self.assertEqual(sources, ["tools", "format", "fixtures", "formatters", "LICENSES", "LICENSE"])
@@ -158,7 +173,7 @@ class RenderToolsConfiguration(TemplateRules, unittest.TestCase):
         self.assert_no_entry_at_a_tree_destination(text)
 
     def test_a_version_that_is_not_semantic_is_refused(self):
-        status, _, stderr = run(RENDER, "tools", "--version", "1.0", "--output", str(self.output))
+        status, _, stderr = run(RENDER, "tools", "--version", "1.0", "--dist", "el9", "--output", str(self.output))
         self.assertEqual(status, 1)
         self.assertIn("not a semantic version", stderr)
         self.assertFalse(self.output.exists())

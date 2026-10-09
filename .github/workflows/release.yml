@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Releases this repository's tooling for a tag v<semver>: verifies the tag's signature against the maintainer's pinned
 # key, runs the suite, writes the source archive with its SHA-256 and a detached signature by the org package-signing
-# key, builds the RPM ai-tools-assets-tools from that archive, signs it inside an EL9 container and verifies it in EL9
-# and EL10, creates the GitHub release with the archive, its .sha256 and .asc and the RPM, and asks dag-node/rpm to
-# publish the RPM at rpm.dagnode.com. A prerelease tag (v1.1.0-rc.1) creates a prerelease and does not dispatch.
+# key, builds the RPM ai-tools-assets-tools from that archive once for each distribution rpm.dagnode.com serves, signs
+# the RPMs inside an EL9 container and verifies each in its own distribution, creates the GitHub release with
+# the archive, its .sha256 and .asc and the RPMs, and asks dag-node/rpm to publish the RPMs at rpm.dagnode.com.
+# A prerelease tag (v1.1.0-rc.1) creates a prerelease and does not dispatch.
 # A consumer (ai-tools-base's CI, a publisher's tools.pin) pins the tag and verifies the archive against the org key's
 # primary, 67F42DC18BF764B42D82F14256D2F802CF9832E4; a host installs the RPM from rpm.dagnode.com.
 #
@@ -98,7 +99,7 @@ jobs:
       # The RPM is built from the archive's extracted tree, so it carries the bytes the archive and its signature cover.
       # nFPM takes each mode from that tree and only clears bits, and tar extracts under the shell's umask, so the
       # umask is set here: files 0644 and directories 0755, which an operator reads and traverses on a host.
-      - name: Build the unsigned tools RPM from the archive with the pinned nFPM, timestamps from the tag's commit
+      - name: Build the unsigned tools RPMs from the archive with the pinned nFPM, timestamps from the tag's commit
         run: |
           set -euo pipefail
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$RELEASE_COMMIT")"
@@ -106,17 +107,15 @@ jobs:
           umask 022
           tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP"
           find "$RUNNER_TEMP/ai-tools-assets-tools-$VERSION" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
-          python3 packaging/render-nfpm.py tools --version "$VERSION" --output "$RUNNER_TEMP/nfpm.yaml"
           (cd "$RUNNER_TEMP/ai-tools-assets-tools-$VERSION" \
-            && bash "$GITHUB_WORKSPACE/packaging/release-steps.sh" build-rpm "$RUNNER_TEMP/nfpm.yaml" "$GITHUB_WORKSPACE/dist/rpm")
-          rpms=(dist/rpm/*.rpm)
-          echo "RPM=${rpms[0]}" >> "$GITHUB_ENV"
+            && bash "$GITHUB_WORKSPACE/packaging/release-steps.sh" build-rpm "$GITHUB_WORKSPACE/dist/rpm" \
+              tools --version "$VERSION")
 
-      - name: Sign the RPM in EL9 and verify its signature in EL9 and EL10
+      - name: Sign the RPMs in EL9 and verify each signature in its own distribution
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
-        run: bash packaging/release-steps.sh sign-rpm "$RPM"
+        run: bash packaging/release-steps.sh sign-rpm dist/rpm/*.rpm
 
       - name: Create the release from the verified tag, once the remote still names that tag object
         env:
@@ -124,9 +123,9 @@ jobs:
         run: |
           bash packaging/release-steps.sh create-release "$TAG" \
             "Tooling release $TAG. Verify the archive with its .asc and the RPM with rpmkeys -K against the dag-node package-signing key, primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT." \
-            "$ARCHIVE" "$ARCHIVE.sha256" "$ARCHIVE.asc" "$RPM"
+            "$ARCHIVE" "$ARCHIVE.sha256" "$ARCHIVE.asc" dist/rpm/*.rpm
 
-      - name: Notify dag-node/rpm to publish the RPM
+      - name: Notify dag-node/rpm to publish the RPMs
         if: env.DISPATCH_RPM == 'true'
         env:
           RPM_REPO_DISPATCH_TOKEN: ${{ secrets.RPM_REPO_DISPATCH_TOKEN }}

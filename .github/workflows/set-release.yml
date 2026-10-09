@@ -18,12 +18,13 @@
 #         tools-repository: ''            # a fork of this repository the tools are checked out from, as <owner>/<repo>
 #
 # The job verifies the tag, validates and builds the set with tools/build-set, signs SHA256SUMS and the zip with the
-# org package-signing key, packages the staged set as the RPM ai-tools-assets-<set> with nFPM, signs the RPM inside an
-# EL9 container and verifies it in EL9 and EL10, and creates the release with the zip, its .sha256 and .asc,
-# SHA256SUMS, SHA256SUMS.asc and the RPM; the zip holds the set build-set staged, and SHA256SUMS.asc is a release asset
-# beside it and a file in the RPM. Each step runs packaging/release-steps.sh, the same steps this repository's own
-# release.yml runs; that file states each step's checks and how the key material is held. A prerelease version
-# (<set>/v1.2.0-rc.1) creates a prerelease and does not dispatch.
+# org package-signing key, packages the staged set as the RPM ai-tools-assets-<set> with nFPM once for each
+# distribution rpm.dagnode.com serves, signs the RPMs inside an EL9 container and verifies each in its own distribution,
+# and creates the release with the zip, its .sha256 and .asc, SHA256SUMS, SHA256SUMS.asc and the RPMs; the zip holds
+# the set build-set staged, and SHA256SUMS.asc is a release asset beside it and a file in each RPM. Each step runs
+# packaging/release-steps.sh, the same steps this repository's own release.yml runs; that file states each step's
+# checks and how the key material is held. A prerelease version (<set>/v1.2.0-rc.1) creates a prerelease and does not
+# dispatch.
 #
 # The job declares `environment: release`, so it runs under the caller's environment of that name: its deployment
 # policy admits tags and no branch, which keeps a branch push and a fork's pull request away from the secrets. The
@@ -188,23 +189,20 @@ jobs:
           GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
         run: bash "$TOOLS/packaging/release-steps.sh" sign-files "build/$SET/SHA256SUMS" "$ZIP"
 
-      - name: Build the unsigned RPM of the staged set with the pinned nFPM, timestamps from the tag's commit
+      - name: Build the unsigned RPMs of the staged set with the pinned nFPM, timestamps from the tag's commit
         run: |
           set -euo pipefail
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$RELEASE_COMMIT")"
           export SOURCE_DATE_EPOCH
           find "build/$SET" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
-          python3 "$TOOLS/packaging/render-nfpm.py" set --set "$SET" --version "$VERSION" \
-            --staged "build/$SET" --output "$RUNNER_TEMP/nfpm.yaml"
-          bash "$TOOLS/packaging/release-steps.sh" build-rpm "$RUNNER_TEMP/nfpm.yaml" dist/rpm
-          rpms=(dist/rpm/*.rpm)
-          echo "RPM=${rpms[0]}" >> "$GITHUB_ENV"
+          bash "$TOOLS/packaging/release-steps.sh" build-rpm dist/rpm \
+            set --set "$SET" --version "$VERSION" --staged "build/$SET"
 
-      - name: Sign the RPM in EL9 and verify its signature in EL9 and EL10
+      - name: Sign the RPMs in EL9 and verify each signature in its own distribution
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
-        run: bash "$TOOLS/packaging/release-steps.sh" sign-rpm "$RPM"
+        run: bash "$TOOLS/packaging/release-steps.sh" sign-rpm dist/rpm/*.rpm
 
       - name: Create the release from the verified tag, once the remote still names that tag object
         env:
@@ -212,9 +210,9 @@ jobs:
         run: |
           bash "$TOOLS/packaging/release-steps.sh" create-release "$TAG" \
             "Set $SET $VERSION. The zip, SHA256SUMS and the RPM are signed by the package-signing key, primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; verify the zip with its .asc, the set with SHA256SUMS.asc, and the RPM with rpmkeys -K." \
-            "$ZIP" "$ZIP.sha256" "$ZIP.asc" "build/$SET/SHA256SUMS" "build/$SET/SHA256SUMS.asc" "$RPM"
+            "$ZIP" "$ZIP.sha256" "$ZIP.asc" "build/$SET/SHA256SUMS" "build/$SET/SHA256SUMS.asc" dist/rpm/*.rpm
 
-      - name: Notify dag-node/rpm to publish the RPM
+      - name: Notify dag-node/rpm to publish the RPMs
         if: env.DISPATCH_RPM == 'true'
         env:
           RPM_REPO_DISPATCH_TOKEN: ${{ secrets.RPM_REPO_DISPATCH_TOKEN }}

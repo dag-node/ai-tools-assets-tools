@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Sign release RPMs with the dag-node org signing key and export the matching public key. Runs INSIDE an EL container
 # (quay.io/rockylinux/rockylinux:9, with rpm-sign and gnupg2 installed); `release-steps.sh sign-rpm` beside this file
-# invokes it over the RPM nFPM built, before the release is created, so every published package carries a header
+# invokes it over the RPMs nFPM built, before the release is created, so every published package carries a header
 # signature an operator verifies with `rpm --import RPM-GPG-KEY-dag-node`.
 #
 # Usage (rpm-sign + gnupg2 + rpm-build must be present in the container):
