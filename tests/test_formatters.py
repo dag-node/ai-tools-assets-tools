@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: MIT
-"""Drives the formatters a checkout can prove without Emacs: the reflow gate over a scratch repository.
+"""Drives the formatters a checkout can prove without Emacs: the reflow gate over a scratch repository, and the table
+aligner's block boundaries over strings and files.
 
-`formatters/verify-reflow.py` is run as a command, since its exit status is what a reflow commit is gated on.
+`formatters/verify-reflow.py` is run as a command, since its exit status is what a reflow commit is gated on;
+`formatters/align-tables.py` is imported for `realign()` and run once as a command.
 """
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import pathlib
 import shutil
 import subprocess
@@ -17,6 +21,15 @@ REPOSITORY = TESTS.parent
 FORMATTERS = REPOSITORY / "formatters"
 sys.path.insert(0, str(FORMATTERS))
 
+
+def load(script: str):
+    """Import a formatter whose file name carries a hyphen, as a module."""
+    name = script.replace("-", "_").removesuffix(".py")
+    loader = importlib.machinery.SourceFileLoader(name, str(FORMATTERS / script))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def run(script: str, *arguments: str):
@@ -87,6 +100,36 @@ class VerifyReflow(unittest.TestCase):
         self.assertEqual((status, stderr), (0, ""))
         self.assertIn("1 pure reflow(s)", stdout)
 
+
+class AlignTables(unittest.TestCase):
+    TABLE = "# A | B\n# --+--\n"
+    ALIGNED = "# A | B\n# --+---\n"
+    FENCE = "```\n# x | y\n# --+--\n```\n"
+
+    def setUp(self):
+        self.align = load("align-tables.py")
+
+    def test_a_fence_ends_a_table_and_what_it_encloses_is_left_alone(self):
+        self.assertEqual(self.align.realign(self.TABLE), (self.ALIGNED, [(1, 2)]))
+        self.assertEqual(self.align.realign(self.TABLE + self.FENCE), (self.ALIGNED + self.FENCE, [(1, 2)]),
+                         "a fence right after the table ends it, and the rows inside the fence are not read")
+        self.assertEqual(self.align.realign(self.FENCE + self.TABLE), (self.FENCE + self.ALIGNED, [(5, 6)]),
+                         "a table after a fence is read")
+        self.assertEqual(self.align.realign(self.TABLE.rstrip("\n")), (self.ALIGNED.rstrip("\n"), [(1, 2)]),
+                         "a table at the end of the file is read")
+
+    def test_the_command_goes_on_to_the_next_file(self):
+        scratch = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch)
+        (scratch / "fenced.sh").write_text(self.TABLE + self.FENCE, encoding="utf-8")
+        (scratch / "plain.sh").write_text(self.TABLE, encoding="utf-8")
+        status, stdout, stderr = run("align-tables.py", "check", str(scratch / "fenced.sh"), str(scratch / "plain.sh"))
+        self.assertEqual((status, stderr), (1, ""))
+        self.assertIn("fenced.sh:1: table cells do not line up (lines 1-2)", stdout)
+        self.assertIn("plain.sh:1: table cells do not line up (lines 1-2)", stdout)
+        status, _, stderr = run("align-tables.py", "fix", str(scratch / "fenced.sh"))
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual((scratch / "fenced.sh").read_text(encoding="utf-8"), self.ALIGNED + self.FENCE)
 
 
 if __name__ == "__main__":

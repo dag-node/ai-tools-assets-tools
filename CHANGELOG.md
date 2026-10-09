@@ -26,6 +26,10 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   and exited 0. The base is now verified before any path is read and such a run
   exits 1; a path the tree does not hold is a failure, and a skip is a path
   the tree holds and the base does not.
+- `align-tables.py` raised a `TypeError` and stopped on a fenced block
+  that immediately followed a comment table, leaving later files unprocessed.
+  A fence now ends the table before it, and fenced lines are never part
+  of a block.
 
 ## [1.0.0] - 2026-10-08
 

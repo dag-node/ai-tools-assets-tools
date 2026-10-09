@@ -157,24 +157,20 @@ def is_table(rows: list[str]) -> bool:
 
 
 def table_blocks(lines: list[str]) -> Iterator[tuple[int, int]]:
-    """Yield (start, end) for each run of two or more comment lines carrying a table."""
+    """Yield (start, end) for each run of two or more comment lines carrying a table.
+
+    A heredoc body line and a fence end the run before them, as any line that is not a row does, so
+    no block holds a fence or what it encloses.
+    """
     start, marker, fence = None, None, None
     data = heredoc_body(lines)
     for index, line in enumerate(lines + [""]):
-        if index in data:
-            if start is not None and index - start > 1 and is_table(lines[start:index]):
-                yield start, index
-            start, marker = None, None
-            continue
         mark = FENCE.match(line)
-        if fence is not None:
+        if fence is not None and index not in data:
             if mark and mark.group(1)[0] == fence[0] and len(mark.group(1)) >= len(fence):
                 fence = None
             continue
-        if mark:
-            fence = mark.group(1)
-            continue
-        held = carries_table(line)
+        held = index not in data and not mark and carries_table(line)
         if held and (start is None or parts(line)[0] == marker):
             if start is None:
                 start, marker = index, parts(line)[0]
@@ -182,6 +178,8 @@ def table_blocks(lines: list[str]) -> Iterator[tuple[int, int]]:
         if start is not None and index - start > 1 and is_table(lines[start:index]):
             yield start, index
         start, marker = (index, parts(line)[0]) if held else (None, None)
+        if mark and index not in data:
+            fence = mark.group(1)
 
 
 def widths(rows: list[list[str]], rules: list[bool]) -> list[int]:
