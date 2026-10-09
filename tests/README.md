@@ -9,7 +9,7 @@ holds one concern:
 
 | File | Proves |
 |---|---|
-| `test_library.py` | the readers under `tools/lib/`: the `KEY=value` grammar, the frontmatter subset, SPDX expressions, the name rules |
+| `test_library.py` | the readers and the writer under `tools/lib/`: the `KEY=value` grammar, the frontmatter subset, SPDX expressions, the name rules, a write a swapped directory does not redirect |
 | `test_fixtures.py` | `tools/validate` over every fixture under `fixtures/`, each to its `fixture.conf`; the trees git does not carry (a hard link, a special file, an over-size file), built in a temporary directory |
 | `test_commands.py` | the commands over a publisher repository composed from the passing fixture: scaffolding, the stale-manifest check, the build's inventory and zip, `link-set`, `check-licenses`, `check-signoff` over a synthetic history |
 | `test_packaging.py` | `packaging/render-nfpm.py` over a set `build-set` staged: the rendered package fields, the refusals, and a value that stays one quoted scalar |
