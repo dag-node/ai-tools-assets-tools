@@ -10,7 +10,8 @@ upstream terms and does not exempt the asset.
 A file outside a set is judged as REUSE 3.2 resolves it, and every expression that applies is held to the list, since
 REUSE combines them: the file's own information is each `SPDX-License-Identifier` header anywhere in the file, read
 whole under the file cap and outside a `REUSE-IgnoreStart`/`REUSE-IgnoreEnd` block, or the headers of its
-`<file>.license` sidecar where one exists; a file over the cap is refused rather than judged on a prefix; the
+`<file>.license` sidecar where one exists; a file over the cap is refused rather than judged on a prefix, and one the
+reader refuses or cannot open is refused rather than judged on an annotation as though it declared no licence; the
 repository's `REUSE.toml` supplies annotations whose `path` globs are matched with REUSE's grammar (`*` and `?` stop
 at `/`, a `**` segment crosses it, `\\` escapes a metacharacter) by a segment-wise wildcard match whose work is bounded
 by the glob's and the path's lengths, the last matching annotation applies -- whether or not it declares a licence --
@@ -109,13 +110,16 @@ def file_spdx_expressions(root_fd: int, relative_path: PurePath) -> List[str]:
     from a `REUSE-IgnoreStart` marker to the next `REUSE-IgnoreEnd` (or the file's end) left out, as REUSE reads them.
 
     The file is read whole up to `FILE_MAX_BYTES`; one over that raises RefusedRead(`license.file`), since a prefix
-    cannot show that no later header declares another licence. A file that is not a regular file, or cannot be read,
-    has no header of its own and falls to the annotations.
+    cannot show that no later header declares another licence. One the reader refuses (a link, a special file, a
+    file with a second hard link) or cannot open raises RefusedRead(`license.file`) too: a file this check has not
+    inspected is not judged on an annotation as though it declared no licence.
     """
     try:
         read = read_file_under(root_fd, relative_path, FILE_MAX_BYTES)
-    except (RefusedRead, OSError):
-        return []
+    except RefusedRead as refusal:
+        raise RefusedRead("license.file", f"`{relative_path.as_posix()}` {refusal.message}; a file this check cannot read is not judged on an annotation") from None
+    except OSError as error:
+        raise RefusedRead("license.file", f"`{relative_path.as_posix()}` cannot be read ({error.strerror}); a file this check cannot read is not judged on an annotation") from None
     if read.truncated:
         raise RefusedRead("license.file", f"is {read.size} bytes, over the {FILE_MAX_BYTES} this check reads whole; a header past the bound would go unread")
     expressions: List[str] = []

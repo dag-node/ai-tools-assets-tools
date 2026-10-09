@@ -648,6 +648,32 @@ class LicenseCheckOverATree(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertIn("REUSE.toml: license.file: annotations table 1: path `", stderr, "a glob outside the grammar refuses the file whole")
             self.assertNotIn("check-licenses: src/x.py", stderr)
+
+    def test_a_file_the_reader_refuses_or_cannot_open_is_refused_not_judged_on_an_annotation(self):
+        self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')
+        self.write("linked.py", "# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        os.link(self.scratch / "linked.py", self.scratch / "alias.py")
+        os.symlink("linked.py", self.scratch / "link.py")
+        self.write("fine.py", "print()\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("linked.py: license.file: `linked.py` has 2 links", stderr, "a second hard link is a refusal, not a header the annotation stands in for")
+        self.assertIn("alias.py: license.file: `alias.py` has 2 links", stderr)
+        self.assertNotIn("link.py:", stderr, "a symbolic link is a path, not content, and is not judged")
+        self.assertNotIn("fine.py", stderr)
+        (self.scratch / "alias.py").unlink()
+        self.write("secret.py", "# SPDX-License-Identifier: GPL-3.0-only\nprint()\n")
+        self.write("data.bin.license", "SPDX-License-Identifier: GPL-3.0-only\n")
+        self.write("data.bin", "# SPDX-License-Identifier: MIT\n")
+        (self.scratch / "secret.py").chmod(0)
+        (self.scratch / "data.bin.license").chmod(0)
+        if os.access(self.scratch / "secret.py", os.R_OK):
+            self.skipTest("this host reads a file with no permission bits")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("linked.py: license.allowlist: the file's licence `GPL-3.0-only`", stderr, "with one link again, the header is judged")
+        self.assertIn("secret.py: license.file: `secret.py` cannot be read (Permission denied)", stderr)
+        self.assertIn("data.bin: license.file: `data.bin.license` cannot be read (Permission denied)", stderr, "an unreadable sidecar refuses the file it declares for")
 # REUSE-IgnoreEnd
 
 
