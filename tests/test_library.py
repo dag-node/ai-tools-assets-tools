@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "lib"))
 
 import asset_format as fmt  # noqa: E402
 import safe_read  # noqa: E402
+import safe_write  # noqa: E402
 import set_validation  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from frontmatter import Scalar, split_frontmatter  # noqa: E402
@@ -255,6 +256,84 @@ class SafeRead(unittest.TestCase):
         with self.assertRaises(safe_read.RefusedRead) as refused:
             safe_read.decode_text(b"\xff\xfe")
         self.assertEqual(refused.exception.rule_id, "file.binary")
+
+
+class SafeWrite(unittest.TestCase):
+    """The writer: a write lands in the directory it opened, whatever stands at that name after, and no link is written
+    through."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        self.root = self.scratch / "root"
+        self.outside = self.scratch / "outside"
+        self.root.mkdir()
+        self.outside.mkdir()
+        (self.root / "output").mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def swapping(self, opens):
+        """`os.open` patched so that, on the open whose name `opens` accepts, `root/output` has been renamed away and a
+        link to `outside` stands at its name: the swap between the inspection of the parent and the write into it."""
+        original = os.open
+
+        def swap(path, *arguments, **keywords):
+            if opens(os.fspath(path)):
+                (self.root / "output").rename(self.root / "previous-output")
+                (self.root / "output").symlink_to(self.outside, target_is_directory=True)
+            return original(path, *arguments, **keywords)
+        return mock.patch.object(safe_write.os, "open", side_effect=swap)
+
+    def test_a_parent_swapped_for_a_link_after_it_is_opened_does_not_redirect_the_write(self):
+        with self.swapping(lambda name: name == "probe.txt"):
+            safe_write.create_file(self.root, pathlib.PurePath("output/probe.txt"), b"created")
+        self.assertEqual(list(self.outside.iterdir()), [], "nothing is created through the link")
+        self.assertEqual((self.root / "previous-output" / "probe.txt").read_bytes(), b"created", "the write landed in the directory the inspection opened")
+        (self.root / "output").unlink()
+        (self.root / "previous-output").rename(self.root / "output")
+        with self.swapping(lambda name: name.startswith(".probe.txt.")):
+            safe_write.replace_file(self.root, pathlib.PurePath("output/probe.txt"), b"replaced")
+        self.assertEqual(list(self.outside.iterdir()), [], "nothing is replaced through the link")
+        self.assertEqual((self.root / "previous-output" / "probe.txt").read_bytes(), b"replaced")
+        self.assertEqual([path.name for path in (self.root / "previous-output").iterdir()], ["probe.txt"], "no temporary name is left")
+
+    def test_refuses_a_link_at_a_component_a_link_at_the_name_and_a_file_where_a_directory_goes(self):
+        os.symlink(self.outside, self.root / "linked", target_is_directory=True)
+        (self.root / "plain").write_bytes(b"not a directory\n")
+        for relative, rule in (("linked/a.md", "file.symlink"), ("plain/a.md", "file.special")):
+            for write in (safe_write.create_file, safe_write.replace_file):
+                with self.assertRaises(safe_read.RefusedRead) as refused:
+                    write(self.root, pathlib.PurePath(relative), b"x")
+                self.assertEqual(refused.exception.rule_id, rule, relative)
+        os.symlink(self.outside / "dangling.md", self.root / "output" / "dangling.md")
+        for write in (safe_write.create_file, safe_write.replace_file):
+            with self.assertRaises(safe_read.RefusedRead) as refused:
+                write(self.root, pathlib.PurePath("output/dangling.md"), b"x")
+            self.assertEqual(refused.exception.rule_id, "file.symlink")
+        (self.outside / "other.md").write_bytes(b"other")
+        os.link(self.outside / "other.md", self.root / "output" / "generated.md")
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_write.replace_file(self.root, pathlib.PurePath("output/generated.md"), b"x")
+        self.assertEqual(refused.exception.rule_id, "file.hardlink")
+        self.assertEqual(list(self.outside.iterdir()), [self.outside / "other.md"], "nothing is written through a link")
+        self.assertEqual((self.outside / "other.md").read_bytes(), b"other", "the inode behind the other name is unchanged")
+        self.assertEqual((self.root / "plain").read_bytes(), b"not a directory\n")
+
+    def test_creates_the_missing_directories_and_replaces_an_entry_without_a_leftover(self):
+        deep = pathlib.PurePath("output/new/deep/a.md")
+        safe_write.create_file(self.root, deep, b"a")
+        self.assertEqual((self.root / deep).read_bytes(), b"a")
+        with self.assertRaises(safe_read.RefusedRead) as refused:
+            safe_write.create_file(self.root, deep, b"again")
+        self.assertEqual(refused.exception.rule_id, "file.symlink")
+        safe_write.replace_file(self.root, deep, b"b")
+        safe_write.replace_file(self.root, pathlib.PurePath("output/new/deep/b.md"), b"created by replace")
+        self.assertEqual((self.root / deep).read_bytes(), b"b")
+        self.assertEqual(sorted(path.name for path in (self.root / "output" / "new" / "deep").iterdir()), ["a.md", "b.md"])
+        for bad in ("/a/b", "a/../b", ".", ""):
+            with self.assertRaises(ValueError):
+                safe_write.create_file(self.root, pathlib.PurePath(bad), b"x")
 
 
 class WalkReadsEachFileOnce(unittest.TestCase):

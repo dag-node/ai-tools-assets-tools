@@ -7,6 +7,16 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Fixed
+
+- The writer behind `new-set`, `new-asset`, `sync-manifests`, `build-set`
+  and `link-set` opened the directory it wrote into by path after checking its
+  components, so a component replaced with a symbolic link between the check
+  and the write redirected the file to the link's target. The writer now opens
+  each component from a directory descriptor without following a link,
+  as the reader does, and creates, writes and renames at that descriptor:
+  a swapped component leaves the write in the directory that was inspected.
+
 ## [1.0.0] - 2026-10-08
 
 ### Added
