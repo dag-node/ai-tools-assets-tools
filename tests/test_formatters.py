@@ -197,6 +197,14 @@ class FillComments(unittest.TestCase):
             "# alpha -- read the first account\n"
             "# gamma -- read the second account\n",
             None),
+        "dashes a wrap put at one column": (
+            "# The tool reads the key every release has used\n"
+            "# text -- input, patch, and command, which is what codex sends through code\n"
+            "# mode -- so a rename degrades to no path rather than to a parse failure. And then some more words.\n",
+            "# The tool reads the key every release has used text -- input, patch,\n"
+            "# and command, which is what codex sends through code mode --\n"
+            "# so a rename degrades to no path rather than to a parse failure.\n"
+            "# And then some more words.\n"),
         "table continuation": (
             "# The inputs:\n"
             "#   selinux-mode     getenforce output (\"Enforcing\" when type enforcement is active)\n"
