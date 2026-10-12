@@ -166,7 +166,9 @@ class ReleaseStepsCase(unittest.TestCase):
         return script
 
 
-class CheckImages(ReleaseStepsCase):
+class RegistryCase(ReleaseStepsCase):
+    """A copy of the release steps whose pins name the stub's manifests, and the answers for them."""
+
     def setUp(self):
         super().setUp()
         self.tools = self.root / "tools"
@@ -179,6 +181,9 @@ class CheckImages(ReleaseStepsCase):
     def answer_pinned(self, *dists: str):
         self.answer_registry({self.pinned_reference(dist): manifest(f"{dist} pinned") for dist in dists})
 
+
+
+class CheckImages(RegistryCase):
     def check(self, **options):
         return self.run_steps(self.script, "check-images", cwd=self.tools, **options)
 
@@ -406,8 +411,9 @@ def refresh_body(date: str) -> str:
             "release is cut for a refresh; the next release carries it.")
 
 
-class ChangeCase(CheckImages):
-    """A checkout of the tools and of a caller, each with a bare origin, and gh logged in with no open pull request."""
+class ChangeCase(RegistryCase):
+    """A checkout of the tools and of a caller, each with a bare origin, and gh logged in with no open pull request.
+    The caller pins the tools' initial commit, as a caller pins the release it last re-pinned to."""
 
     stubbed = ("skopeo", "gh", "sleep")
 
@@ -420,10 +426,26 @@ class ChangeCase(CheckImages):
                 encoding="utf-8"),
         })
         self.script = self.tools / "packaging" / "release-steps.sh"
-        self.caller = self.make_repository("caller", CALLER_URL, {
-            f".github/workflows/{name}": text for name, text in caller_workflows().items()})
+        self.initial = self.git(self.tools, "rev-parse", "develop")
+        self.caller = self.make_repository("caller", CALLER_URL, self.caller_pins())
         self.answer("gh", ["auth", "status"])
         self.answer("sleep", [])
+
+    def caller_pins(self, ref=None, comment="v1.2.0") -> dict:
+        """The caller's workflow files pinning the tools at <ref>, the initial commit where not given."""
+        ref = ref or self.initial
+        return {f".github/workflows/{name}": text for name, text in caller_workflows(ref, ref, comment).items()}
+
+    def commit_tools(self, files: dict, message: str) -> str:
+        """A commit on the tools' develop, pushed to origin, as a merged pull request leaves it."""
+        sha = self.commit_files(self.tools, files, message)
+        self.git(self.tools, "push", "--quiet", "origin", "develop")
+        return sha
+
+    def commit_caller(self, files: dict, message: str) -> str:
+        sha = self.commit_files(self.caller, files, message)
+        self.git(self.caller, "push", "--quiet", "origin", "develop")
+        return sha
 
     def answer_open_pull_requests(self, slug: str, lines=""):
         self.answer("gh", ["pr", "list", "--repo", slug, "--base", "develop"], stdout=lines)
@@ -870,9 +892,582 @@ class RefreshImages(ChangeCase):
         self.answer_pull_request()
         status, stdout, stderr = self.refresh("--caller", str(self.caller))
         self.assertEqual(status, 0, stderr)
-        self.assertIn(f"release-steps: ok: caller {self.caller} is ready: its `uses:` lines pin @{OLD_PIN}", stdout)
+        self.assertIn(f"release-steps: ok: caller {self.caller} is ready: its `uses:` lines pin @{self.initial}", stdout)
         self.assertTrue(stdout.endswith(f"release-steps: next, in {self.caller}: bash ../tools/packaging/"
                                         f"release-steps.sh repin-tools --id {REFRESH_ID} <sha>\n"), stdout)
+
+
+REFRESH_DATE = "2026-11-03"
+CALLER_BRANCH = f"ci/{REFRESH_ID}-tools-fc44-digest"
+CALLER_PULL_REQUEST_URL = "https://github.com/dag-node/ai-tools-assets/pull/40"
+RELEASE_CHANGELOG = CHANGELOG.replace("## [Unreleased]\n", """## [Unreleased]
+
+## [1.3.0] - 2026-11-20
+
+### Added
+
+- **Image check.** `check-images` asks each registry for the pinned digest.
+- **Digest refresh.** `refresh-images` and `repin-tools` open the pull
+  requests of a refresh.
+
+### Fixed
+
+- A release pulls every image before the first signature.
+""")
+
+
+def gpg_runs() -> bool:
+    """A test that signs a tag needs gpg and a tmpfs /dev/shm, where the release steps hold a keyring."""
+    try:
+        subprocess.run(["gpg", "--version"], capture_output=True, check=True)
+        statfs = subprocess.run(["stat", "-f", "-c", "%T", "/dev/shm"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return statfs.stdout.strip() == "tmpfs"
+
+
+class RepinCase(ChangeCase):
+    """A caller pinning the tools at 1.2.0, and the registry answering for the images of a refresh."""
+
+    def setUp(self):
+        super().setUp()
+        self.answer_registry({self.pinned_reference(dist): manifest(f"{dist} pinned") for dist in ("el9", "el10")})
+        repository = IMAGES["fc44"].rsplit(":", 1)[0]
+        self.answer_registry({f"{repository}@{CURRENT['fc44']}": manifest("fc44 current")})
+
+    def refreshed_script(self, dist="fc44", date=REFRESH_DATE, comment=True) -> str:
+        """The tools' release steps with the <dist> pin at the stub's current digest, dated <date>."""
+        script = (self.tools / "packaging" / "release-steps.sh").read_text(encoding="utf-8")
+        resolved = f" # resolved {date}" if comment else ""
+        return re.sub(rf"^{dist.upper()}_IMAGE=.*$", f"{dist.upper()}_IMAGE={IMAGES[dist]}@{CURRENT[dist]}{resolved}",
+                      script, flags=re.M)
+
+    def push_refresh(self, extra=None, **options) -> str:
+        """A refresh of the Fedora 44 pin merged into the tools' develop, as refresh-images makes it."""
+        files = {"packaging/release-steps.sh": self.refreshed_script(**options),
+                 "CHANGELOG.md": (self.tools / "CHANGELOG.md").read_text(encoding="utf-8").replace(
+                     "## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **Fedora 44 image.** A refresh.\n")}
+        files.update(extra or {})
+        return self.commit_tools(files, "build(packaging): pin the Fedora 44 image quay.io serves")
+
+    def answer_caller_pull_request(self, existing=""):
+        self.answer_open_pull_requests(CALLER_SLUG)
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"], stdout=existing)
+        self.answer("gh", ["pr", "create"], stdout=f"{CALLER_PULL_REQUEST_URL}\n")
+
+    def repin(self, *arguments: str, script=None):
+        return self.run_steps(script or self.script, "repin-tools", "--id", REFRESH_ID, *arguments, cwd=self.caller)
+
+    def caller_file(self, branch: str, name: str) -> str:
+        return self.git(self.caller, "show", f"{branch}:.github/workflows/{name}")
+
+
+class RepinTools(RepinCase):
+    def test_a_refresh_commit_is_pinned_with_its_pull_request(self):
+        sha = self.push_refresh()
+        self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"], stdout="31\n")
+        self.answer_caller_pull_request()
+        status, stdout, stderr = self.repin(sha)
+        self.assertEqual(status, 0, stderr)
+        comment = f"# develop {REFRESH_DATE}, fc44 digest, ai-tools-assets-tools#31"
+        self.assertIn(f"    uses: dag-node/ai-tools-assets-tools/.github/workflows/validate.yml@{sha} {comment}\n",
+                      self.caller_file(CALLER_BRANCH, "validate.yml"))
+        self.assertIn(f"    uses: dag-node/ai-tools-assets-tools/.github/workflows/set-release.yml@{sha} {comment}\n",
+                      self.caller_file(CALLER_BRANCH, "release.yml"))
+        message = self.git(self.caller, "log", "-1", "--format=%B", CALLER_BRANCH)
+        title = "ci: call the ai-tools-assets-tools commit that pins the Fedora 44 image"
+        body = (f"The release and validate workflows called the v1.2.0 commit, whose release steps pin a Fedora 44"
+                f" image digest quay.io no longer serves, so `check-images` failed every pull request here with"
+                f" `manifest unknown`. They now call the ai-tools-assets-tools `develop` commit `{sha[:7]}`"
+                f" (dag-node/ai-tools-assets-tools#31), which pins the digest `quay.io/fedora/fedora:44` resolves to"
+                f" on {REFRESH_DATE}.\n\nNot a release of the tools: the next tools release carries the digest, and"
+                " the next re-pin here names that release.")
+        self.assertTrue(message.startswith(f"{title}\n\n"), message)
+        generated = message[len(title) + 2:].split("\n\nSigned-off-by:")[0]
+        self.assertEqual(unwrap(generated), body)
+        creation = self.pull_request_creations()
+        self.assertEqual(len(creation), 1)
+        self.assertEqual(creation[0][3], CALLER_SLUG)
+        self.assertEqual(creation[0][9], title)
+        self.assertEqual(pathlib.Path(creation[0][11]).read_text(encoding="utf-8").rstrip("\n"), generated)
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH),
+                         self.git(self.caller, "rev-parse", CALLER_BRANCH))
+        self.assertIn(f"release-steps: repin-tools: checking 3 images at {sha[:7]}", stdout)
+        self.assertIn(f"release-steps: ok: {sha[:7]} is on origin/develop and is ai-tools-assets-tools#31; from the"
+                      f" pinned {self.initial[:7]} it changes image pins (fc44) and CHANGELOG.md alone", stdout)
+        self.assertIn("release-steps: repin-tools: writing .github/workflows/release.yml, .github/workflows/validate.yml"
+                      " in the scratch worktree", stdout)
+        self.assertIn("release-steps: ok: .github/workflows/release.yml +1 -1, .github/workflows/validate.yml +1 -1 in"
+                      " the scratch worktree", stdout)
+        self.assertTrue(stdout.endswith(f"release-steps: next, after the merge: git ls-remote {CALLER_URL}"
+                                        " refs/heads/develop\n"), stdout)
+
+    def test_a_commit_that_changes_another_line_is_refused(self):
+        script = (self.tools / "packaging" / "release-steps.sh").read_text(encoding="utf-8")
+        sha = self.push_refresh({"packaging/release-steps.sh": self.refreshed_script().replace(
+            "NFPM_VERSION=2.47.0", "NFPM_VERSION=2.48.0")})
+        line = script.splitlines().index("NFPM_VERSION=2.47.0") + 1
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn(f"{sha[:7]} changes packaging/release-steps.sh:{line}, which is not an image pin or"
+                      " `CHANGELOG.md`; a develop pin is for a digest refresh alone, and any other change reaches"
+                      " a caller through a release", stderr)
+        self.assertEqual(self.pull_request_creations(), [])
+
+    def assert_caller_unchanged(self):
+        self.assertEqual(self.git(self.caller, "branch", "--list", "ci/*"), "")
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH), "")
+        self.assertEqual(self.pull_request_creations(), [])
+
+    def test_a_pin_that_gains_an_unreleased_script_change_is_refused(self):
+        script = (self.tools / "packaging" / "release-steps.sh").read_text(encoding="utf-8")
+        line = script.splitlines().index("NFPM_VERSION=2.47.0") + 1
+        self.commit_tools({"packaging/release-steps.sh": script.replace("NFPM_VERSION=2.47.0", "NFPM_VERSION=2.48.0")},
+                          "build(packaging): nFPM 2.48.0")
+        sha = self.push_refresh()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn(f"from the pinned {self.initial[:7]}, {sha[:7]} changes packaging/release-steps.sh:{line}, which"
+                      " is not an image pin or `CHANGELOG.md`; a develop pin is for a digest refresh alone, so this"
+                      " caller re-pins through a release of the tools: cut the release, then run this command with its"
+                      " tag (`vX.Y.Z`)", stderr)
+        self.assert_caller_unchanged()
+
+    def test_a_pin_that_gains_an_unreleased_workflow_change_is_refused(self):
+        release_yml = (self.tools / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.commit_tools({".github/workflows/release.yml": release_yml + "# an unreleased change\n"}, "ci: a change")
+        sha = self.push_refresh()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn(f"from the pinned {self.initial[:7]}, {sha[:7]} changes .github/workflows/release.yml, which is"
+                      " not an image pin or `CHANGELOG.md`; a develop pin is for a digest refresh alone, so this caller"
+                      " re-pins through a release of the tools", stderr)
+        self.assert_caller_unchanged()
+
+    def test_two_refreshes_since_the_pin_are_pinned_together(self):
+        repository = IMAGES["el9"].rsplit(":", 1)[0]
+        self.answer_registry({f"{repository}@{CURRENT['el9']}": manifest("el9 current")})
+        self.commit_tools({"packaging/release-steps.sh": self.refreshed_script("el9", "2026-11-01")},
+                          "build(packaging): pin the Rocky 9 image quay.io serves")
+        sha = self.push_refresh()
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--base", "develop"])
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"])
+        self.answer("gh", ["pr", "create"], stdout=f"{CALLER_PULL_REQUEST_URL}\n")
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        branch = f"ci/{REFRESH_ID}-tools-el9-fc44-digest"
+        self.assertIn(f"set-release.yml@{sha} # develop {REFRESH_DATE}, el9-fc44 digest, ai-tools-assets-tools#31\n",
+                      self.caller_file(branch, "release.yml"))
+        message = unwrap(self.git(self.caller, "log", "-1", "--format=%B", branch))
+        self.assertTrue(message.startswith("ci: call the ai-tools-assets-tools commit that pins the Rocky 9 and Fedora 44"
+                                           " images\n\nThe release and validate workflows called the v1.2.0 commit,"
+                                           " whose release steps pin Rocky 9 and Fedora 44 image digests quay.io no"
+                                           " longer serves, so"), message)
+        self.assertIn(f"which pins the digest `{IMAGES['el9']}` resolves to on 2026-11-01 and the digest"
+                      f" `{IMAGES['fc44']}` resolves to on {REFRESH_DATE}.", message)
+        self.assertIn(f"from the pinned {self.initial[:7]} it changes image pins (el9, fc44) and CHANGELOG.md alone",
+                      stdout)
+
+    def test_a_refreshed_pin_without_its_date_is_refused(self):
+        sha = self.push_refresh(comment=False)
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn(f"the FC44_IMAGE line at {sha[:7]} carries no `# resolved <date>` comment, which refresh-images"
+                      " writes and the caller's pin comment names; refresh the pin with refresh-images", stderr)
+
+    def test_a_caller_pinned_by_a_tag_is_read_at_origin_without_a_local_tag(self):
+        self.git(self.tools, "tag", "v1.2.0", self.initial)
+        self.git(self.tools, "push", "--quiet", "origin", "v1.2.0")
+        self.git(self.tools, "tag", "-d", "v1.2.0")
+        self.commit_caller(self.caller_pins("v1.2.0"), "pin the release by tag")
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"from the pinned {self.initial[:7]} it changes image pins (fc44) and CHANGELOG.md alone", stdout)
+        self.assertEqual(self.git(self.tools, "tag", "--list", "v1.2.0"), "")
+        self.assertIn(f"called the v1.2.0 commit,", unwrap(self.git(self.caller, "log", "-1", "--format=%B", CALLER_BRANCH)))
+
+    def test_a_caller_pin_absent_from_origin_is_refused(self):
+        self.commit_caller(self.caller_pins("v9.9.9", "v9.9.9"), "pin a tag that does not exist")
+        sha = self.push_refresh()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn("the `uses:` lines pin @v9.9.9, which is not a commit, a tag or a branch on ai-tools-assets-tools"
+                      " origin; fix the pins, then run again", stderr)
+        self.assert_caller_unchanged()
+
+    def test_a_rocky_refresh_is_pinned(self):
+        """A dist other than the last in DIST_IMAGES order, which a false test at a function's end once dropped."""
+        repository = IMAGES["el9"].rsplit(":", 1)[0]
+        self.answer_registry({f"{repository}@{CURRENT['el9']}": manifest("el9 current")})
+        self.answer_pinned("fc44")
+        sha = self.commit_tools({"packaging/release-steps.sh": self.refreshed_script("el9", "2026-11-01"),
+                                 "CHANGELOG.md": CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n"
+                                                                   "- **Rocky 9 image.** A refresh.\n")},
+                                "build(packaging): pin the Rocky 9 image quay.io serves")
+        self.answer_open_pull_requests(CALLER_SLUG)
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"])
+        self.answer("gh", ["pr", "create"], stdout=f"{CALLER_PULL_REQUEST_URL}\n")
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"set-release.yml@{sha} # develop 2026-11-01, el9 digest, ai-tools-assets-tools#31\n",
+                      self.caller_file(f"ci/{REFRESH_ID}-tools-el9-digest", "release.yml"))
+        self.assertIn(f"from the pinned {self.initial[:7]} it changes image pins (el9) and CHANGELOG.md alone", stdout)
+        self.assertTrue(self.git(self.caller, "log", "-1", "--format=%s", f"ci/{REFRESH_ID}-tools-el9-digest")
+                        == "ci: call the ai-tools-assets-tools commit that pins the Rocky 9 image")
+
+    def test_a_workflow_file_without_a_final_newline_keeps_its_shape(self):
+        files = self.caller_pins()
+        files[".github/workflows/release.yml"] = files[".github/workflows/release.yml"].rstrip("\n")
+        self.commit_caller(files, "no final newline")
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"set-release.yml@{sha} # develop", self.caller_file(CALLER_BRANCH, "release.yml"))
+        self.assertEqual(self.git(self.caller, "diff", "--numstat", f"develop..{CALLER_BRANCH}", "--",
+                                  ".github/workflows/release.yml").split("\t")[:2], ["1", "1"])
+
+    def test_a_pin_both_a_tag_and_a_branch_carry_is_refused(self):
+        self.git(self.tools, "tag", "v1.2.0", self.initial)
+        self.git(self.tools, "push", "--quiet", "origin", "v1.2.0")
+        self.commit_tools({"README.md": "unreleased\n"}, "an unreleased change")
+        self.git(self.tools, "push", "--quiet", "origin", "develop:refs/heads/v1.2.0")
+        self.commit_caller(self.caller_pins("v1.2.0"), "pin by a name a branch carries too")
+        sha = self.push_refresh()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn("the `uses:` lines pin @v1.2.0, which names both a tag and a branch on ai-tools-assets-tools"
+                      " origin; pin a tag or a full commit SHA, then run again", stderr)
+        self.assert_caller_unchanged()
+
+    def test_a_pull_request_number_github_malforms_is_refused(self):
+        sha = self.push_refresh()
+        for answer in ("31\n    unexpected: true\n", "abc\n", "0\n"):
+            self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"], stdout=answer, first=True)
+            status, _, stderr = self.repin(sha)
+            self.assertEqual(status, 1, answer)
+            self.assertIn(f"GitHub names the pull request of commit {sha[:7]} as `{' '.join(answer.split())}`, not a"
+                          " number; pass it with `--pr <number>`", stderr)
+            self.assert_caller_unchanged()
+
+    def test_a_diagnostic_beside_the_pull_request_number_stays_out_of_the_pin(self):
+        sha = self.push_refresh()
+        self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"], stdout="31\n",
+                    stderr="warning: a diagnostic gh prints\n")
+        self.answer_caller_pull_request()
+        status, _, stderr = self.repin(sha)
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"set-release.yml@{sha} # develop {REFRESH_DATE}, fc44 digest, ai-tools-assets-tools#31\n",
+                      self.caller_file(CALLER_BRANCH, "release.yml"))
+
+    def test_conflicting_pin_comments_are_refused(self):
+        sha = self.push_refresh()
+        files = self.caller_pins()
+        files[".github/workflows/release.yml"] = self.caller_pins(comment="v9.9.9")[".github/workflows/release.yml"]
+        self.commit_caller(files, "a comment that disagrees")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn("the `uses:` lines carry different pin comments (.github/workflows/release.yml: `# v9.9.9`,"
+                      " .github/workflows/validate.yml: `# v1.2.0`); make them one, then run again", stderr)
+        self.assert_caller_unchanged()
+
+    def test_a_readable_comment_beside_an_unreadable_one_leaves_the_ref_to_stand(self):
+        sha = self.push_refresh()
+        files = self.caller_pins()
+        files[".github/workflows/validate.yml"] = self.caller_pins(comment="")[".github/workflows/validate.yml"]
+        self.commit_caller(files, "a comment missing")
+        self.answer_caller_pull_request()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"the comment after @{self.initial} in .github/workflows/validate.yml is not `# vX.Y.Z` or"
+                      f" `# develop …`; the body names the previous pin as {self.initial[:7]}", stderr)
+        self.assertIn(f"called the {self.initial[:7]} commit,",
+                      unwrap(self.git(self.caller, "log", "-1", "--format=%B", CALLER_BRANCH)))
+
+    def test_a_commit_that_changes_another_file_is_refused(self):
+        sha = self.push_refresh({"README.md": "a change\n"})
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn(f"{sha[:7]} changes README.md, which is not an image pin or `CHANGELOG.md`", stderr)
+
+    def test_a_release_commit_is_not_a_refresh(self):
+        sha = self.commit_tools({"CHANGELOG.md": RELEASE_CHANGELOG}, "chore: release 1.3.0")
+        status, _, stderr = self.repin(sha, "--pr", "31", "--dry-run")
+        self.assertEqual(status, 1)
+        self.assertIn(f"{sha[:7]} changes no image pin; a develop pin is for a digest refresh alone", stderr)
+
+    def test_a_commit_not_on_develop_is_refused(self):
+        self.git(self.tools, "switch", "--quiet", "-c", "topic")
+        sha = self.commit_files(self.tools, {"CHANGELOG.md": CHANGELOG + "\n"}, "unmerged")
+        self.git(self.tools, "switch", "--quiet", "develop")
+        status, _, stderr = self.repin(sha[:12])
+        self.assertEqual(status, 1)
+        self.assertIn(f"{sha[:12]} is not on ai-tools-assets-tools `origin/develop` (fetched now); a develop pin"
+                      " names a merged commit: merge the pull request, then run this command again", stderr)
+
+    def test_unequal_pins_in_the_caller_are_refused(self):
+        sha = self.push_refresh()
+        self.commit_files(self.caller, {".github/workflows/validate.yml":
+                                        caller_workflows(validate_ref="v1")["validate.yml"]}, "drift")
+        self.git(self.caller, "push", "--quiet", "origin", "develop")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1)
+        self.assertIn("the `uses:` lines pin different refs", stderr)
+
+    def test_a_commit_github_names_no_pull_request_for_is_refused_after_the_retries(self):
+        sha = self.push_refresh()
+        self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"])
+        status, stdout, stderr = self.repin(sha)
+        self.assertEqual(status, 1)
+        self.assertIn(f"release-steps: retry 4/5: the pull request of commit for {sha[:7]} (an empty answer);"
+                      " waiting 40 s", stdout)
+        self.assertIn(f"no pull request names commit {sha[:7]} (`gh api repos/{TOOLS_SLUG}/commits/{sha[:7]}/pulls`"
+                      " answered: an empty answer, 5 times over 100 s); pass it with `--pr <number>`", stderr)
+
+    def test_a_pull_request_github_names_late_is_waited_for(self):
+        sha = self.push_refresh()
+        self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"], times=2)
+        self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"], stdout="31\n")
+        self.answer_caller_pull_request()
+        status, _, stderr = self.repin(sha)
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.calls("sleep"), [["10"], ["20"]])
+        self.assertIn("ai-tools-assets-tools#31", self.caller_file(CALLER_BRANCH, "release.yml"))
+
+    def test_pins_already_at_the_target_change_nothing(self):
+        sha = self.push_refresh()
+        self.commit_files(self.caller, {f".github/workflows/{name}": text for name, text in
+                                        caller_workflows(sha, sha, "develop").items()}, "pinned")
+        self.git(self.caller, "push", "--quiet", "origin", "develop")
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"release-steps: ok: the `uses:` lines already pin @{sha}; nothing to do", stdout)
+        self.assertEqual(self.git(self.caller, "branch", "--list", "ci/*"), "")
+
+    def test_an_unreadable_old_comment_is_named_and_the_ref_stands_for_it(self):
+        sha = self.push_refresh()
+        self.commit_caller(self.caller_pins(comment="tools"), "comment")
+        self.answer_caller_pull_request()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"the comment after @{self.initial} in .github/workflows/release.yml is not `# vX.Y.Z` or"
+                      f" `# develop …`; the body names the previous pin as {self.initial[:7]}", stderr)
+        self.assertIn(f"called the {self.initial[:7]} commit,",
+                      unwrap(self.git(self.caller, "log", "-1", "--format=%B", CALLER_BRANCH)))
+
+    def test_a_rerun_after_the_push_opens_the_pull_request_once(self):
+        sha = self.push_refresh()
+        self.answer_open_pull_requests(CALLER_SLUG)
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"])
+        self.answer("gh", ["pr", "create"], stderr="HTTP 502: Bad Gateway\n", status=1, times=1)
+        self.answer("gh", ["pr", "create"], stdout=f"{CALLER_PULL_REQUEST_URL}\n")
+        self.assertEqual(self.repin(sha, "--pr", "31")[0], 1)
+        tip = self.git(self.caller, "rev-parse", CALLER_BRANCH)
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"release-steps: ok: branch {CALLER_BRANCH} already carries this change; continuing from it",
+                      stdout)
+        self.assertIn(f"release-steps: ok: origin/{CALLER_BRANCH} = {tip[:7]}, pushed before", stdout)
+        self.assertEqual(len(self.pull_request_creations()), 2)
+
+    def test_a_dry_run_writes_nothing(self):
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        status, stdout, stderr = self.repin(sha, "--pr", "31", "--dry-run")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"+    uses: dag-node/ai-tools-assets-tools/.github/workflows/validate.yml@{sha}", stdout)
+        self.assertIn("\nci: call the ai-tools-assets-tools commit that pins the Fedora 44 image\n", stdout)
+        self.assertEqual(self.git(self.caller, "branch", "--list", "ci/*"), "")
+        self.assertEqual(self.pull_request_creations(), [])
+
+    def test_a_run_from_the_tools_checkout_is_refused(self):
+        status, _, stderr = self.run_steps(self.script, "repin-tools", "--id", REFRESH_ID, "abc1234", cwd=self.tools)
+        self.assertEqual(status, 1)
+        self.assertIn(f"{self.tools} is not a checkout of a caller with a `.github/workflows/`; run from the"
+                      " repository root", stderr)
+
+    def test_a_script_outside_a_tools_tree_is_refused(self):
+        loose = self.root / "loose" / "packaging" / "release-steps.sh"
+        loose.parent.mkdir(parents=True)
+        shutil.copy(self.script, loose)
+        status, _, stderr = self.repin("abc1234", script=loose)
+        self.assertEqual(status, 1)
+        self.assertIn("run from ai-tools-assets-tools's tree, in the caller's checkout: `bash"
+                      " <ai-tools-assets-tools>/packaging/release-steps.sh repin-tools …`", stderr)
+
+    def test_no_target_is_refused(self):
+        status, _, stderr = self.repin()
+        self.assertEqual(status, 1)
+        self.assertIn("give a commit SHA of the tools (a digest refresh) or a release tag `vX.Y.Z`", stderr)
+
+    def test_a_caller_without_a_pin_of_the_tools_is_refused(self):
+        self.commit_files(self.caller, {".github/workflows/validate.yml": "name: validate\non: push\njobs: {}\n",
+                                        ".github/workflows/release.yml": "name: release\non: push\njobs: {}\n"},
+                          "no pins")
+        self.git(self.caller, "push", "--quiet", "origin", "develop")
+        status, _, stderr = self.repin("abc1234")
+        self.assertEqual(status, 1)
+        self.assertIn("no `uses: dag-node/ai-tools-assets-tools/.github/workflows/…` line under .github/workflows/;"
+                      " nothing to re-pin", stderr)
+
+    def test_a_prerelease_tag_is_refused(self):
+        status, _, stderr = self.repin("v1.3.0-rc.1")
+        self.assertEqual(status, 1)
+        self.assertIn("v1.3.0-rc.1 is a prerelease; a caller pins a final release", stderr)
+
+    def test_a_tag_absent_from_origin_is_refused(self):
+        status, _, stderr = self.repin("v9.9.9")
+        self.assertEqual(status, 1)
+        self.assertIn("tag v9.9.9 is not on ai-tools-assets-tools origin; push the tag, or check the spelling", stderr)
+
+    def test_a_lightweight_tag_is_refused(self):
+        self.git(self.tools, "tag", "v1.3.0")
+        self.git(self.tools, "push", "--quiet", "origin", "v1.3.0")
+        status, _, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 1)
+        self.assertIn("v1.3.0 is not an annotated tag; a release tag is created with git tag -s", stderr)
+
+    def test_an_unsigned_tag_is_refused(self):
+        self.git(self.tools, "tag", "-a", "-m", "1.3.0", "v1.3.0")
+        self.git(self.tools, "push", "--quiet", "origin", "v1.3.0")
+        status, _, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 1)
+        self.assertIn("v1.3.0 carries no PGP signature; a release tag is created with git tag -s", stderr)
+
+
+def shell_functions(*names: str) -> str:
+    """The text of the named functions of the release steps, for a test that runs a text parser on its own."""
+    text = RELEASE_STEPS.read_text(encoding="utf-8")
+    functions = []
+    for name in names:
+        match = re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n", text, flags=re.M | re.S)
+        assert match, name
+        functions.append(match.group(0))
+    return "".join(functions)
+
+
+class ReleaseHeadlines(unittest.TestCase):
+    """The changelog parser the release mode's body is built from, run on text alone, so its cases need no signed tag."""
+
+    def headlines(self, changelog: str, version="1.3.0") -> str:
+        script = shell_functions("_release_steps__list_release_headlines", "_release_steps__format_headline")
+        completed = subprocess.run(
+            [BASH, "-c", f'set -euo pipefail\n{script}\n_release_steps__list_release_headlines "$1" "$2"', "_",
+             changelog, version], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, "")
+        return completed.stdout
+
+    def test_adjacent_bold_entries_each_keep_their_label(self):
+        self.assertEqual(self.headlines(RELEASE_CHANGELOG),
+                         "Image check\nDigest refresh\nA release pulls every image before the first signature\n")
+
+    def test_adjacent_plain_entries_each_give_their_first_sentence(self):
+        self.assertEqual(self.headlines("## [1.3.0]\n- First plain sentence. A second one.\n- Second plain sentence.\n"),
+                         "First plain sentence\nSecond plain sentence\n")
+
+    def test_a_wrapped_entry_is_one_headline(self):
+        self.assertEqual(self.headlines("## [1.3.0]\n\n- A sentence that wraps\n  onto a second line. More.\n"
+                                        "- **Bold label.** Then\n  more.\n"),
+                         "A sentence that wraps onto a second line\nBold label\n")
+
+    def test_the_next_section_is_not_read(self):
+        self.assertEqual(self.headlines("## [1.3.0]\n- **Ours.** Here.\n## [1.2.0]\n- **Theirs.** There.\n"), "Ours\n")
+
+    def test_an_absent_section_gives_no_headline(self):
+        self.assertEqual(self.headlines(CHANGELOG), "")
+
+
+@unittest.skipUnless(gpg_runs(), "signing a tag needs gpg and a tmpfs /dev/shm")
+class RepinToolsToARelease(RepinCase):
+    """repin-tools to a tag signed by a key generated for the test, served by curl standing in for the key URL."""
+
+    stubbed = ("skopeo", "gh", "sleep", "curl")
+
+    def setUp(self):
+        super().setUp()
+        # The release fixture keeps the Fedora pin the tools shipped with, so the registry answers for it too.
+        self.answer_pinned("fc44")
+        self.gnupg = self.root / "gnupg"
+        self.gnupg.mkdir(mode=0o700)
+        self.gpg("--quick-generate-key", "--passphrase", "", "Test Maintainer <maintainer@example.org>", "ed25519",
+                 "sign", "never")
+        self.primary = next(line.split(":")[9] for line in self.gpg("--with-colons", "--list-keys").splitlines()
+                            if line.startswith("fpr:"))
+        self.answer("curl", [], stdout=self.gpg("--armor", "--export", self.primary))
+
+    def gpg(self, *arguments: str) -> str:
+        return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",
+                               *arguments], capture_output=True, text=True, check=True).stdout
+
+    def release(self, signers: str, changelog=RELEASE_CHANGELOG) -> str:
+        """The 1.3.0 release commit on the tools' develop, its release.yml pinning <signers>, tagged and signed."""
+        release_yml = (REPOSITORY / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        release_yml = re.sub(r"TAG_SIGNER_PRIMARY_FINGERPRINTS: \S+", f"TAG_SIGNER_PRIMARY_FINGERPRINTS: {signers}",
+                             release_yml)
+        sha = self.commit_files(self.tools, {"CHANGELOG.md": changelog,
+                                             ".github/workflows/release.yml": release_yml}, "chore: release 1.3.0")
+        environment = dict(self.environment(stubbed=()), GNUPGHOME=str(self.gnupg))
+        subprocess.run(["git", "-C", str(self.tools), "-c", f"user.signingkey={self.primary}", "tag", "-s", "-m",
+                        "1.3.0", "v1.3.0"], env=environment, check=True, capture_output=True)
+        self.git(self.tools, "push", "--quiet", "origin", "develop", "v1.3.0")
+        return sha
+
+    def test_a_release_is_pinned_with_its_changelog_headlines(self):
+        sha = self.release(self.primary)
+        self.answer("gh", ["release", "view", "v1.3.0"], stdout="false false\n")
+        self.answer("gh", ["api"], stdout="success https://github.com/dag-node/ai-tools-assets-tools/actions/runs/7\n")
+        self.answer_caller_pull_request()
+        status, stdout, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"set-release.yml@{sha} # v1.3.0\n",
+                      self.caller_file(f"ci/{REFRESH_ID}-tools-1.3.0", "release.yml"))
+        message = self.git(self.caller, "log", "-1", "--format=%B", f"ci/{REFRESH_ID}-tools-1.3.0")
+        self.assertTrue(message.startswith("ci: call the ai-tools-assets-tools 1.3.0 workflows\n\n"
+                                           "The release and validate workflows previously called the v1.2.0 commit.\n"
+                                           f"They now call the 1.3.0 commit `{sha[:7]}` (release `v1.3.0`):\n\n"
+                                           "- Image check\n- Digest refresh\n"
+                                           "- A release pulls every image before the first signature\n"), message)
+        self.assertIn(f"signed by {self.primary}", stdout)
+
+    def test_a_tag_signed_by_another_key_is_refused(self):
+        self.release("0" * 40)
+        status, _, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 1)
+        self.assertIn(f"v1.3.0 is signed by primary {self.primary}, which is not on the pinned list: {'0' * 40}",
+                      stderr)
+
+    def test_a_release_run_that_failed_is_refused(self):
+        self.release(self.primary)
+        self.answer("gh", ["release", "view", "v1.3.0"], stdout="false false\n")
+        self.answer("gh", ["api"], stdout="failure https://github.com/dag-node/ai-tools-assets-tools/actions/runs/7\n")
+        status, _, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 1)
+        self.assertIn("the release run for v1.3.0 concluded failure"
+                      " (https://github.com/dag-node/ai-tools-assets-tools/actions/runs/7); fix or re-run it before"
+                      " re-pinning", stderr)
+
+    def test_a_changelog_that_names_another_version_is_refused(self):
+        self.release(self.primary, RELEASE_CHANGELOG.replace("## [1.3.0]", "## [1.3.1]"))
+        status, _, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 1)
+        self.assertIn("the tools' `CHANGELOG.md` at v1.3.0 opens its newest release with `## [1.3.1]`, not"
+                      " `## [1.3.0]`; the tag and the changelog disagree", stderr)
+
+    def test_a_release_section_without_entries_is_refused(self):
+        self.release(self.primary, CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n## [1.3.0] - 2026-11-20\n"))
+        status, _, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 1)
+        self.assertIn("the `## [1.3.0]` section of `CHANGELOG.md` has no entries; the body needs at least one", stderr)
+
+    def test_a_tag_without_a_release_is_refused(self):
+        self.release(self.primary)
+        self.answer("gh", ["release", "view", "v1.3.0"], stderr="release not found\n", status=1)
+        status, _, stderr = self.repin("v1.3.0")
+        self.assertEqual(status, 1)
+        self.assertIn("v1.3.0 has no GitHub release; a caller pins a final release", stderr)
 
 
 if __name__ == "__main__":
