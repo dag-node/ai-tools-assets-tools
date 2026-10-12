@@ -50,9 +50,13 @@
 # `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK for each RPM inside the image of the
 # distribution its dist tag names; the exit status alone passes an unsigned package. The secrets reach a container
 # on stdin, since podman records an `-e` value in the container's configuration on disk. The container that holds
-# the key and those that verify run with no network, so the key cannot leave them whatever the image runs, and
-# the images are pinned by digest, so the environment that signs is the one reviewed; a new point release is taken
-# by replacing the digest with the one `skopeo inspect docker://<image>:<tag>` prints. The containers run through
+# the key and those that verify run with no network, so the key does not leave them over a network; the signed RPMs
+# do leave the signing container and are published, so the digest pins are what fix the code that runs with the key.
+# A new point release is taken by replacing the digest with the one `skopeo inspect --raw docker://<image>:<tag>`
+# returns, hashed with sha256sum. Each verify container runs as root with `--cap-drop=all`, no new privileges,
+# a read-only root, a bound on its processes and the rpm database on a tmpfs, since the step's environment on the
+# runner holds the secrets; it mounts a directory holding the public key and the signed RPMs alone, which root reads
+# without the capability that bypasses a directory's mode. The containers run through
 # `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its default crun rejects the generated OCI
 # spec. el-repos.sh points the EL9 container's repos at one ordered host list before its `dnf install`.
 set -euo pipefail
@@ -60,8 +64,10 @@ set -euo pipefail
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
 # The multi-arch index digests of the Rocky 9 and 10 images, resolved from quay.io on 2026-10-08, and of the Fedora 44
-# image, resolved on 2026-10-12. quay.io expires a Fedora digest once the tag moves on, so a release that reports
-# `manifest unknown` for FC44_IMAGE takes the digest the tag resolves to now.
+# image, resolved on 2026-10-12. Every image is pinned by digest: EL9_IMAGE runs with the signing key and its output is
+# published, and each verify image runs as root on the runner that holds the secrets. quay.io expires a Fedora digest
+# once the tag moves on, so a release that reports `manifest unknown` for FC44_IMAGE takes the digest the tag resolves
+# to now.
 EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
 EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 FC44_IMAGE=quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
@@ -251,7 +257,7 @@ ensure_podman() {
 
 sign_rpm() {
     [[ "$#" -ge 1 ]] || die "usage: sign-rpm <rpm>..."
-    local rpm name names=() work out image
+    local rpm name names=() work verify out image
     require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
     for rpm in "$@"; do
         [[ -f "$rpm" ]] || die "$rpm is not a file"
@@ -297,14 +303,19 @@ sign_rpm() {
     container=""
 
     import_signing_key
-    export_artifact_signer "$work/artifact-signer.asc"
+    new_scratch
+    verify="$scratch"
+    export_artifact_signer "$verify/artifact-signer.asc"
+    for name in "${names[@]}"; do cp "$work/$name" "$verify/$name"; done
+    chmod 0644 "$verify"/*
+    chmod 0755 "$verify"
     for name in "${names[@]}"; do
         dist_image "$name"
-        out="$(sudo podman run --rm --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" "$image" -c '
-                db="$(mktemp -d)"
-                rpmkeys --dbpath "$db" --import /in/artifact-signer.asc || exit 1
+        out="$(sudo podman run --rm --network=none --cap-drop=all --security-opt=no-new-privileges --read-only \
+                --pids-limit=64 --tmpfs /rpmdb --entrypoint /usr/bin/bash -v "$verify:/in:ro" "$image" -c '
+                rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
-                rpmkeys --dbpath "$db" -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
+                rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
             || die "rpmkeys -Kv refused $name in $image: $out"
         printf '%s:\n%s\n' "$image" "$out"
         grep -Eqi "$SIGNATURE_OK_PATTERN" <<<"$out" \
