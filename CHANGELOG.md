@@ -21,6 +21,9 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   a rename widened or narrowed, and shortens the trailing rule of a decorated
   header such as `# ── title ───` to bring it inside the column. A table of
   three columns is not re-padded, and a header is not wrapped.
+- The comment filler fills a paragraph holding a run of rule characters inside
+  a code span, such as `` `*** ... File:` ``. It read such a line as a banner
+  and left the paragraph over the column.
 - `formatters/verify-reflow.py` reports every difference in a file, each with
   its line in the base and in the tree, where it reported the first. A
   protected line whose words survive and whose spacing changed is reported as
