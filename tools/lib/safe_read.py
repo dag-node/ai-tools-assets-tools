@@ -143,7 +143,8 @@ def decode_text(data: bytes) -> str:
 
 
 def read_text_under(root_fd: int, relative_path: PurePath, max_bytes: int) -> str:
-    """The text of the file at `relative_path` under `root_fd`; a file over `max_bytes` raises RefusedRead(`file.size`)."""
+    """The text of the file at `relative_path` under `root_fd`; a file over `max_bytes` raises
+    RefusedRead(`file.size`)."""
     read = read_file_under(root_fd, relative_path, max_bytes)
     if read.truncated:
         raise RefusedRead("file.size", f"is {read.size} bytes; a file is at most {max_bytes}")

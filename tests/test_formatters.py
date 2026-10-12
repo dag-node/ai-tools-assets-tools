@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""Drives the formatters a checkout can prove without Emacs: the reflow gate over a scratch repository, and the table
-aligner's block boundaries over strings and files.
+"""Drives the formatters: the reflow gate over a scratch repository, a page and a shell file in turn, the table
+aligner's block boundaries over strings and files, and, where Emacs is installed, the comment filler over one shape
+per file.
 
 `formatters/verify-reflow.py` is run as a command, since its exit status is what a reflow commit is gated on;
-`formatters/align-tables.py` is imported for `realign()` and run once as a command.
+`formatters/align-tables.py` is imported for `realign()` and run once as a command; `formatters/fill-comments.sh` is run
+as a command over each file.
 """
 from __future__ import annotations
 
@@ -99,6 +101,184 @@ class VerifyReflow(unittest.TestCase):
         status, stdout, stderr = self.verify("--against", str(base), "--", "page.md")
         self.assertEqual((status, stderr), (0, ""))
         self.assertIn("1 pure reflow(s)", stdout)
+
+
+class VerifyReflowSource(unittest.TestCase):
+    """A shell file committed, then rewritten in the tree: the comparisons only a source file's comments carry, and
+    the report every comparison makes."""
+
+    TABLE = ("# The outputs:\n"
+             "#   alpha  one\n"
+             "#   gamma  two\n"
+             "#          more of two\n"
+             "x=1\n")
+
+    def setUp(self):
+        self.repo = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo)
+        for arguments in (["init", "-q", "-b", "main"], ["config", "user.name", "Ada Example"],
+                          ["config", "user.email", "ada@example.org"]):
+            subprocess.run(["git", "-C", str(self.repo), *arguments], check=True, capture_output=True)
+
+    def commit(self, name: str, text: str) -> None:
+        (self.repo / name).write_text(text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "add", name], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "-m", name], check=True, capture_output=True)
+
+    def verify(self, name: str, tree: str):
+        (self.repo / name).write_text(tree, encoding="utf-8")
+        return run("verify-reflow.py", "--repo", str(self.repo), "--base", "HEAD", "--", name)
+
+    def test_a_table_realigned_at_another_column_passes(self):
+        self.commit("table.sh", self.TABLE)
+        status, stdout, _ = self.verify("table.sh", self.TABLE.replace("  one", "    one").replace("  two", "    two")
+                                        .replace("#          more", "#            more"))
+        self.assertEqual(status, 0, stdout)
+
+    def test_a_continuation_that_left_its_column_fails(self):
+        self.commit("table.sh", self.TABLE)
+        status, stdout, _ = self.verify("table.sh", self.TABLE.replace("#          more", "#         more"))
+        self.assertEqual(status, 1, stdout)
+        self.assertIn("FAIL table.sh: column alignment differs at base line 2, tree line 2", stdout)
+
+    def test_rows_that_no_longer_align_fail(self):
+        self.commit("table.sh", self.TABLE)
+        status, stdout, _ = self.verify("table.sh", self.TABLE.replace("  one", "    one"))
+        self.assertEqual(status, 1, stdout)
+        self.assertIn("column alignment differs", stdout)
+
+    def test_a_row_a_fill_joined_fails(self):
+        self.commit("table.sh", self.TABLE)
+        status, stdout, _ = self.verify("table.sh", self.TABLE.replace("#   gamma  two", "#   gamma two"))
+        self.assertEqual(status, 1, stdout)
+        self.assertIn("column table differs", stdout)
+
+    def test_every_difference_is_reported_and_a_respaced_line_apart(self):
+        page = ("# Page\n\nOne two three.\n\n```bash\nsudo ai-tools  status\n```\n\nFour five six.\n")
+        self.commit("page.md", page)
+        status, stdout, _ = self.verify("page.md", page.replace("One", "ONE").replace("six", "SIX")
+                                        .replace("tools  status", "tools status"))
+        self.assertEqual(status, 1, stdout)
+        self.assertIn("FAIL page.md: respaced line differs at base line 6, tree line 6", stdout)
+        self.assertIn("FAIL page.md: token differs at base line 3, tree line 3", stdout)
+        self.assertIn("FAIL page.md: token differs at base line 9, tree line 9", stdout)
+
+
+@unittest.skipUnless(shutil.which("emacs"), "emacs is not installed")
+class FillComments(unittest.TestCase):
+    """`formatters/fill-comments.sh` at 72 columns over one shape per file: the shapes it fills by rules of their own,
+    and the shapes it must leave as written beside them. Each fill is run a second time, which must leave the file as
+    the first left it."""
+
+    CASES = {
+        "hanging paragraph": (
+            "# conf_warn [code] <message...> : this library's one report, on stderr. A leading code goes\n"
+            "#   on its own line ahead of the message,\n"
+            "#   the shape the harness reads.\n"
+            "conf_warn() { :; }\n"
+            "\n"
+            "# Usage:\n"
+            "#   bash tools/format.sh\n"
+            "#   bash tools/lib/assets.sh fetch\n",
+            "# conf_warn [code] <message...> : this library's one report, on stderr.\n"
+            "#   A leading code goes on its own line ahead of the message, the shape\n"
+            "#   the harness reads.\n"
+            "conf_warn() { :; }\n"
+            "\n"
+            "# Usage:\n"
+            "#   bash tools/format.sh\n"
+            "#   bash tools/lib/assets.sh fetch\n"),
+        "two-column block": (
+            "# The ordering is read through one of two entry points.\n"
+            "# read_user <user>  -- read that account's ordering, as root\n"
+            "# read_here         -- read this process's own ordering\n"
+            "\n"
+            "# The entry points, one per account:\n"
+            "# alpha -- read the first account\n"
+            "# gamma -- read the second account\n",
+            None),
+        "dashes a wrap put at one column": (
+            "# The tool reads the key every release has used\n"
+            "# text -- input, patch, and command, which is what codex sends through code\n"
+            "# mode -- so a rename degrades to no path rather than to a parse failure. And then some more words.\n",
+            "# The tool reads the key every release has used text -- input, patch,\n"
+            "# and command, which is what codex sends through code mode --\n"
+            "# so a rename degrades to no path rather than to a parse failure.\n"
+            "# And then some more words.\n"),
+        "table continuation": (
+            "# The inputs:\n"
+            "#   selinux-mode     getenforce output (\"Enforcing\" when type enforcement is active)\n"
+            "#   module-present   \"yes\" when the module is live\n"
+            "x=1\n",
+            "# The inputs:\n"
+            "#   selinux-mode     getenforce output (\"Enforcing\" when type\n"
+            "#                    enforcement is active)\n"
+            "#   module-present   \"yes\" when the module is live\n"
+            "x=1\n"),
+        "decorated header": (
+            "f() {\n"
+            "    # ── Scope: which files, and which of their lines grew ─────────────────\n"
+            "    # " + "─" * 76 + "\n"
+            "    :\n"
+            "}\n",
+            "f() {\n"
+            "    # ── Scope: which files, and which of their lines grew ─────────────\n"
+            "    # " + "─" * 76 + "\n"
+            "    :\n"
+            "}\n"),
+        "renamed first column": (
+            "# The plan's outputs:\n"
+            "#   mode            getenforce output\n"
+            "#   module-present-and-loaded  the module is live, as the probe\n"
+            "#                   classifies it\n"
+            "#   label           the entrypoint's live label\n"
+            "x=1\n",
+            "# The plan's outputs:\n"
+            "#   mode                       getenforce output\n"
+            "#   module-present-and-loaded  the module is live, as the probe\n"
+            "#                              classifies it\n"
+            "#   label                      the entrypoint's live label\n"
+            "x=1\n"),
+        "rule characters inside a code span": (
+            "# The hook reads the patch text, and a value that is not patch text does not match the `*** ... File:` "
+            "line.\n"
+            "x=1\n"
+            "# ── A banner that stays ──────\n"
+            "# A paragraph after the banner.\n",
+            "# The hook reads the patch text, and a value that is not patch text does\n"
+            "# not match the `*** ... File:` line.\n"
+            "x=1\n"
+            "# ── A banner that stays ──────\n"
+            "# A paragraph after the banner.\n"),
+        "table of three columns": (
+            "# The verdicts:\n"
+            "#   explicit \"Enforcing\" / \"1\"            = confirmed         -> allow\n"
+            "#   \"unknown\" alone, or \"Permissive\"/\"0\" = not confirmed     -> warn\n"
+            "# The registry:\n"
+            "#   scope    = system       -- checkable unprivileged\n"
+            "#              sandbox-user  -- a unit in the sandbox account\n"
+            "#   severity = critical      -- down affects a session\n"
+            "#   stamp     = a last-run stamp, or empty\n"
+            "x=1\n",
+            None),
+    }
+
+    def fill(self, path: pathlib.Path) -> None:
+        completed = subprocess.run(["bash", str(FORMATTERS / "fill-comments.sh"), "--width", "72", "--", str(path)],
+                                   capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_each_shape(self):
+        scratch = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch)
+        for index, (shape, (given, expected)) in enumerate(self.CASES.items()):
+            with self.subTest(shape):
+                path = scratch / f"case{index}.sh"
+                path.write_text(given, encoding="utf-8")
+                self.fill(path)
+                self.assertEqual(path.read_text(encoding="utf-8"), expected or given)
+                self.fill(path)
+                self.assertEqual(path.read_text(encoding="utf-8"), expected or given, "a second run changed it")
 
 
 class AlignTables(unittest.TestCase):

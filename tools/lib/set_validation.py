@@ -41,7 +41,8 @@ SHA256SUMS_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64}) [ *](?P<path>.+)$")
 @dataclass
 class FileRecord:
     """One regular file the walk read: its bytes and digest when it was read whole, and the text where the suffix is
-    one the rules inspect. `data` and `digest` are None for a file over the size cap, whose first bytes alone were read."""
+    one the rules inspect. `data` and `digest` are None for a file over the size cap, whose first bytes alone were
+    read."""
 
     relative_path: Path
     size: int
@@ -303,7 +304,8 @@ class _SetValidator:
         self.summary.files.append(record)
 
     def keep_text(self, relative_path: Path, record: FileRecord) -> bool:
-        """Decode the bytes read and keep the text where a rule inspects the suffix; False after a `file.binary` refusal."""
+        """Decode the bytes read and keep the text where a rule inspects the suffix; False after a `file.binary`
+        refusal."""
         try:
             text = record.data.decode("utf-8")
         except UnicodeDecodeError:
@@ -352,7 +354,8 @@ class _SetValidator:
         return fmt.ENTRY_DIRECTORY if relative_path in self.directories else fmt.ENTRY_FILE
 
     def check_entry_types(self, entries: Sequence[Path], types: Dict[str, str], rule_id: str) -> List[Path]:
-        """Refuse each allowed entry that is a file where a directory is specified or the reverse; the rest are returned."""
+        """Refuse each allowed entry that is a file where a directory is specified or the reverse; the rest are
+        returned."""
         well_typed: List[Path] = []
         for entry in entries:
             expected = types.get(entry.name)

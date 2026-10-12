@@ -7,6 +7,47 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-12
+
+### Changed
+
+- **Fixtures out of the RPM.** The RPM `ai-tools-assets-tools` does not install
+  the conformance fixtures, and an upgrade removes
+  `/usr/share/ai-tools-assets-tools/fixtures`. The release archive keeps them
+  for a validator held to them. An installed tool does not read them.
+
+### Fixed
+
+- **Fedora 44 image.** A release verifies its Fedora 44 RPM in the image
+  quay.io serves for `fedora:44` on 2026-10-12. quay.io expired the digest
+  1.1.0 pinned, so a release run from 1.1.0 stops at that check
+  with `manifest unknown`.
+- **Hanging paragraphs.** `formatters/fill-comments.sh` refills a contract
+  head such as `name <args> : text` and the lines indented under it as one
+  paragraph, its first line keeping the head's prefix. Such a paragraph was
+  left over the column.
+- **Two-column blocks.** The comment filler leaves a block as written whose
+  rows a gap of two spaces splits, or a ` -- ` at one column from a line that
+  opens a sentence. It joined the block's first row to the paragraph before it.
+- **Column tables.** The comment filler wraps a cell that runs past the column
+  at the cell's own indent. It re-pads a two-column table whose first column
+  a rename widened or narrowed, and leaves a table of three columns as written.
+- **Decorated headers.** The comment filler shortens the trailing rule of
+  a header such as `# ── title ───` to bring it inside the column, and does
+  not wrap it.
+- **Rule characters in a code span.** The comment filler fills a paragraph
+  holding a span such as `` `*** ... File:` ``. It read the line as a banner
+  and left the paragraph over the column.
+- **Every reflow difference.** `formatters/verify-reflow.py` reports each
+  difference in a file with its line in the base and in the tree. It reported
+  the first alone.
+- **Respaced lines.** The reflow gate reports a protected line whose spacing
+  alone changed as `respaced line`, apart from a damaged one, and fails like
+  it.
+- **Column alignment.** The reflow gate holds a comment's column table to its
+  first column and its alignment. A column a fill broke fails, and a table
+  re-padded at another column passes.
+
 ## [1.1.0] - 2026-10-09
 
 ### Changed

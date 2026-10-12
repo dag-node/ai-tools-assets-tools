@@ -21,16 +21,17 @@ jobs:
       dispatch-rpm: true
 ```
 
-The job reads the set and the version from the tag, verifies the tag against
-the pinned maintainer keys, runs `tools/validate`, `tools/check-publisher
---repository` and `tools/build-set`, signs `SHA256SUMS` and the zip with the
-org package-signing key, builds the RPM `ai-tools-assets-<set>` with nFPM
-once for each distribution `rpm.dagnode.com` serves (EL9, EL10, Fedora 44),
-signs the RPMs in an EL9 container and verifies each in its own distribution,
-and creates the GitHub release. With `dispatch-rpm: true` it then asks
-`dag-node/rpm` to publish the RPMs at `rpm.dagnode.com`; a prerelease tag (`<set>/v1.2.0-rc.1`)
-creates a prerelease and does not dispatch. The set's `version` in `set.conf`
-must equal the tag's.
+The job reads the set and the version from the tag, verifies the tag
+against the pinned maintainer keys, runs `tools/validate`,
+`tools/check-publisher --repository` and `tools/build-set`, signs `SHA256SUMS`
+and the zip with the org package-signing key, builds the RPM
+`ai-tools-assets-<set>` with nFPM once for each distribution `rpm.dagnode.com`
+serves (EL9, EL10, Fedora 44), signs the RPMs in an EL9 container and verifies
+each in its own distribution, and creates the GitHub release.
+With `dispatch-rpm: true` it then asks `dag-node/rpm` to publish the RPMs
+at `rpm.dagnode.com`; a prerelease tag (`<set>/v1.2.0-rc.1`) creates
+a prerelease and does not dispatch. The set's `version` in `set.conf` must
+equal the tag's.
 
 ## Inputs
 

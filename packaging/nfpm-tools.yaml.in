@@ -3,8 +3,9 @@
 # upper-case key between two at signs, with a quoted value. nFPM runs from the root of the release archive's extracted
 # tree, which the relative src paths name, so the package carries the bytes of the verified commit. It installs under
 # /usr/share/ai-tools-assets-tools/ and does not put a command on PATH: a command runs as
-# `python3 /usr/share/ai-tools-assets-tools/tools/<name>`. The fixtures keep their one symbolic link, the input
-# the file.symlink rule refuses. umask, buildhost and SOURCE_DATE_EPOCH serve as in nfpm-set.yaml.in.
+# `python3 /usr/share/ai-tools-assets-tools/tools/<name>`. The conformance fixtures ship in the release archive alone:
+# another project's validator reads them from there, and an installed tool does not read them. umask, buildhost and
+# SOURCE_DATE_EPOCH serve as in nfpm-set.yaml.in.
 name: ai-tools-assets-tools
 arch: all
 platform: linux
@@ -15,7 +16,7 @@ maintainer: "dag-node <tools@dagnode.com>"
 vendor: dag-node
 homepage: https://github.com/dag-node/ai-tools-assets-tools
 license: MIT AND AGPL-3.0-only
-description: The ai-tools-assets format, the tools that check and build a set, and the conformance fixtures
+description: The ai-tools-assets format and the tools that check and build a set
 umask: 0o022
 contents:
   - dst: /usr/share/ai-tools-assets-tools
@@ -28,9 +29,6 @@ contents:
   - src: format
     dst: /usr/share/ai-tools-assets-tools/format
     type: tree
-  - src: fixtures
-    dst: /usr/share/ai-tools-assets-tools/fixtures
-    type: tree
   - src: formatters
     dst: /usr/share/ai-tools-assets-tools/formatters
     type: tree
@@ -40,5 +38,5 @@ contents:
   - src: LICENSE
     dst: /usr/share/ai-tools-assets-tools/LICENSE
 rpm:
-  summary: The ai-tools-assets format, tools and fixtures
+  summary: The ai-tools-assets format and tools
   buildhost: ai-tools-assets-release

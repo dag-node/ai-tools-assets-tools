@@ -94,10 +94,10 @@ SET_ROOT_ENTRY_TYPES: Dict[str, str] = {
     "skills": ENTRY_DIRECTORY, "agents": ENTRY_DIRECTORY, "metadata": ENTRY_DIRECTORY,
 }
 SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SET_ROOT_ENTRY_TYPES)
-# Reserved: named now so the format can allow each without a rename. Allowing one is additive and stays format 1: a capability
-# token joins KNOWN_CAPABILITIES, the entry moves to the allowed table, and a set carrying content at it declares the
-# token, so a reader without the token refuses the set whole. Until then no capability allows content at one.
-# `llms.txt` is the agent-discovery index (llmstxt.org) the tools may generate beside the manifests.
+# Reserved: named now so the format can allow each without a rename. Allowing one is additive and stays format 1:
+# a capability token joins KNOWN_CAPABILITIES, the entry moves to the allowed table, and a set carrying content at it
+# declares the token, so a reader without the token refuses the set whole. Until then no capability allows content
+# at one. `llms.txt` is the agent-discovery index (llmstxt.org) the tools may generate beside the manifests.
 SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt"})
 RELEASE_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({"SHA256SUMS", "SHA256SUMS.asc"})
 CLAUDE_PLUGIN_DIRECTORY = ".claude-plugin"
