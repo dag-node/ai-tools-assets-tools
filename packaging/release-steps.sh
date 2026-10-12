@@ -60,10 +60,11 @@ set -euo pipefail
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
 # The multi-arch index digests of the Rocky 9 and 10 images, resolved from quay.io on 2026-10-08, and of the Fedora 44
-# image, resolved on 2026-10-09.
+# image, resolved on 2026-10-12. quay.io expires a Fedora digest once the tag moves on, so a release that reports
+# `manifest unknown` for FC44_IMAGE takes the digest the tag resolves to now.
 EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
 EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
-FC44_IMAGE=quay.io/fedora/fedora:44@sha256:8ade22c0f76f6b2f0892290b1fb39fa1bda1566ba6e276a2ed427f45589c159b
+FC44_IMAGE=quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
 # The distributions an RPM is built for, by dist tag, each with the image its signature is verified in.
 declare -A DIST_IMAGES=([el9]="$EL9_IMAGE" [el10]="$EL10_IMAGE" [fc44]="$FC44_IMAGE")
 # Every curl: HTTPS alone, no scheme change on a redirect, and a bound on the whole transfer.
