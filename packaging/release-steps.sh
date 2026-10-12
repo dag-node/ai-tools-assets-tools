@@ -58,13 +58,15 @@
 # on stdin, since podman records an `-e` value in the container's configuration on disk. The container that holds
 # the key and those that verify run with no network, so the key does not leave them over a network; the signed RPMs
 # do leave the signing container and are published, so the digest pins are what fix the code that runs with the key.
-# A new point release is taken by replacing the digest with the one `skopeo inspect --raw docker://<image>:<tag>`
-# returns, hashed with sha256sum. Each verify container runs as root with `--cap-drop=all`, no new privileges,
-# a read-only root, a bound on its processes and the rpm database on a tmpfs, since the step's environment on the
-# runner holds the secrets; it mounts a directory holding the public key and the signed RPMs alone, which root reads
-# without the capability that bypasses a directory's mode. The containers run through
-# `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its default crun rejects the generated OCI
-# spec. el-repos.sh points the EL9 container's repos at one ordered host list before its `dnf install`.
+# check-images names the digest to take when the registry retires a pin. preflight pulls every image after its key and
+# token checks, ahead of the first signature, and each container runs with `--pull=never`, so an image the registry
+# retires between check-images and the run stops the run before a signature or a version is spent. Each verify
+# container runs as root with `--cap-drop=all`, no new privileges, a read-only root, a bound on its processes and
+# the rpm database on a tmpfs, since the step's environment on the runner holds the secrets; it mounts a directory
+# holding the public key and the signed RPMs alone, which root reads without the capability that bypasses a directory's
+# mode. The containers run through `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its
+# default crun rejects the generated OCI spec. el-repos.sh points the EL9 container's repos at one ordered host list
+# before its `dnf install`.
 set -euo pipefail
 
 NFPM_VERSION=2.47.0
@@ -194,7 +196,7 @@ _release_steps__verify_tag() {
 }
 
 _release_steps__run_preflight() {
-    local response
+    local response dist
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
     # sign-rpms.sh reads the passphrase as the first stdin line, so a second line would corrupt the key read after it.
     [[ "$GPG_SIGNING_PASSPHRASE" != *$'\n'* ]] || _release_steps__die "GPG_SIGNING_PASSPHRASE spans more than one line"
@@ -208,6 +210,13 @@ _release_steps__run_preflight() {
             || _release_steps__die "RPM_REPO_DISPATCH_TOKEN cannot read dag-node/rpm: $response"
         echo "the dispatch token reads $response"
     fi
+    # Every image is pulled before sign-files makes the first signature, and sign-rpm runs these copies alone.
+    _release_steps__ensure_podman
+    for dist in "${!DIST_IMAGES[@]}"; do
+        response="$(sudo podman pull --quiet "${DIST_IMAGES[$dist]}" 2>&1)" \
+            || _release_steps__die "podman did not pull the $dist image ${DIST_IMAGES[$dist]} ($response); \`check-images\` names a digest the registry no longer serves, and the digest to pin"
+        echo "pulled the $dist image ${DIST_IMAGES[$dist]}"
+    done
 }
 
 # _release_steps__export_artifact_signer <file>: write the pinned primary's public key, from the imported
@@ -420,7 +429,7 @@ _release_steps__sign_rpm() {
     cp "$PACKAGING/sign-rpms.sh" "$PACKAGING/el-repos.sh" "$work/"
 
     container="ai-tools-assets-sign-tools-$$"
-    sudo podman run --name "$container" --entrypoint /usr/bin/bash -v "$work:/in:ro" "$EL9_IMAGE" -c '
+    sudo podman run --pull=never --name "$container" --entrypoint /usr/bin/bash -v "$work:/in:ro" "$EL9_IMAGE" -c '
             set -euo pipefail
             bash /in/el-repos.sh
             dnf -y -q --setopt=install_weak_deps=False install rpm-sign gnupg2' </dev/null \
@@ -431,7 +440,7 @@ _release_steps__sign_rpm() {
     # The key enters this container alone, and it has no network.
     container="ai-tools-assets-sign-$$"
     out="$(printf '%s\n%s\n' "$GPG_SIGNING_PASSPHRASE" "$GPG_SIGNING_KEY" \
-        | sudo podman run -i --name "$container" --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" \
+        | sudo podman run -i --pull=never --name "$container" --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" \
             "$SIGN_IMAGE" -c '
             set -euo pipefail
             mkdir /out
@@ -456,7 +465,7 @@ _release_steps__sign_rpm() {
     chmod 0755 "$verify"
     for name in "${names[@]}"; do
         _release_steps__resolve_dist_image "$name"
-        out="$(sudo podman run --rm --network=none --cap-drop=all --security-opt=no-new-privileges --read-only \
+        out="$(sudo podman run --rm --pull=never --network=none --cap-drop=all --security-opt=no-new-privileges --read-only \
                 --pids-limit=64 --tmpfs /rpmdb --entrypoint /usr/bin/bash -v "$verify:/in:ro" "$image" -c '
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
