@@ -7,6 +7,8 @@
 #
 # ```bash
 # bash packaging/release-steps.sh check-images
+# bash packaging/release-steps.sh refresh-images --id <ID> [--caller <path>]... [--dry-run]
+# bash <tools>/packaging/release-steps.sh repin-tools --id <ID> <sha>|<vX.Y.Z> [--pr <number>] [--dry-run]
 # bash packaging/release-steps.sh verify-tag <tag> <event-commit>
 # bash packaging/release-steps.sh preflight
 # bash packaging/release-steps.sh sign-files <file>...
@@ -16,7 +18,8 @@
 # bash packaging/release-steps.sh dispatch <tag>
 # ```
 #
-# Environment, by subcommand (check-images reads none):
+# Environment, by subcommand (check-images, refresh-images and repin-tools read none; the last two use the operator's
+# own git and gh credentials, and `--help` prints their usage):
 #   verify-tag      TAG_SIGNER_PRIMARY_FINGERPRINTS (space-separated), TAG_SIGNER_KEY_URL
 #   preflight       GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; DISPATCH_RPM=true adds
 #                   RPM_REPO_DISPATCH_TOKEN
@@ -73,16 +76,18 @@ set -euo pipefail
 
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
-# The multi-arch index digests of the Rocky 9 and 10 images, resolved from quay.io on 2026-10-08, and of the Fedora 44
-# image, resolved on 2026-10-12. Every image is pinned by digest: EL9_IMAGE runs with the signing key and its output is
-# published, and each verify image runs as root on the runner that holds the secrets; check-images refuses an entry
-# without a digest. quay.io expires a Fedora digest once the tag moves on, so a release that reports `manifest unknown`
-# for FC44_IMAGE takes the digest the tag resolves to now.
-EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
-EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
-FC44_IMAGE=quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
+# The multi-arch index digest of each image, each line ending in the date it was resolved. Every image is pinned by
+# digest: EL9_IMAGE runs with the signing key and its output is published, and each verify image runs as root on
+# the runner that holds the secrets; check-images refuses an entry without a digest. quay.io retires a digest once its
+# tag moves on. refresh-images then rewrites the line to the digest the tag resolves to, as a commit on develop that
+# each caller pins with repin-tools, and the next release carries it.
+EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f # resolved 2026-10-08
+EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # resolved 2026-10-08
+FC44_IMAGE=quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d # resolved 2026-10-12
 # The distributions an RPM is built for, by dist tag, each with the image its signature is verified in.
 declare -A DIST_IMAGES=([el9]="$EL9_IMAGE" [el10]="$EL10_IMAGE" [fc44]="$FC44_IMAGE")
+# The name each distribution takes in the commit, the pull request and the changelog entry of a digest refresh.
+declare -A _RELEASE_STEPS__DIST_NAMES=([el9]="Rocky 9" [el10]="Rocky 10" [fc44]="Fedora 44")
 # Every curl: HTTPS alone, no scheme change on a redirect, and a bound on the whole transfer.
 CURL=(curl -sSf --proto '=https' --proto-redir '=https' --max-time 120)
 SIGN_IMAGE=localhost/ai-tools-assets-sign:el9
@@ -109,8 +114,17 @@ _RELEASE_STEPS__CALLER_PREFIXES=()
 _RELEASE_STEPS__CALLER_WORKFLOWS=()
 _RELEASE_STEPS__CALLER_REFS=()
 _RELEASE_STEPS__CALLER_COMMENTS=()
+# The tag object and its signer that verify-tag and repin-tools accept.
+_RELEASE_STEPS__TAG_OBJECT=""
+_RELEASE_STEPS__TAG_PRIMARY=""
 
-_release_steps__die() { echo "::error::release-steps: $*" >&2; exit 1; }
+# A refusal; while refresh-images checks a caller, the framing names the caller and that the tools are unchanged.
+_RELEASE_STEPS__DIE_PREFIX=""
+_RELEASE_STEPS__DIE_SUFFIX=""
+_release_steps__die() {
+    echo "::error::release-steps: $_RELEASE_STEPS__DIE_PREFIX$*$_RELEASE_STEPS__DIE_SUFFIX" >&2
+    exit 1
+}
 
 # Every scratch directory and the signing container are removed on exit, a gpg-agent started in a scratch directory is
 # stopped first, and INT and TERM exit through the same trap. The helpers set globals rather than print, since state
@@ -118,9 +132,15 @@ _release_steps__die() { echo "::error::release-steps: $*" >&2; exit 1; }
 scratch_directories=()
 container=""
 _RELEASE_STEPS__TEMP_DIR=""
+_RELEASE_STEPS__WORKTREE=""
+_RELEASE_STEPS__WORKTREE_REPOSITORY=""
 _release_steps__remove_scratch_and_container() {
     local directory
     [[ -n "$container" ]] && sudo podman rm -f "$container" >/dev/null 2>&1
+    if [[ -n "$_RELEASE_STEPS__WORKTREE" ]]; then
+        git -C "$_RELEASE_STEPS__WORKTREE_REPOSITORY" worktree remove --force \
+            "$_RELEASE_STEPS__WORKTREE" >/dev/null 2>&1 || true
+    fi
     for directory in "${scratch_directories[@]}"; do
         GNUPGHOME="$directory" gpgconf --kill gpg-agent 2>/dev/null || true
         rm -rf "$directory"
@@ -177,29 +197,52 @@ _release_steps__import_signing_key() {
     signing_primary="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
 }
 
+# _release_steps__resolve_tag_object <repository-dir> <tag>: set _RELEASE_STEPS__TAG_OBJECT to
+# the annotated tag object refs/tags/<tag> names, once that object names itself <tag>.
+_release_steps__resolve_tag_object() {
+    local directory="$1" tag="$2" tag_object embedded
+    tag_object="$(git -C "$directory" rev-parse --verify --quiet "refs/tags/$tag^{tag}")" \
+        || _release_steps__die "$tag is not an annotated tag; a release tag is created with git tag -s"
+    embedded="$(git -C "$directory" cat-file -p "$tag_object" | awk '/^tag / { print $2; exit }')"
+    [[ "$embedded" == "$tag" ]] \
+        || _release_steps__die "the tag object names itself $embedded, not $tag; a tag object is published under its own name"
+    _RELEASE_STEPS__TAG_OBJECT="$tag_object"
+}
+
+# _release_steps__verify_tag_signature <repository-dir> <tag> <tag-object> <fingerprints> <key-url>: refuse
+# a tag object without a PGP signature, then import the signers' keys from <key-url> into a scratch keyring and require
+# `git verify-tag` to report a VALIDSIG primary on the space-separated <fingerprints>. Sets
+# _RELEASE_STEPS__TAG_PRIMARY.
+_release_steps__verify_tag_signature() {
+    local directory="$1" tag="$2" tag_object="$3" fingerprints="$4" key_url="$5" status primary
+    git -C "$directory" cat-file -p "$tag_object" | grep -qx -- '-----BEGIN PGP SIGNATURE-----' \
+        || _release_steps__die "$tag carries no PGP signature; a release tag is created with git tag -s"
+    _release_steps__create_scratch
+    export GNUPGHOME="$scratch"
+    "${CURL[@]}" "$key_url" | gpg --batch --quiet --import \
+        || _release_steps__die "the tag signers' key did not import from $key_url"
+    status="$(git -C "$directory" verify-tag --raw "$tag_object" 2>&1)" \
+        || _release_steps__die "$tag does not verify: $status"
+    primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF; exit }')"
+    [[ -n "$primary" && " $fingerprints " == *" $primary "* ]] \
+        || _release_steps__die "$tag is signed by primary ${primary:-none}, which is not on the pinned list: $fingerprints"
+    _RELEASE_STEPS__TAG_PRIMARY="$primary"
+}
+
 _release_steps__verify_tag() {
     [[ "$#" -eq 2 ]] || _release_steps__die "usage: verify-tag <tag> <event-commit>"
-    local tag="$1" event_commit="$2" tag_object embedded commit status primary
+    local tag="$1" event_commit="$2" tag_object commit
     _release_steps__require_env TAG_SIGNER_PRIMARY_FINGERPRINTS TAG_SIGNER_KEY_URL
     git fetch --quiet --no-tags --force origin "+refs/tags/$tag:refs/tags/$tag" \
         || _release_steps__die "refs/tags/$tag did not fetch from origin"
-    tag_object="$(git rev-parse --verify --quiet "refs/tags/$tag^{tag}")" \
-        || _release_steps__die "$tag is not an annotated tag; a release tag is created with git tag -s"
-    embedded="$(git cat-file -p "$tag_object" | awk '/^tag / { print $2; exit }')"
-    [[ "$embedded" == "$tag" ]] \
-        || _release_steps__die "the tag object names itself $embedded, not $tag; a tag object is published under its own name"
+    _release_steps__resolve_tag_object "$PWD" "$tag"
+    tag_object="$_RELEASE_STEPS__TAG_OBJECT"
     commit="$(git rev-parse "$tag_object^{commit}")"
     [[ "$commit" == "$event_commit" && "$commit" == "$(git rev-parse HEAD)" ]] \
         || _release_steps__die "$tag peels to $commit; the event's commit is $event_commit and the checkout is $(git rev-parse HEAD)"
-    _release_steps__create_scratch
-    export GNUPGHOME="$scratch"
-    "${CURL[@]}" "$TAG_SIGNER_KEY_URL" | gpg --batch --quiet --import \
-        || _release_steps__die "the tag signers' key did not import from $TAG_SIGNER_KEY_URL"
-    status="$(git verify-tag --raw "$tag_object" 2>&1)" || _release_steps__die "$tag does not verify: $status"
-    primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF; exit }')"
-    [[ -n "$primary" && " $TAG_SIGNER_PRIMARY_FINGERPRINTS " == *" $primary "* ]] \
-        || _release_steps__die "$tag is signed by primary ${primary:-none}, which is not on the pinned list: $TAG_SIGNER_PRIMARY_FINGERPRINTS"
-    echo "$tag verified: tag object $tag_object, commit $commit, signed by $primary"
+    _release_steps__verify_tag_signature "$PWD" "$tag" "$tag_object" "$TAG_SIGNER_PRIMARY_FINGERPRINTS" \
+        "$TAG_SIGNER_KEY_URL"
+    echo "$tag verified: tag object $tag_object, commit $commit, signed by $_RELEASE_STEPS__TAG_PRIMARY"
     if [[ -n "${GITHUB_ENV:-}" ]]; then
         printf 'RELEASE_COMMIT=%s\nRELEASE_TAG_OBJECT=%s\n' "$commit" "$tag_object" >> "$GITHUB_ENV"
     fi
@@ -583,11 +626,650 @@ _release_steps__dispatch() {
     _release_steps__die "the dispatch to dag-node/rpm failed after $attempts attempts; the release exists, and re-running this step dispatches again"
 }
 
-[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+# The digest refresh. refresh-images (in a checkout of the tools) and repin-tools (in a caller's checkout, run from
+# the tools' tree) each turn one half of a refresh into a branch, a signed-off commit and a pull request, with a body
+# generated from what the command read. Each reads its progress from the repositories and does not keep a state file:
+# a branch already carrying the generated change is reused, a pushed branch is not pushed again, and an open pull
+# request is printed instead of created, so the same command line continues after an interruption. Every local step
+# precedes the push and the pull request comes last. Each step prints a line before it acts and an `ok:` line once it
+# verified the result. A dry run fetches origin/develop and writes the change in the scratch worktree, which is removed
+# on exit; it does not commit, push, open a pull request, or change a branch, a tag or the working tree.
+_RELEASE_STEPS__COMMAND=""
+_RELEASE_STEPS__ID=""
+_RELEASE_STEPS__DRY_RUN=false
+_RELEASE_STEPS__GH_READY=false
+_RELEASE_STEPS__CALLERS=()
+_RELEASE_STEPS__PULL_REQUEST=""
+_RELEASE_STEPS__TARGET=""
+_RELEASE_STEPS__GITHUB_REPOSITORY=""
+_RELEASE_STEPS__WAITED_SECONDS=0
+_RELEASE_STEPS__PULL_REQUEST_URL=""
+# GitHub serves a pushed branch, a merged commit's pull request and a release lookup eventually; a lookup is retried
+# this many times, waiting attempt x this many seconds after each failure but the last, as dispatch retries.
+_RELEASE_STEPS__RETRY_ATTEMPTS=5
+_RELEASE_STEPS__RETRY_SECONDS=10
+# gh pr create's answers while GitHub does not yet serve a branch just pushed.
+_RELEASE_STEPS__BRANCH_NOT_SERVED_PATTERN="not found|could not find|Head sha can't be blank|No commits between|must first push"
+_RELEASE_STEPS__TOOLS_URL="https://github.com/$_RELEASE_STEPS__TOOLS_REPOSITORY.git"
+
+_release_steps__step() { echo "release-steps: $_RELEASE_STEPS__COMMAND: $*"; }
+_release_steps__ok() { echo "release-steps: ok: $*"; }
+_release_steps__next() { echo "release-steps: next, $*"; }
+_release_steps__warn() { echo "::warning::release-steps: $*" >&2; }
+
+_release_steps__print_change_usage() {
+    cat <<'USAGE'
+usage: release-steps.sh refresh-images --id <ID> [--caller <path>]... [--dry-run]
+       release-steps.sh repin-tools --id <ID> <sha>|<vX.Y.Z> [--pr <number>] [--dry-run]
+
+refresh-images, in a checkout of ai-tools-assets-tools on a clean develop equal to origin/develop: runs check-images,
+rewrites each expired <DIST>_IMAGE pin to the digest its tag resolves to now, adds the CHANGELOG.md entry, and opens
+the pull request build/<ID>-<dists>-digest into develop. --caller runs repin-tools' preconditions in each named
+caller's checkout first, so a caller that is not ready refuses the refresh before this tree changes.
+
+repin-tools, in a caller's checkout on a clean develop equal to origin/develop, run from the tools' tree
+(bash ../ai-tools-assets-tools/packaging/release-steps.sh repin-tools ...): rewrites every `uses:` line naming a
+workflow of dag-node/ai-tools-assets-tools to one commit and opens the pull request into develop.
+  <sha>     a digest refresh merged into the tools' develop, pinned until the next tools release; refused unless it
+            changes image pin lines and CHANGELOG.md alone. --pr names its pull request where GitHub does not.
+  <vX.Y.Z>  a tools release: a tag signed by a key the tools' release.yml pins, with a release whose run passed.
+
+<ID> is <PREFIX>-<yyMMdd><letter>, as ATR-261103a, and names the branch. --dry-run runs every check, prints the diff,
+the title and the body, and does not commit, push, open a pull request, or change a branch, a tag or the working tree.
+Re-running a command after an interruption continues it.
+USAGE
+}
+
+# _release_steps__parse_change_arguments <command> <argument>...: set the options of refresh-images or
+# repin-tools, refusing one the command does not take.
+_release_steps__parse_change_arguments() {
+    local command="$1"
+    shift
+    _RELEASE_STEPS__COMMAND="$command"
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --help) _release_steps__print_change_usage; exit 0 ;;
+            --dry-run) _RELEASE_STEPS__DRY_RUN=true ;;
+            --id) [[ "$#" -ge 2 ]] || _release_steps__die "\`--id\` takes a value"
+                _RELEASE_STEPS__ID="$2"; shift ;;
+            --caller) [[ "$command" == refresh-images && "$#" -ge 2 ]] \
+                    || _release_steps__die "\`--caller <path>\` is an option of refresh-images"
+                _RELEASE_STEPS__CALLERS+=("$2"); shift ;;
+            --pr) [[ "$command" == repin-tools && "$#" -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] \
+                    || _release_steps__die "\`--pr <number>\` is an option of repin-tools"
+                _RELEASE_STEPS__PULL_REQUEST="$2"; shift ;;
+            -*) _release_steps__die "$command does not take $1; see \`release-steps.sh $command --help\`" ;;
+            *) [[ "$command" == repin-tools && -z "$_RELEASE_STEPS__TARGET" ]] \
+                    || _release_steps__die "$command does not take the argument $1; see \`release-steps.sh $command --help\`"
+                _RELEASE_STEPS__TARGET="$1" ;;
+        esac
+        shift
+    done
+    [[ "$_RELEASE_STEPS__ID" =~ ^[A-Z][A-Z0-9]{0,15}-[0-9]{6}[a-z]$ ]] \
+        || _release_steps__die "\`--id\` is required, as \`<PREFIX>-<yyMMdd><letter>\` (for example \`ATR-261103a\`)"
+    [[ "$command" == refresh-images || -n "$_RELEASE_STEPS__TARGET" ]] \
+        || _release_steps__die "give a commit SHA of the tools (a digest refresh) or a release tag \`vX.Y.Z\`"
+}
+
+# _release_steps__read_github_repository <directory>: set _RELEASE_STEPS__GITHUB_REPOSITORY to the
+# <owner>/<name> of the GitHub repository the checkout's origin is. The configured URL is read as written, before
+# any url.<base>.insteadOf rewrite.
+_release_steps__read_github_repository() {
+    local url
+    url="$(git -C "$1" config --get remote.origin.url)" || _release_steps__die "$1 has no remote origin"
+    url="${url%/}"
+    url="${url%.git}"
+    [[ "$url" =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$ ]] \
+        || _release_steps__die "the origin of $1 is $url, not a repository on github.com"
+    _RELEASE_STEPS__GITHUB_REPOSITORY="${BASH_REMATCH[2]}"
+}
+
+# _release_steps__read_toplevel <directory>: print the root of the work tree <directory> is in, resolved.
+_release_steps__read_toplevel() {
+    local toplevel
+    toplevel="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    realpath "$toplevel"
+}
+
+# Refuse unless the current directory is the root of the checkout of the tools that holds this script.
+_release_steps__require_tools_checkout() {
+    local here tools
+    here="$(realpath "$PWD")"
+    tools="$(_release_steps__read_toplevel "$PACKAGING")" || tools=""
+    [[ -n "$tools" && "$(_release_steps__read_toplevel "$PWD")" == "$here" && "$here" == "$tools" ]] \
+        || _release_steps__die "$PWD is not a checkout of ai-tools-assets-tools; run from the repository root"
+    _release_steps__read_github_repository "$here"
+    [[ "${_RELEASE_STEPS__GITHUB_REPOSITORY,,}" == "${_RELEASE_STEPS__TOOLS_REPOSITORY,,}" ]] \
+        || _release_steps__die "$PWD is not a checkout of ai-tools-assets-tools; run from the repository root"
+}
+
+# _release_steps__require_caller_checkout <directory>: refuse unless <directory> is the root of a checkout
+# of a repository other than the tools that holds a .github/workflows/ directory.
+_release_steps__require_caller_checkout() {
+    local directory="$1" here
+    here="$(realpath "$directory" 2>/dev/null)" || here=""
+    [[ -n "$here" && "$(_release_steps__read_toplevel "$directory")" == "$here" \
+        && -d "$here/.github/workflows" && "$here" != "$(_release_steps__read_toplevel "$PACKAGING")" ]] \
+        || _release_steps__die "$directory is not a checkout of a caller with a \`.github/workflows/\`; run from the repository root"
+}
+
+# Refuse unless this script runs from a checkout of the tools, whose tree repin-tools reads.
+_release_steps__require_tools_tree() {
+    local tools url
+    tools="$(_release_steps__read_toplevel "$PACKAGING")" || tools=""
+    url="$(git -C "${tools:-/}" config --get remote.origin.url 2>/dev/null)" || url=""
+    url="${url%/}"
+    url="${url%.git}"
+    if [[ -z "$tools" || "${url,,}" != *[:/]"${_RELEASE_STEPS__TOOLS_REPOSITORY,,}" ]]; then
+        _release_steps__die "run from ai-tools-assets-tools's tree, in the caller's checkout: \`bash <ai-tools-assets-tools>/packaging/release-steps.sh repin-tools …\`"
+    fi
+}
+
+# Require gh logged in to github.com; a dry run continues without it and does not read GitHub.
+_release_steps__require_gh() {
+    if command -v gh >/dev/null && gh auth status --hostname github.com >/dev/null 2>&1; then
+        _RELEASE_STEPS__GH_READY=true
+        return 0
+    fi
+    [[ "$_RELEASE_STEPS__DRY_RUN" == true ]] \
+        || _release_steps__die "\`gh\` is not logged in to github.com; run \`gh auth login\`"
+    _release_steps__warn "\`gh\` is not logged in to github.com, so the dry run does not read GitHub"
+}
+
+# _release_steps__require_synced_develop <directory>: refuse unless the checkout is clean, on develop, and
+# develop equals origin/develop after a fetch.
+_release_steps__require_synced_develop() {
+    local directory="$1" branch answer counts behind ahead
+    if [[ -n "$(git -C "$directory" status --porcelain)" ]]; then
+        git -C "$directory" status --short >&2
+        _release_steps__die "the tree has uncommitted changes (\`git status --short\` printed above); commit or stash them, then run again"
+    fi
+    branch="$(git -C "$directory" symbolic-ref --quiet --short HEAD)" || branch="a detached HEAD"
+    [[ "$branch" == develop ]] \
+        || _release_steps__die "the checkout is on $branch, not \`develop\`; run \`git switch develop\`"
+    _release_steps__step "fetching origin/develop in $directory"
+    # `--no-tags`: the fetch updates origin/develop alone and does not add a tag to the checkout.
+    answer="$(git -C "$directory" fetch --quiet --no-tags origin +refs/heads/develop:refs/remotes/origin/develop 2>&1)" \
+        || _release_steps__die "\`git fetch origin develop\` failed in $directory (${answer//$'\n'/ }); check the network and the remote, then run again"
+    counts="$(git -C "$directory" rev-list --left-right --count develop...origin/develop)"
+    ahead="${counts%%[[:space:]]*}" behind="${counts##*[[:space:]]}"
+    if [[ "$behind" -gt 0 && "$ahead" -gt 0 ]]; then
+        _release_steps__die "\`develop\` is $behind behind and $ahead ahead of \`origin/develop\` after a fetch; rebase the local commits on \`origin/develop\` first"
+    elif [[ "$behind" -gt 0 ]]; then
+        _release_steps__die "\`develop\` is $behind behind \`origin/develop\` after a fetch; run \`git pull --ff-only\` first"
+    elif [[ "$ahead" -gt 0 ]]; then
+        _release_steps__die "\`develop\` is $ahead ahead of \`origin/develop\` after a fetch; push or rebase the local commits first"
+    fi
+    _release_steps__ok "develop = origin/develop ($(git -C "$directory" rev-parse --short=7 develop))"
+}
+
+# _release_steps__read_github <what> <ref> <definitive-pattern> <empty-ok> <command>...: run a GitHub lookup,
+# retrying a failure, or an empty answer unless <empty-ok> is true, waiting attempt x _RELEASE_STEPS__RETRY_SECONDS
+# between attempts. Returns 0 with the command's stdout alone in _RELEASE_STEPS__ANSWER, so a diagnostic gh prints
+# beside a successful answer does not reach a file the answer is written into; 1 at once on a failure whose diagnostics
+# match <definitive-pattern>; and 2 once the attempts are spent, with _RELEASE_STEPS__WAITED_SECONDS set. After
+# a failure, _RELEASE_STEPS__ANSWER holds its diagnostics and output on one line.
+_release_steps__read_github() {
+    local what="$1" ref="$2" definitive="$3" empty_ok="$4" attempt answer diagnostics wait
+    shift 4
+    _release_steps__create_temp_dir
+    diagnostics="$_RELEASE_STEPS__TEMP_DIR/diagnostics"
+    _RELEASE_STEPS__WAITED_SECONDS=0
+    for ((attempt = 1; attempt <= _RELEASE_STEPS__RETRY_ATTEMPTS; attempt++)); do
+        if answer="$("$@" 2>"$diagnostics")"; then
+            if [[ -n "$answer" || "$empty_ok" == true ]]; then
+                _RELEASE_STEPS__ANSWER="$answer"
+                return 0
+            fi
+            answer="an empty answer"
+        else
+            answer="$(_release_steps__format_one_line "$(<"$diagnostics")" "$answer")"
+            if [[ -n "$definitive" && "$answer" =~ $definitive ]]; then
+                _RELEASE_STEPS__ANSWER="$answer"
+                return 1
+            fi
+        fi
+        _RELEASE_STEPS__ANSWER="$answer"
+        if [[ "$attempt" -lt "$_RELEASE_STEPS__RETRY_ATTEMPTS" ]]; then
+            wait=$((attempt * _RELEASE_STEPS__RETRY_SECONDS))
+            echo "release-steps: retry $attempt/$_RELEASE_STEPS__RETRY_ATTEMPTS: $what for $ref ($answer); waiting $wait s"
+            sleep "$wait"
+            _RELEASE_STEPS__WAITED_SECONDS=$((_RELEASE_STEPS__WAITED_SECONDS + wait))
+        fi
+    done
+    return 2
+}
+
+# _release_steps__format_one_line <text>...: print the texts joined on one line, without a line break or an edge space.
+_release_steps__format_one_line() {
+    local text="$*"
+    text="${text//$'\n'/ }"
+    text="${text#"${text%%[![:space:]]*}"}"
+    printf '%s' "${text%"${text##*[![:space:]]}"}"
+}
+
+# _release_steps__die_after_retries <what> <ref>: the refusal once read_github spent its attempts.
+_release_steps__die_after_retries() {
+    _release_steps__die "$1 for $2 failed $_RELEASE_STEPS__RETRY_ATTEMPTS times over $_RELEASE_STEPS__WAITED_SECONDS s (last answer: $_RELEASE_STEPS__ANSWER); GitHub may still be catching up: run the same command again in a minute"
+}
+
+# _release_steps__list_open_pull_requests <github-repository> <note>: print each pull request open into
+# develop, with <note>; a dry run without gh says it did not read them.
+_release_steps__list_open_pull_requests() {
+    local repository="$1" note="$2" status=0
+    if [[ "$_RELEASE_STEPS__GH_READY" != true ]]; then
+        _release_steps__step "would list the pull requests open into develop of $repository"
+        return 0
+    fi
+    _release_steps__step "listing the pull requests open into develop of $repository"
+    _release_steps__read_github "the open pull requests" "$repository" "" true \
+        gh pr list --repo "$repository" --base develop --state open --json number,title \
+        --jq '.[] | "#\(.number) \(.title)"' || status=$?
+    [[ "$status" -eq 0 ]] || _release_steps__die_after_retries "the open pull requests" "$repository"
+    if [[ -z "$_RELEASE_STEPS__ANSWER" ]]; then
+        _release_steps__ok "no pull request is open into develop"
+    else
+        printf 'release-steps: open: %s\n' "${_RELEASE_STEPS__ANSWER//$'\n'/$'\n'release-steps: open: }"
+        _release_steps__ok "$note"
+    fi
+}
+
+# _release_steps__open_worktree <directory>: check out the checkout's develop, detached, in a scratch worktree, in
+# which the command writes and commits its change, so the operator's tree is not touched and no branch exists until
+# the commit does.
+_release_steps__open_worktree() {
+    local directory="$1" answer
+    _release_steps__create_temp_dir
+    _release_steps__step "checking out develop of $directory in a scratch worktree"
+    answer="$(git -C "$directory" worktree add --quiet --detach "$_RELEASE_STEPS__TEMP_DIR/tree" develop 2>&1)" \
+        || _release_steps__die "\`git worktree add\` failed in $directory (${answer//$'\n'/ })"
+    _RELEASE_STEPS__WORKTREE="$_RELEASE_STEPS__TEMP_DIR/tree"
+    _RELEASE_STEPS__WORKTREE_REPOSITORY="$directory"
+}
+
+# _release_steps__require_worktree_change <file>=<added>/<removed>...: refuse unless `git diff --numstat` in the
+# scratch worktree lists these files alone, each with these line counts, where `+` stands for one line or more, so
+# a rewrite that did more or less than the command asked is caught before it is committed. Prints the counts as
+# the step's `ok:` line.
+_release_steps__require_worktree_change() {
+    local expected file counts added removed line line_added line_removed found summary=""
+    local numstat="$_RELEASE_STEPS__TEMP_DIR/numstat"
+    git -C "$_RELEASE_STEPS__WORKTREE" diff --numstat >"$numstat" || _release_steps__die "\`git diff\` failed in the scratch worktree"
+    [[ "$(wc -l <"$numstat")" -eq "$#" ]] \
+        || _release_steps__die "the scratch worktree changes $(wc -l <"$numstat") files, not the $# the command writes ($(_release_steps__format_one_line "$(<"$numstat")")); nothing was committed"
+    for expected in "$@"; do
+        file="${expected%%=*}" counts="${expected#*=}" added="${counts%/*}" removed="${counts#*/}" found=""
+        while IFS=$'\t' read -r line_added line_removed line; do
+            [[ "$line" == "$file" ]] || continue
+            found=true
+            [[ (("$added" == + && "$line_added" =~ ^[1-9][0-9]*$) || "$line_added" == "$added") \
+                && "$line_removed" == "$removed" ]] \
+                || _release_steps__die "the scratch worktree changes $file by +$line_added -$line_removed lines, not the +$added -$removed the command writes; nothing was committed"
+            summary+="${summary:+, }$file +$line_added -$line_removed"
+        done <"$numstat"
+        [[ -n "$found" ]] || _release_steps__die "the scratch worktree does not change $file; nothing was committed"
+    done
+    _release_steps__ok "$summary in the scratch worktree"
+}
+
+# _release_steps__format_wrapped <width> <first-prefix> <prefix> <text>: print <text> filled to <width>
+# columns, the first line opening with <first-prefix> and each later one with <prefix>. A `code span` is not broken.
+_release_steps__format_wrapped() {
+    local width="$1" prefix="$2" rest="$3" text="$4" protected="" inside=false character index line="" word words
+    for ((index = 0; index < ${#text}; index++)); do
+        character="${text:index:1}"
+        if [[ "$character" == '`' ]]; then
+            [[ "$inside" == true ]] && inside=false || inside=true
+        elif [[ "$character" == " " && "$inside" == true ]]; then
+            character=$'\x1f'
+        fi
+        protected+="$character"
+    done
+    read -ra words <<<"$protected"
+    for word in "${words[@]}"; do
+        if [[ -z "$line" ]]; then
+            line="$prefix$word"
+        elif [[ $((${#line} + 1 + ${#word})) -le "$width" ]]; then
+            line+=" $word"
+        else
+            printf '%s\n' "${line//$'\x1f'/ }"
+            prefix="$rest"
+            line="$prefix$word"
+        fi
+    done
+    [[ -z "$line" ]] || printf '%s\n' "${line//$'\x1f'/ }"
+}
+
+# _release_steps__format_list <item>...: print the items as prose: `a`, `a and b`, `a, b and c`.
+_release_steps__format_list() {
+    local text=""
+    while [[ "$#" -gt 2 ]]; do
+        text+="$1, "
+        shift
+    done
+    [[ "$#" -eq 2 ]] && text+="$1 and $2" || text+="$1"
+    printf '%s' "$text"
+}
+
+# _release_steps__format_joined <separator> <item>...: print the items joined by <separator>.
+_release_steps__format_joined() {
+    local separator="$1" text=""
+    shift
+    while [[ "$#" -gt 0 ]]; do
+        text+="${text:+$separator}$1"
+        shift
+    done
+    printf '%s' "$text"
+}
+
+# _release_steps__replace_line <file> <line-number> <text>: replace one line of <file> in place, which keeps the
+# file's mode, once the rewritten text is checked line by line against the file: <text> at that line and every other
+# line unchanged, so a failed or partial awk run leaves the file as it was. The text reaches awk through the
+# environment, which does not interpret a backslash.
+_release_steps__replace_line() {
+    local file="$1" number="$2" text="$3" rewritten index before=() after=()
+    [[ "$number" =~ ^[1-9][0-9]*$ ]] || _release_steps__die "$file holds no single line to rewrite (\`$number\`); the file is unchanged"
+    _release_steps__create_temp_dir
+    rewritten="$_RELEASE_STEPS__TEMP_DIR/rewritten"
+    _RELEASE_STEPS__LINE="$text" awk -v number="$number" \
+        'NR == number { print ENVIRON["_RELEASE_STEPS__LINE"]; next } { print }' "$file" >"$rewritten" \
+        || _release_steps__die "awk did not rewrite $file:$number; the file is unchanged"
+    # awk ends every line with a newline; a file whose last line has none keeps that, so the diff holds one line.
+    if [[ -n "$(tail -c 1 "$file")" ]]; then
+        truncate -s -1 "$rewritten" || _release_steps__die "the rewrite of $file could not be trimmed; the file is unchanged"
+    fi
+    mapfile -t before <"$file"
+    mapfile -t after <"$rewritten"
+    [[ "${#before[@]}" -eq "${#after[@]}" && "$number" -le "${#before[@]}" ]] \
+        || _release_steps__die "the rewrite of $file:$number holds ${#after[@]} lines, not ${#before[@]}; the file is unchanged"
+    for index in "${!before[@]}"; do
+        if [[ "$index" -eq $((number - 1)) ]]; then
+            [[ "${after[index]}" == "$text" ]]
+        else
+            [[ "${after[index]}" == "${before[index]}" ]]
+        fi || _release_steps__die "the rewrite of $file:$number changed line $((index + 1)); the file is unchanged"
+    done
+    cat "$rewritten" >"$file" || _release_steps__die "$file could not be written"
+}
+
+# _release_steps__read_branch_date <directory> <branch> <variable>: print the `# resolved <date>` of the <variable>
+# pin line at the tip of a local <branch>, so a re-run regenerates the change the branch committed on an earlier day;
+# returns 1 where the branch or the comment is absent.
+_release_steps__read_branch_date() {
+    local line
+    line="$(git -C "$1" show "refs/heads/$2:packaging/release-steps.sh" 2>/dev/null | grep -E "^$3=")" || return 1
+    [[ "$line" =~ \#\ resolved\ ([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] || return 1
+    printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# _release_steps__read_newest_version <changelog-file>: print the version of the newest `## [X.Y.Z]` heading.
+_release_steps__read_newest_version() {
+    local version
+    version="$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+[^]]*\]' "$1")" \
+        || _release_steps__die "\`CHANGELOG.md\` has no \`## [X.Y.Z]\` heading; the entry needs the previous version"
+    version="${version#'## ['}"
+    printf '%s' "${version%]}"
+}
+
+# _release_steps__insert_changelog_entry <changelog-file> <entry-lines>: add the entry under
+# `## [Unreleased]`, at the end of its `### Fixed` list, which is created ahead of a `### Security` heading or at
+# the section's end when the section has none.
+_release_steps__insert_changelog_entry() {
+    local file="$1" entry="$2" lines=() index unreleased="" end fixed="" target insert block=()
+    mapfile -t lines <"$file"
+    for index in "${!lines[@]}"; do
+        if [[ -z "$unreleased" && "${lines[index]}" == "## [Unreleased]" ]]; then
+            unreleased="$index"
+        fi
+    done
+    [[ -n "$unreleased" ]] \
+        || _release_steps__die "\`CHANGELOG.md\` has no \`## [Unreleased]\` section; add it above the newest release heading, then run again"
+    end="${#lines[@]}"
+    for ((index = unreleased + 1; index < ${#lines[@]}; index++)); do
+        [[ "${lines[index]}" == "## ["* ]] && { end="$index"; break; }
+    done
+    target="$end"
+    for ((index = unreleased + 1; index < end; index++)); do
+        [[ "${lines[index]}" == "### Fixed" ]] && fixed="$index"
+        [[ -z "$fixed" && "${lines[index]}" == "### Security" ]] && target="$index"
+    done
+    mapfile -t block <<<"$entry"
+    if [[ -n "$fixed" ]]; then
+        target="$end"
+        for ((index = fixed + 1; index < end; index++)); do
+            [[ "${lines[index]}" == "### "* ]] && { target="$index"; break; }
+        done
+        insert="$target"
+        while [[ "$insert" -gt $((fixed + 1)) && -z "${lines[insert - 1]}" ]]; do insert=$((insert - 1)); done
+        [[ "$insert" -eq $((fixed + 1)) ]] && block=("" "${block[@]}")
+    else
+        insert="$target"
+        while [[ "$insert" -gt $((unreleased + 1)) && -z "${lines[insert - 1]}" ]]; do insert=$((insert - 1)); done
+        block=("" "### Fixed" "" "${block[@]}")
+    fi
+    [[ "$insert" -lt "${#lines[@]}" && -n "${lines[insert]}" ]] && block+=("")
+    printf '%s\n' "${lines[@]:0:insert}" "${block[@]}" "${lines[@]:insert}" >"$file"
+}
+
+# _release_steps__deliver_change <directory> <branch> <title> <body>: turn the change in the worktree into
+# a signed-off commit, the branch, a push and a pull request into develop, continuing from whichever of them already
+# exists. The commit is made on the worktree's detached HEAD and the branch is then created at it, so a commit that
+# fails does not leave a branch behind and a re-run starts over. A dry run runs the branch checks, then prints the
+# diff, the title and the body instead.
+_release_steps__deliver_change() {
+    local directory="$1" branch="$2" title="$3" body="$4" worktree="$_RELEASE_STEPS__WORKTREE"
+    local repository local_tip="" remote_tip answer develop message body_file attempt wait url status=0
+    _release_steps__read_github_repository "$directory"
+    repository="$_RELEASE_STEPS__GITHUB_REPOSITORY"
+    remote_tip="$(git -C "$directory" ls-remote origin "refs/heads/$branch" 2>&1)" \
+        || _release_steps__die "the origin of $directory could not be read (${remote_tip//$'\n'/ }); check the network, then run again"
+    remote_tip="${remote_tip%%[[:space:]]*}"
+    local_tip="$(git -C "$directory" rev-parse --verify --quiet "refs/heads/$branch")" || local_tip=""
+    develop="$(git -C "$directory" rev-parse develop)"
+    if [[ -n "$local_tip" ]]; then
+        if [[ "$(git -C "$directory" rev-parse --verify --quiet "$local_tip^")" != "$develop" ]] \
+                || ! git -C "$worktree" diff --quiet "$local_tip" --; then
+            _release_steps__die "branch $branch exists with a different change (${local_tip:0:7}); delete it or pick the next letter for \`--id\`"
+        fi
+        _release_steps__ok "branch $branch already carries this change; continuing from it"
+    fi
+    [[ -z "$remote_tip" || "$remote_tip" == "$local_tip" ]] \
+        || _release_steps__die "branch $branch already exists on origin; pick the next letter for \`--id\`"
+    if [[ "$_RELEASE_STEPS__DRY_RUN" == true ]]; then
+        _release_steps__step "would commit on $branch:"
+        git -C "$worktree" --no-pager diff
+        printf '\n%s\n\n%s\n\n' "$title" "$body"
+        _release_steps__step "would push $branch to origin and open the pull request \"$title\" into develop of $repository"
+        return 0
+    fi
+    message="$_RELEASE_STEPS__TEMP_DIR/message"
+    printf '%s\n\n%s\n' "$title" "$body" >"$message"
+    if [[ -z "$local_tip" ]]; then
+        _release_steps__step "committing on $branch"
+        answer="$(git -C "$worktree" commit --quiet -s -a -F "$message" 2>&1)" \
+            || _release_steps__die "the commit on $branch failed (${answer//$'\n'/ }); no branch was created and nothing was pushed"
+        local_tip="$(git -C "$worktree" rev-parse HEAD)"
+        answer="$(git -C "$directory" update-ref "refs/heads/$branch" "$local_tip" "" 2>&1)" \
+            || _release_steps__die "branch $branch could not be created at ${local_tip:0:7} (${answer//$'\n'/ }); nothing was pushed: run the same command again"
+        _release_steps__ok "commit ${local_tip:0:7} (signed off by $(git -C "$directory" config user.name))"
+    fi
+    if [[ "$remote_tip" == "$local_tip" ]]; then
+        _release_steps__ok "origin/$branch = ${local_tip:0:7}, pushed before"
+    else
+        _release_steps__step "pushing $branch"
+        answer="$(git -C "$directory" push --quiet origin "refs/heads/$branch:refs/heads/$branch" 2>&1)" \
+            || _release_steps__die "the push of $branch was refused (${answer//$'\n'/ }); the branch is local and nothing was opened; fix the cause and run again"
+        remote_tip="$(git -C "$directory" ls-remote origin "refs/heads/$branch")"
+        [[ "${remote_tip%%[[:space:]]*}" == "$local_tip" ]] \
+            || _release_steps__die "after the push, origin/$branch is ${remote_tip:-absent}, not ${local_tip:0:7}; run the same command again"
+        _release_steps__ok "origin/$branch = ${local_tip:0:7}"
+    fi
+    body_file="$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir)/release-steps/${branch//\//-}.md"
+    mkdir -p "$(dirname "$body_file")"
+    printf '%s\n' "$body" >"$body_file"
+    _release_steps__read_github "the pull request lookup" "$branch" "" true \
+        gh pr list --repo "$repository" --head "$branch" --base develop --state open --json url \
+        --jq '.[0].url // empty' || status=$?
+    [[ "$status" -eq 0 ]] || _release_steps__die_after_retries "the pull request lookup" "$branch"
+    if [[ -n "$_RELEASE_STEPS__ANSWER" ]]; then
+        _RELEASE_STEPS__PULL_REQUEST_URL="$_RELEASE_STEPS__ANSWER"
+        _release_steps__ok "pull request $_RELEASE_STEPS__ANSWER is open for $branch; nothing to create"
+        return 0
+    fi
+    _release_steps__step "opening the pull request"
+    for ((attempt = 1; attempt <= _RELEASE_STEPS__RETRY_ATTEMPTS; attempt++)); do
+        if answer="$(gh pr create --repo "$repository" --base develop --head "$branch" --title "$title" \
+                --body-file "$body_file" 2>&1)"; then
+            url="$(grep -oE 'https://[^[:space:]]+' <<<"$answer" | tail -n 1)"
+            _RELEASE_STEPS__PULL_REQUEST_URL="$url"
+            _release_steps__ok "${url:-the pull request is open}"
+            return 0
+        fi
+        answer="${answer//$'\n'/ }"
+        [[ "$answer" =~ $_RELEASE_STEPS__BRANCH_NOT_SERVED_PATTERN \
+            && "$attempt" -lt "$_RELEASE_STEPS__RETRY_ATTEMPTS" ]] || break
+        wait=$((attempt * _RELEASE_STEPS__RETRY_SECONDS))
+        echo "release-steps: retry $attempt/$_RELEASE_STEPS__RETRY_ATTEMPTS: the pull request for $branch ($answer); waiting $wait s"
+        sleep "$wait"
+    done
+    _release_steps__die "branch $branch is pushed; the pull request was not created ($answer); retry with: gh pr create --repo $repository --base develop --head $branch --title \"$title\" --body-file \"$body_file\""
+}
+
+# _release_steps__require_caller_ready <caller>: repin-tools' preconditions in a caller's checkout, run by
+# refresh-images before it writes, so a caller that is not ready refuses the refresh while the tools are unchanged.
+_release_steps__require_caller_ready() {
+    local caller="$1" branches
+    _RELEASE_STEPS__DIE_PREFIX="caller $caller: "
+    _RELEASE_STEPS__DIE_SUFFIX="; fix it before the refresh, nothing in ai-tools-assets-tools was changed"
+    _release_steps__require_caller_checkout "$caller"
+    _release_steps__require_synced_develop "$caller"
+    _release_steps__read_caller_pins "$caller"
+    [[ "${#_RELEASE_STEPS__CALLER_REFS[@]}" -gt 0 ]] \
+        || _release_steps__die "no \`uses: $_RELEASE_STEPS__TOOLS_REPOSITORY/.github/workflows/…\` line under .github/workflows/; nothing to re-pin"
+    _release_steps__require_equal_caller_pins
+    branches="$(git -C "$caller" ls-remote origin "refs/heads/ci/*" 2>&1)" \
+        || _release_steps__die "the origin of $caller could not be read (${branches//$'\n'/ })"
+    branches="$(grep -oE "refs/heads/ci/$_RELEASE_STEPS__ID-tools-[^[:space:]]*" <<<"$branches" | head -n 1)" || true
+    [[ -z "$branches" ]] \
+        || _release_steps__die "branch ${branches#refs/heads/} already exists on origin; pick the next letter for \`--id\`"
+    _RELEASE_STEPS__DIE_PREFIX=""
+    _RELEASE_STEPS__DIE_SUFFIX=""
+    _release_steps__ok "caller $caller is ready: its \`uses:\` lines pin @${_RELEASE_STEPS__CALLER_REFS[0]}"
+}
+
+# refresh-images: half one of a digest refresh, run in a checkout of the tools.
+_release_steps__refresh_images() {
+    local caller dist dists=() names=() registries=() references=() quoted=() old=() new=() pairs=() resolving=()
+    local today previous branch title noun images serves entry body file count variable reference tools_path
+    _release_steps__parse_change_arguments refresh-images "$@"
+    _release_steps__require_tools_checkout
+    _release_steps__require_gh
+    _release_steps__require_synced_develop "$PWD"
+    for caller in "${_RELEASE_STEPS__CALLERS[@]}"; do
+        _release_steps__require_caller_ready "$caller"
+    done
+
+    _release_steps__parse_image_pins "$(<"$PWD/packaging/release-steps.sh")"
+    _release_steps__step "checking ${#_RELEASE_STEPS__PIN_DISTS[@]} images"
+    _release_steps__check_pins
+    [[ "$_RELEASE_STEPS__FAILED_COUNT" -eq "${#_RELEASE_STEPS__EXPIRED_DISTS[@]}" ]] \
+        || _release_steps__die "check-images could not read every image (the lines above), so an expiry cannot be told from an outage: retry later, nothing was changed"
+    if [[ "${#_RELEASE_STEPS__EXPIRED_DISTS[@]}" -eq 0 ]]; then
+        _release_steps__ok "every image resolves; nothing to refresh"
+        return 0
+    fi
+    for dist in "${_RELEASE_STEPS__PIN_DISTS[@]}"; do
+        if [[ " ${_RELEASE_STEPS__EXPIRED_DISTS[*]} " != *" $dist "* ]]; then
+            resolving+=("$dist")
+            continue
+        fi
+        [[ -n "${_RELEASE_STEPS__DIST_NAMES[$dist]:-}" ]] \
+            || _release_steps__die "the dist tag $dist has no name in _RELEASE_STEPS__DIST_NAMES; add it beside DIST_IMAGES"
+        reference="${_RELEASE_STEPS__PIN_REFERENCES[$dist]}"
+        dists+=("$dist")
+        names+=("${_RELEASE_STEPS__DIST_NAMES[$dist]}")
+        references+=("${reference%@*}")
+        quoted+=("\`${reference%@*}\`")
+        [[ " ${registries[*]} " == *" ${reference%%/*} "* ]] || registries+=("${reference%%/*}")
+        old+=("${reference##*@sha256:}")
+        new+=("${_RELEASE_STEPS__CURRENT_DIGESTS[$dist]#sha256:}")
+        pairs+=("${old[-1]:0:12} -> ${new[-1]:0:12}")
+    done
+    _release_steps__ok "$(_release_steps__format_joined ", " "${dists[@]}") expired ($(_release_steps__format_joined ", " "${pairs[@]}"))${resolving[*]:+; $(_release_steps__format_joined ", " "${resolving[@]}") resolve}"
+
+    noun=image images="$(_release_steps__format_list "${names[@]}")"
+    [[ "${#dists[@]}" -eq 1 ]] || noun=images
+    serves="$(_release_steps__format_list "${registries[@]}")"
+    branch="build/$_RELEASE_STEPS__ID-$(_release_steps__format_joined - "${dists[@]}")-digest"
+    title="build(packaging): pin the $images $noun $serves serves"
+    # A re-run keeps the date the branch committed, so the regenerated change equals the branch's on a later day.
+    today="$(_release_steps__read_branch_date "$PWD" "$branch" "${dists[0]^^}_IMAGE")" || today="$(date -u +%Y-%m-%d)"
+    _release_steps__open_worktree "$PWD"
+    _release_steps__step "writing packaging/release-steps.sh, CHANGELOG.md in the scratch worktree"
+    file="$_RELEASE_STEPS__WORKTREE/packaging/release-steps.sh"
+    for count in "${!dists[@]}"; do
+        variable="${dists[count]^^}_IMAGE"
+        _release_steps__replace_line "$file" "$(grep -n "^$variable=" "$file" | cut -d: -f1)" \
+            "$variable=${references[count]}@sha256:${new[count]} # resolved $today"
+    done
+    previous="$(_release_steps__read_newest_version "$_RELEASE_STEPS__WORKTREE/CHANGELOG.md")"
+    if [[ "${#dists[@]}" -eq 1 ]]; then
+        entry="**$images image.** A release verifies its $images RPM in the image $serves serves for ${quoted[0]} on $today. $serves retired the digest $previous pinned, so \`check-images\` reported \`manifest unknown\` on every pull request."
+    else
+        entry="**$images images.** A release verifies its $images RPMs in the images $serves serves for $(_release_steps__format_list "${quoted[@]}") on $today. $serves retired the digests $previous pinned, so \`check-images\` reported \`manifest unknown\` on every pull request."
+    fi
+    _release_steps__insert_changelog_entry "$_RELEASE_STEPS__WORKTREE/CHANGELOG.md" \
+        "$(_release_steps__format_wrapped 79 "- " "  " "$entry")"
+    _release_steps__require_worktree_change "packaging/release-steps.sh=${#dists[@]}/${#dists[@]}" "CHANGELOG.md=+/0"
+
+    body="$(_release_steps__format_refresh_body "$images" "$today" "$serves" "${references[*]}" "${old[*]}" \
+        "${new[*]}")"
+    _release_steps__list_open_pull_requests "$_RELEASE_STEPS__TOOLS_REPOSITORY" \
+        "each of them passes on a re-run once the refresh is on develop"
+    _release_steps__deliver_change "$PWD" "$branch" "$title" "$body"
+
+    if [[ "$_RELEASE_STEPS__DRY_RUN" == true ]]; then
+        _release_steps__next "to make the change: bash packaging/release-steps.sh refresh-images --id $_RELEASE_STEPS__ID${_RELEASE_STEPS__CALLERS[*]/#/ --caller }"
+        return 0
+    fi
+    _release_steps__next "after the merge: git ls-remote $_RELEASE_STEPS__TOOLS_URL refs/heads/develop"
+    if [[ "${#_RELEASE_STEPS__CALLERS[@]}" -eq 0 ]]; then
+        _release_steps__next "in each caller: bash $PWD/packaging/release-steps.sh repin-tools --id $_RELEASE_STEPS__ID <sha>"
+    fi
+    for caller in "${_RELEASE_STEPS__CALLERS[@]}"; do
+        tools_path="$(realpath --relative-to="$caller" "$PWD")"
+        _release_steps__next "in $caller: bash $tools_path/packaging/release-steps.sh repin-tools --id $_RELEASE_STEPS__ID <sha>"
+    done
+}
+
+# _release_steps__format_refresh_body <distros> <date> <registries> <references> <old> <new>: print the commit
+# and pull-request body of a digest refresh in the tools; <references>, <old> and <new> are space-separated, one
+# element per refreshed image.
+_release_steps__format_refresh_body() {
+    local images="$1" today="$2" serves="$3" references old new index olds=() news=() refs=()
+    read -ra references <<<"$4"
+    read -ra old <<<"$5"
+    read -ra new <<<"$6"
+    for index in "${!references[@]}"; do
+        refs+=("\`${references[index]}\`")
+        olds+=("\`${old[index]:0:12}\`")
+        news+=("\`${new[index]:0:12}\`")
+    done
+    if [[ "${#references[@]}" -eq 1 ]]; then
+        _release_steps__format_wrapped 72 "" "" "$serves retired the $images digest the release steps pinned (${olds[0]}), so \`check-images\` fails every pull request and push here and in each caller with \`manifest unknown\`. The steps pin the digest ${refs[0]} resolves to on $today (${news[0]})."
+    else
+        _release_steps__format_wrapped 72 "" "" "$serves retired the $images digests the release steps pinned ($(_release_steps__format_joined ", " "${olds[@]}")), so \`check-images\` fails every pull request and push here and in each caller with \`manifest unknown\`. The steps pin the digests $(_release_steps__format_list "${refs[@]}") resolve to on $today ($(_release_steps__format_joined ", " "${news[@]}"))."
+    fi
+    echo
+    _release_steps__format_wrapped 72 "" "" "A caller re-pins its \`uses:\` lines to this commit once it is on \`develop\`: \`release-steps.sh repin-tools --id $_RELEASE_STEPS__ID <sha>\`. No release is cut for a refresh; the next release carries it."
+}
+
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|refresh-images|repin-tools|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
     check-images) _release_steps__check_images "$@" ;;
+    refresh-images) _release_steps__refresh_images "$@" ;;
     verify-tag) _release_steps__verify_tag "$@" ;;
     preflight) _release_steps__run_preflight ;;
     sign-files) _release_steps__sign_files "$@" ;;
