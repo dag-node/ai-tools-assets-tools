@@ -187,7 +187,8 @@ class UncommittableFixtures(unittest.TestCase):
 
 
 class DynamicInjectionSetting(unittest.TestCase):
-    """A publisher.conf value the validator does not read as `yes` or `no` is reported and does not allow substitution."""
+    """A publisher.conf value the validator does not read as `yes` or `no` is reported and does not allow
+    substitution."""
 
     def test_an_unknown_value_is_reported_and_does_not_allow(self):
         fixture = FIXTURES / "pass" / "acme.dynamic-injection-declared"
