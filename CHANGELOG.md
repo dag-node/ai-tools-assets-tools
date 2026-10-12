@@ -7,6 +7,27 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Fixed
+
+- `formatters/fill-comments.sh` refills a doc comment's hanging paragraph,
+  a contract head such as `name <args> : text` with the lines indented under
+  it, as one paragraph whose first line keeps the head's prefix. Such
+  a paragraph was left over the column.
+- The comment filler leaves a two-column block as written, its rows split by
+  a gap of two spaces or by a ` -- ` at one column. It joined the block's first
+  row to the paragraph before it.
+- The comment filler wraps a column table's cell that runs past the column at
+  the cell's own indent, re-pads a two-column table whose first column
+  a rename widened or narrowed, and shortens the trailing rule of a decorated
+  header such as `# ── title ───` to bring it inside the column. A table of
+  three columns is not re-padded, and a header is not wrapped.
+- `formatters/verify-reflow.py` reports every difference in a file, each with
+  its line in the base and in the tree, where it reported the first. A
+  protected line whose words survive and whose spacing changed is reported as
+  `respaced line`, apart from a damaged one. A comment's column table is held
+  to its first column and its alignment, so a column a fill broke fails the
+  gate and a table re-padded at another column passes it.
+
 ## [1.1.0] - 2026-10-09
 
 ### Changed
