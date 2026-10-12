@@ -17,7 +17,7 @@
 ;; (two lines carrying a vertical rule, or a ` -- ' column, at the same column -- the vertical rule
 ;; is the reading `formatters/align-tables.py' states, and that tool puts such a table in order),
 ;; a line inside a string, inside a CDATA or `<pre>' region, or inside a fenced block the comment
-;; carries (the commands a header shows), and every line `ai-tools-fill--skip-line' names.
+;; carries (the commands a header shows), and every line `ai-tools-fill--skip-line-p' names.
 ;; A docstring is not a comment and is not read.
 ;;
 ;; Three shapes are filled by rules of their own, each keeping its words in order:
@@ -100,20 +100,34 @@ the column runs the line over instead, since a wider line is still a line."
           ;; three spaces or more -- every comment block inside a function body. Two spaces after
           ;; a sentence end are sentence spacing, not a column.
           "\\|[A-Za-z_][A-Za-z0-9_]*=\\|[^ \t\n]+$\\|.*[^ \t\n.!?] \\{2,\\}[^ \t\n]"
-          "\\|.*\\(?:" ai-tools-fill--verbatim-open "\\|" ai-tools-fill--verbatim-close "\\)"
-          "\\|.*[-=_*─━]\\{3,\\}\\)")
+          "\\|.*\\(?:" ai-tools-fill--verbatim-open "\\|" ai-tools-fill--verbatim-close "\\)\\)")
   "A comment line the batch filler leaves alone, and that ends the run before it: a shebang,
 a linter directive, an SPDX header, a checker marker (`ref-index: ignore-file', `prose-check:
 ignore'), a declaration another tool reads (`# ai-tools-admin-verbs: …', which `ai-tools-admin'
 parses out of a contributed command's header), a commented default, a lone token (a path, a URL,
-a name on a line of its own), a rule or banner line, a doc comment's contract line (`args:',
-`stdout:', `$1 path'), a config header's field line (`Values:', `Default:'), and a line holding
-a column. The last two are code rather than prose -- a signature,
-a parameter table, an example rule -- and a fill reads them as a sentence and wraps the columns
-away; a field line states one value, which does not wrap, and a field joined into the description
-above it stops being a field. A marker joined into the paragraph above it stops marking. A column
-is a gap of two spaces or more that does not follow a sentence end: `read_user <user>  -- …' over
-`read_here         -- …' is a table whose first row a fill would otherwise join to the prose above.")
+a name on a line of its own), a doc comment's contract line (`args:', `stdout:', `$1 path'),
+a config header's field line (`Values:', `Default:'), and a line holding a column. The last two
+are code rather than prose -- a signature, a parameter table, an example rule -- and a fill reads
+them as a sentence and wraps the columns away; a field line states one value, which does not
+wrap, and a field joined into the description above it stops being a field. A marker joined into
+the paragraph above it stops marking. A column is a gap of two spaces or more that does not
+follow a sentence end: `read_user <user>  -- …' over `read_here         -- …' is a table whose
+first row a fill would otherwise join to the prose above. A rule or banner line is the other
+line left alone, which `ai-tools-fill--skip-line-p' reads outside the code spans.")
+
+(defconst ai-tools-fill--rule-run "[-=_*─━]\\{3,\\}"
+  "A run of rule characters, the mark of a rule or banner line.")
+
+(defun ai-tools-fill--skip-line-p ()
+  "Non-nil when the line at point is one the batch filler leaves alone.
+That is a line `ai-tools-fill--skip-line' matches, or one carrying `ai-tools-fill--rule-run'
+outside its code spans: a span holds a literal such as `*** ... File:', which a banner does not,
+and read as a banner it left the paragraph holding it over the column."
+  (or (looking-at ai-tools-fill--skip-line)
+      (let ((text (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+        (save-match-data
+          (string-match-p ai-tools-fill--rule-run
+                          (replace-regexp-in-string ai-tools-fill--code-span " " text))))))
 
 (defconst ai-tools-fill--vertical-rule "[|│┃║]\\| -- "
   "What draws a column in a comment: a vertical rule character in an ASCII diagram or a table,
@@ -501,7 +515,7 @@ by rules of their own."
       (goto-char (point-min))
       (while (not (eobp))
         (if (and (looking-at ai-tools-fill--prose-line)
-                 (not (looking-at ai-tools-fill--skip-line))
+                 (not (ai-tools-fill--skip-line-p))
                  (not (ai-tools-fill--in-string-p))
                  (not (ai-tools-fill--in-verbatim-p))
                  (not (ai-tools-fill--in-comment-fence-p)))
@@ -518,7 +532,7 @@ by rules of their own."
                    (deeper-re (concat "^" (regexp-quote prefix) "\\( \\{2,\\}\\)[^ \t]")))
               (while (and (not (eobp))
                           (looking-at run-re)
-                          (not (looking-at ai-tools-fill--skip-line)))
+                          (not (ai-tools-fill--skip-line-p)))
                 (setq lines (1+ lines))
                 (cond ((looking-at line-re)
                        (when (> lines 1) (setq hang 'no)))

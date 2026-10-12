@@ -231,6 +231,17 @@ class FillComments(unittest.TestCase):
             "#                              classifies it\n"
             "#   label                      the entrypoint's live label\n"
             "x=1\n"),
+        "rule characters inside a code span": (
+            "# The hook reads the patch text, and a value that is not patch text does not match the `*** ... File:` "
+            "line.\n"
+            "x=1\n"
+            "# ── A banner that stays ──────\n"
+            "# A paragraph after the banner.\n",
+            "# The hook reads the patch text, and a value that is not patch text does\n"
+            "# not match the `*** ... File:` line.\n"
+            "x=1\n"
+            "# ── A banner that stays ──────\n"
+            "# A paragraph after the banner.\n"),
         "table of three columns": (
             "# The verdicts:\n"
             "#   explicit \"Enforcing\" / \"1\"            = confirmed         -> allow\n"
