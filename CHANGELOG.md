@@ -7,36 +7,46 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-12
+
 ### Changed
 
-- The RPM `ai-tools-assets-tools` does not install the conformance fixtures
-  under `/usr/share/ai-tools-assets-tools/fixtures`; an upgrade removes them.
-  They ship in the release archive, where a validator held to them reads them,
-  and an installed tool does not read them.
+- **Fixtures out of the RPM.** The RPM `ai-tools-assets-tools` does not install
+  the conformance fixtures, and an upgrade removes
+  `/usr/share/ai-tools-assets-tools/fixtures`. The release archive keeps them
+  for a validator held to them. An installed tool does not read them.
 
 ### Fixed
 
-- `formatters/fill-comments.sh` refills a doc comment's hanging paragraph,
-  a contract head such as `name <args> : text` with the lines indented under
-  it, as one paragraph whose first line keeps the head's prefix. Such
-  a paragraph was left over the column.
-- The comment filler leaves a two-column block as written, its rows split by
-  a gap of two spaces, or by a ` -- ` at one column from a line that opens
-  a sentence. It joined the block's first row to the paragraph before it.
-- The comment filler wraps a column table's cell that runs past the column at
-  the cell's own indent, re-pads a two-column table whose first column
-  a rename widened or narrowed, and shortens the trailing rule of a decorated
-  header such as `# ── title ───` to bring it inside the column. A table of
-  three columns is not re-padded, and a header is not wrapped.
-- The comment filler fills a paragraph holding a run of rule characters inside
-  a code span, such as `` `*** ... File:` ``. It read such a line as a banner
+- **Fedora 44 image.** A release verifies its Fedora 44 RPM in the image
+  quay.io serves for `fedora:44` on 2026-10-12. quay.io expired the digest
+  1.1.0 pinned, so a release run from 1.1.0 stops at that check
+  with `manifest unknown`.
+- **Hanging paragraphs.** `formatters/fill-comments.sh` refills a contract
+  head such as `name <args> : text` and the lines indented under it as one
+  paragraph, its first line keeping the head's prefix. Such a paragraph was
+  left over the column.
+- **Two-column blocks.** The comment filler leaves a block as written whose
+  rows a gap of two spaces splits, or a ` -- ` at one column from a line that
+  opens a sentence. It joined the block's first row to the paragraph before it.
+- **Column tables.** The comment filler wraps a cell that runs past the column
+  at the cell's own indent. It re-pads a two-column table whose first column
+  a rename widened or narrowed, and leaves a table of three columns as written.
+- **Decorated headers.** The comment filler shortens the trailing rule of
+  a header such as `# ── title ───` to bring it inside the column, and does
+  not wrap it.
+- **Rule characters in a code span.** The comment filler fills a paragraph
+  holding a span such as `` `*** ... File:` ``. It read the line as a banner
   and left the paragraph over the column.
-- `formatters/verify-reflow.py` reports every difference in a file, each with
-  its line in the base and in the tree, where it reported the first. A
-  protected line whose words survive and whose spacing changed is reported as
-  `respaced line`, apart from a damaged one. A comment's column table is held
-  to its first column and its alignment, so a column a fill broke fails the
-  gate and a table re-padded at another column passes it.
+- **Every reflow difference.** `formatters/verify-reflow.py` reports each
+  difference in a file with its line in the base and in the tree. It reported
+  the first alone.
+- **Respaced lines.** The reflow gate reports a protected line whose spacing
+  alone changed as `respaced line`, apart from a damaged one, and fails like
+  it.
+- **Column alignment.** The reflow gate holds a comment's column table to its
+  first column and its alignment. A column a fill broke fails, and a table
+  re-padded at another column passes.
 
 ## [1.1.0] - 2026-10-09
 
