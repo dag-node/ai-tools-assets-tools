@@ -28,7 +28,9 @@
 #
 # check-images asks each image's registry for the manifest at its pinned digest with `skopeo inspect --raw`, which does
 # not pull a layer, and prints one line per image. A digest the registry reports unknown fails with the digest the tag
-# names now, and a registry it could not read fails without naming one; a reference without a digest is refused. It does
+# names now, and a registry it could not read fails without naming one; a reference without a digest is refused. Run in
+# a caller's checkout, it first requires every `uses:` line naming a workflow of dag-node/ai-tools-assets-tools to carry
+# one `@<ref>`, a textual check, and a failed image adds that the tools' develop may already carry the refresh. It does
 # not read a secret, so it runs on a pull request from a fork.
 #
 # verify-tag fetches the tag from origin and holds it to an annotated tag object that names itself, peels to the event's
@@ -99,6 +101,14 @@ declare -A _RELEASE_STEPS__CURRENT_DIGESTS=()
 _RELEASE_STEPS__FAILED_COUNT=0
 _RELEASE_STEPS__SERVED_DIGEST=""
 _RELEASE_STEPS__ANSWER=""
+# The repository whose workflows a caller pins, and each `uses:` line of a caller that names one, by position.
+_RELEASE_STEPS__TOOLS_REPOSITORY=dag-node/ai-tools-assets-tools
+_RELEASE_STEPS__CALLER_FILES=()
+_RELEASE_STEPS__CALLER_LINE_NUMBERS=()
+_RELEASE_STEPS__CALLER_PREFIXES=()
+_RELEASE_STEPS__CALLER_WORKFLOWS=()
+_RELEASE_STEPS__CALLER_REFS=()
+_RELEASE_STEPS__CALLER_COMMENTS=()
 
 _release_steps__die() { echo "::error::release-steps: $*" >&2; exit 1; }
 
@@ -381,11 +391,67 @@ _release_steps__check_pins() {
     done
 }
 
+# _release_steps__read_caller_pins <directory>: set the _RELEASE_STEPS__CALLER_* arrays from every
+# `uses:` line of <directory>/.github/workflows/*.yml and *.yaml that names a workflow of the tools repository, one
+# element per line. A line naming that repository's workflows in any other form, quoted or in another case, is refused,
+# so a textual reading cannot pass over a pin.
+_release_steps__read_caller_pins() {
+    local directory="$1" file number line pattern
+    local repository="${_RELEASE_STEPS__TOOLS_REPOSITORY//./\\.}"
+    pattern="^([[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+)$repository/\.github/workflows/([A-Za-z0-9._-]+)@([^[:space:]#]+)([[:space:]]+#[[:space:]]*(.*))?$"
+    _RELEASE_STEPS__CALLER_FILES=()
+    _RELEASE_STEPS__CALLER_LINE_NUMBERS=()
+    _RELEASE_STEPS__CALLER_PREFIXES=()
+    _RELEASE_STEPS__CALLER_WORKFLOWS=()
+    _RELEASE_STEPS__CALLER_REFS=()
+    _RELEASE_STEPS__CALLER_COMMENTS=()
+    for file in "$directory"/.github/workflows/*.yml "$directory"/.github/workflows/*.yaml; do
+        [[ -f "$file" ]] || continue
+        number=0
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            number=$((number + 1))
+            [[ "${line,,}" == *"${_RELEASE_STEPS__TOOLS_REPOSITORY,,}/.github/workflows/"* ]] || continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ "$line" =~ $pattern ]] \
+                || _release_steps__die "${file#"$directory"/}:$number names a workflow of $_RELEASE_STEPS__TOOLS_REPOSITORY in a form other than \`uses: $_RELEASE_STEPS__TOOLS_REPOSITORY/.github/workflows/<file>@<ref> # <comment>\`: $line"
+            _RELEASE_STEPS__CALLER_FILES+=("${file#"$directory"/}")
+            _RELEASE_STEPS__CALLER_LINE_NUMBERS+=("$number")
+            _RELEASE_STEPS__CALLER_PREFIXES+=("${BASH_REMATCH[1]}")
+            _RELEASE_STEPS__CALLER_WORKFLOWS+=("${BASH_REMATCH[3]}")
+            _RELEASE_STEPS__CALLER_REFS+=("${BASH_REMATCH[4]}")
+            _RELEASE_STEPS__CALLER_COMMENTS+=("${BASH_REMATCH[6]}")
+        done <"$file"
+    done
+}
+
+# Refuse when the caller's `uses:` lines, read by read_caller_pins, do not all carry one `@<ref>`: validate checks
+# the image pins of the commit its own line names, which are the ones a release uses only while the lines agree.
+_release_steps__require_equal_caller_pins() {
+    local index pins="" equal=true
+    for index in "${!_RELEASE_STEPS__CALLER_REFS[@]}"; do
+        pins+="${pins:+, }${_RELEASE_STEPS__CALLER_FILES[$index]}: @${_RELEASE_STEPS__CALLER_REFS[$index]}"
+        [[ "${_RELEASE_STEPS__CALLER_REFS[$index]}" == "${_RELEASE_STEPS__CALLER_REFS[0]}" ]] || equal=false
+    done
+    [[ "$equal" == true ]] \
+        || _release_steps__die "the \`uses:\` lines pin different refs ($pins); make them one, then run again"
+}
+
 # check-images over this file's own pins, after proving that the text reader returns the DIST_IMAGES this shell holds,
-# since the same reader reads the pins of another commit.
+# since the same reader reads the pins of another commit. Run in a caller's checkout, it first holds the caller's
+# `uses:` lines to one ref, and a failed image check adds where the refresh may already be.
 _release_steps__check_images() {
     [[ "$#" -eq 0 ]] || _release_steps__die "usage: check-images"
-    local dist count
+    local dist count callers
+    _release_steps__read_caller_pins "$PWD"
+    callers="${#_RELEASE_STEPS__CALLER_REFS[@]}"
+    if [[ "$callers" -eq 0 ]]; then
+        echo "release-steps: ok: no \`uses:\` line under .github/workflows/ names a workflow of $_RELEASE_STEPS__TOOLS_REPOSITORY; no pins to compare"
+    else
+        _release_steps__require_equal_caller_pins
+        echo "release-steps: ok: the $callers \`uses:\` lines naming $_RELEASE_STEPS__TOOLS_REPOSITORY pin @${_RELEASE_STEPS__CALLER_REFS[0]}"
+        [[ " ${_RELEASE_STEPS__CALLER_WORKFLOWS[*]} " == *" set-release.yml "* ]] \
+            || echo "release-steps: ok: no \`uses:\` line names set-release.yml, so a release does not run through these pins"
+    fi
     _release_steps__parse_image_pins "$(<"$PACKAGING/release-steps.sh")"
     count="${#_RELEASE_STEPS__PIN_DISTS[@]}"
     [[ "$count" -eq "${#DIST_IMAGES[@]}" ]] \
@@ -396,6 +462,9 @@ _release_steps__check_images() {
     done
     echo "release-steps: check-images: checking $count images"
     _release_steps__check_pins
+    if [[ "$callers" -gt 0 && "${#_RELEASE_STEPS__EXPIRED_DISTS[@]}" -gt 0 ]]; then
+        echo "::error::release-steps: $_RELEASE_STEPS__TOOLS_REPOSITORY's develop may already carry the refresh: in its checkout, \`git log origin/develop -- packaging/release-steps.sh\`; then \`bash <ai-tools-assets-tools>/packaging/release-steps.sh repin-tools --id <id> <sha>\` here" >&2
+    fi
     [[ "$_RELEASE_STEPS__FAILED_COUNT" -eq 0 ]] \
         || _release_steps__die "check-images: $_RELEASE_STEPS__FAILED_COUNT of $count images failed the check"
     echo "release-steps: ok: every image resolves"

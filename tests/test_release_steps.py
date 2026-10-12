@@ -207,5 +207,92 @@ class CheckImages(ReleaseStepsCase):
         self.assertEqual(len(self.calls("skopeo")), 1)
 
 
+OLD_PIN = "49eddc1f67e23cf6a7b02e82936e7bb03eb10609"
+
+
+def caller_workflows(validate_ref=OLD_PIN, release_ref=OLD_PIN, comment="v1.2.0") -> dict:
+    """A publisher's two workflow files, each calling a workflow of the tools at a ref, as dag-node/ai-tools-assets does."""
+    suffix = f" # {comment}" if comment else ""
+    return {
+        "validate.yml": ("name: validate\non:\n  pull_request:\njobs:\n  ai-tools-assets:\n"
+                         f"    uses: dag-node/ai-tools-assets-tools/.github/workflows/validate.yml@{validate_ref}{suffix}\n"
+                         "    with:\n      enforce-signoff: true\n"),
+        "release.yml": ("name: release\non:\n  push:\n    tags: ['*/v*']\njobs:\n  ai-tools-assets:\n"
+                        f"    uses: dag-node/ai-tools-assets-tools/.github/workflows/set-release.yml@{release_ref}{suffix}\n"
+                        "    secrets: inherit\n"),
+    }
+
+
+class CheckImagesInACaller(CheckImages):
+    """check-images run from a caller's checkout, as validate.yml runs it there."""
+
+    def setUp(self):
+        super().setUp()
+        self.caller = self.root / "caller"
+        self.write_caller(caller_workflows())
+
+    def write_caller(self, files: dict):
+        workflows = self.caller / ".github" / "workflows"
+        shutil.rmtree(workflows, ignore_errors=True)
+        workflows.mkdir(parents=True)
+        for name, text in files.items():
+            (workflows / name).write_text(text, encoding="utf-8")
+
+    def check(self, **options):
+        return self.run_steps(self.script, "check-images", cwd=self.caller, **options)
+
+    def test_pins_on_one_ref_pass(self):
+        self.answer_pinned(*IMAGES)
+        status, stdout, stderr = self.check()
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"release-steps: ok: the 2 `uses:` lines naming dag-node/ai-tools-assets-tools pin @{OLD_PIN}",
+                      stdout)
+
+    def test_pins_on_two_refs_are_refused_before_the_registry_is_asked(self):
+        self.write_caller(caller_workflows(validate_ref="v1"))
+        status, _, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn(f"the `uses:` lines pin different refs (.github/workflows/release.yml: @{OLD_PIN},"
+                      " .github/workflows/validate.yml: @v1); make them one, then run again", stderr)
+        self.assertEqual(self.calls("skopeo"), [])
+
+    def test_a_pin_in_another_form_is_refused(self):
+        files = caller_workflows()
+        files["release.yml"] = files["release.yml"].replace(
+            "uses: dag-node/ai-tools-assets-tools/", "uses: 'Dag-Node/ai-tools-assets-tools/").replace(" # v1.2.0", "'")
+        self.write_caller(files)
+        status, _, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn(".github/workflows/release.yml:7 names a workflow of dag-node/ai-tools-assets-tools in a form other"
+                      " than `uses: dag-node/ai-tools-assets-tools/.github/workflows/<file>@<ref> # <comment>`", stderr)
+
+    def test_a_caller_without_set_release_says_so_and_passes(self):
+        self.write_caller({"validate.yml": caller_workflows()["validate.yml"]})
+        self.answer_pinned(*IMAGES)
+        status, stdout, stderr = self.check()
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("no `uses:` line names set-release.yml, so a release does not run through these pins", stdout)
+
+    def test_an_expiry_in_a_caller_says_where_the_refresh_may_be(self):
+        self.answer_pinned("el9", "el10")
+        self.answer_registry({
+            self.pinned_reference("fc44"): Exception("manifest unknown"),
+            IMAGES["fc44"]: manifest("fc44 current"),
+        })
+        status, _, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("dag-node/ai-tools-assets-tools's develop may already carry the refresh: in its checkout,"
+                      " `git log origin/develop -- packaging/release-steps.sh`; then"
+                      " `bash <ai-tools-assets-tools>/packaging/release-steps.sh repin-tools --id <id> <sha>` here",
+                      stderr)
+
+    def test_the_tools_own_tree_has_no_pins_to_compare(self):
+        shutil.rmtree(self.caller / ".github")
+        self.answer_pinned(*IMAGES)
+        status, stdout, stderr = self.check()
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("no pins to compare", stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
