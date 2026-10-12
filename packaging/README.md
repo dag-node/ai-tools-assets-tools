@@ -46,10 +46,44 @@ equal the tag's.
 `@v1` follows the latest release of the tools; a full commit SHA in its place
 holds the caller to one reviewed version until the caller changes it.
 
+## Before a release tag
+
+Run the image check immediately before `git tag -s`. In this repository, at
+the commit the tag will name:
+
+```bash
+bash packaging/release-steps.sh check-images
+```
+
+In a caller, from the caller's checkout, with the tools checked out beside it
+at the commit its `uses:` lines pin:
+
+```bash
+tools=../ai-tools-assets-tools
+bash "$tools/packaging/release-steps.sh" check-images
+```
+
+It asks each image's registry for the manifest at the pinned digest, prints
+one line per image, and exits non-zero when a digest no longer resolves,
+naming the digest the tag resolves to now. In a caller it also requires every
+`uses:` line naming these workflows to carry one ref. The `validate` workflow
+runs the same check on every pull request and push. A release run pulls every
+image in its preflight step, before the first signature, so an image retired
+after the check stops the run before it signs anything.
+
+## When an image digest expires
+
+quay.io retires an image's digest once its tag moves on, and from then on
+`check-images` fails every pull request in this repository and in each caller.
+A refresh is a commit on this repository's `develop`, not a release: it changes
+the expired pin lines and `CHANGELOG.md` alone. Each caller pins
+that commit by its full SHA in every `uses:` line, and the next release of the
+tools carries the new digest.
+
 ## The release environment
 
 The called job runs under the calling repository's `release` environment.
-Create it before the first tag is pushed, with a deployment policy that admits
+Create it before the first tag is pushed, with a deployment policy that allows
 tags `*/v*` and no branch: GitHub creates an environment a workflow names and
 the repository lacks, with no protection rule, and `secrets: inherit` hands the
 job every secret the repository holds. The environment holds three secrets:
