@@ -14,8 +14,9 @@
 ;; The batch filler is conservative on purpose. It fills a run of consecutive lines carrying the
 ;; same comment prefix, one space and text, and leaves every other shape as it finds it: a run
 ;; one of whose lines is indented deeper (an example command), a run drawing a table or a diagram
-;; (two lines carrying a vertical rule, or a ` -- ' column, at the same column -- the vertical rule
-;; is the reading `formatters/align-tables.py' states, and that tool puts such a table in order),
+;; (two lines carrying a vertical rule at the same column -- the reading `formatters/align-tables.py'
+;; states, and that tool puts such a table in order -- or a ` -- ' column from a line that opens
+;; a sentence),
 ;; a line inside a string, inside a CDATA or `<pre>' region, or inside a fenced block the comment
 ;; carries (the commands a header shows), and every line `ai-tools-fill--skip-line-p' names.
 ;; A docstring is not a comment and is not read.
@@ -129,16 +130,23 @@ and read as a banner it left the paragraph holding it over the column."
           (string-match-p ai-tools-fill--rule-run
                           (replace-regexp-in-string ai-tools-fill--code-span " " text))))))
 
-(defconst ai-tools-fill--vertical-rule "[|│┃║]\\| -- "
-  "What draws a column in a comment: a vertical rule character in an ASCII diagram or a table,
-and the ` -- ' that separates a name from its description in a two-column list.")
+(defconst ai-tools-fill--vertical-rule "[|│┃║]"
+  "A character drawing a vertical rule in an ASCII diagram or a comment table.")
 
-(defun ai-tools-fill--vertical-columns (line)
-  "The columns LINE carries a vertical rule or a ` -- ' at.
+(defconst ai-tools-fill--dash-column " -- "
+  "The separator between a name and its description in a two-column list.
+Prose uses it as a dash too, and a wrapped paragraph can put two of those at one column, so
+`ai-tools-fill-comments' reads it as a column only where the list's first line opens a sentence.")
+
+(defconst ai-tools-fill--sentence-end "[.:!?][])\"'`]*[ \t]*\\'"
+  "The end of a line that ends a sentence, closing quotes and brackets included.")
+
+(defun ai-tools-fill--vertical-columns (line &optional regexp)
+  "The columns LINE carries REGEXP at, `ai-tools-fill--vertical-rule' by default.
 `string-match' sets the match data, so the caller's own match is saved around it."
   (save-match-data
     (let ((columns nil) (start 0))
-      (while (string-match ai-tools-fill--vertical-rule line start)
+      (while (string-match (or regexp ai-tools-fill--vertical-rule) line start)
         (push (match-beginning 0) columns)
         (setq start (match-end 0)))
       columns)))
@@ -527,6 +535,8 @@ by rules of their own."
                    (hang nil)
                    (drawn nil)
                    (verticals nil)
+                   (dashes nil)
+                   (opens nil)
                    (run-re (concat "^" (regexp-quote prefix) " "))
                    (line-re (concat "^" (regexp-quote prefix) " [^ \t]"))
                    (deeper-re (concat "^" (regexp-quote prefix) "\\( \\{2,\\}\\)[^ \t]")))
@@ -540,10 +550,17 @@ by rules of their own."
                             (member hang (list nil (match-string 1))))
                        (setq plain nil hang (if (eq hang 'no) 'no (match-string 1))))
                       (t (setq plain nil hang 'no)))
-                (let ((columns (ai-tools-fill--vertical-columns
-                                (buffer-substring-no-properties (point) (line-end-position)))))
-                  (when (seq-intersection columns verticals) (setq drawn t))
-                  (setq verticals columns))
+                ;; A ` -- ' column counts from a line that opens a sentence, and on from there while each
+                ;; line keeps it, so a list is drawn and a dash a wrap put above another is not.
+                (let* ((text (buffer-substring-no-properties (point) (line-end-position)))
+                       (columns (ai-tools-fill--vertical-columns text))
+                       (dash-all (ai-tools-fill--vertical-columns text ai-tools-fill--dash-column))
+                       (dash (if (or (= lines 1) opens) dash-all (seq-intersection dash-all dashes))))
+                  (when (or (seq-intersection columns verticals) (seq-intersection dash dashes))
+                    (setq drawn t))
+                  (setq verticals columns
+                        dashes dash
+                        opens (string-match-p ai-tools-fill--sentence-end text)))
                 (forward-line 1))
               ;; A hanging paragraph is a contract head and continuation lines that all share one
               ;; deeper indent; any other run holding a deeper line is left as written.

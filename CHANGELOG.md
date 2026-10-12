@@ -14,8 +14,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   it, as one paragraph whose first line keeps the head's prefix. Such
   a paragraph was left over the column.
 - The comment filler leaves a two-column block as written, its rows split by
-  a gap of two spaces or by a ` -- ` at one column. It joined the block's first
-  row to the paragraph before it.
+  a gap of two spaces, or by a ` -- ` at one column from a line that opens
+  a sentence. It joined the block's first row to the paragraph before it.
 - The comment filler wraps a column table's cell that runs past the column at
   the cell's own indent, re-pads a two-column table whose first column
   a rename widened or narrowed, and shortens the trailing rule of a decorated
