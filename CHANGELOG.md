@@ -7,6 +7,36 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **Image check.** `release-steps.sh check-images` asks each registry for
+  the manifest at every pinned image digest, and the `validate` workflow runs
+  it on every pull request and push, here and in each caller. Before, an
+  expired digest surfaced in the release run and cost the tag its version.
+- **Caller pins agree.** In a caller, `validate` requires every `uses:` line
+  naming these workflows to pin one ref, so the images it checks are the ones
+  a release uses.
+- **Digest refresh.** `release-steps.sh refresh-images` turns an expired
+  digest into a pull request here, and `release-steps.sh repin-tools` re-pins
+  each caller to the merged commit, or to a release, with a generated
+  pull-request body. A refresh costs a pin in each caller, not a release. A
+  caller pins a `develop` commit while the tools changed in pin lines and
+  `CHANGELOG.md` alone since the caller's current pin; any other change
+  reaches it through a release, and `repin-tools` says so. `--help` prints
+  their usage.
+
+### Changed
+
+- **Images pulled before signing.** The preflight step pulls every image, and
+  the containers run those copies alone, so an image retired after the check
+  stops a release before it signs anything.
+
+### Security
+
+- **Verify containers without capabilities.** The containers that verify each
+  RPM's signature run with no capabilities, no new privileges, a read-only
+  root and a bound on their processes.
+
 ## [1.2.0] - 2026-10-12
 
 ### Changed
