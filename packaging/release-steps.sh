@@ -80,14 +80,14 @@ PACKAGING="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One pattern for the line rpm 4 and rpm 6 print for a valid signature; a digest-only line does not match.
 SIGNATURE_OK_PATTERN='signature.*:[[:space:]]*OK[[:space:]]*$'
 
-die() { echo "::error::release-steps: $*" >&2; exit 1; }
+_release_steps__die() { echo "::error::release-steps: $*" >&2; exit 1; }
 
 # Every scratch directory and the signing container are removed on exit, a gpg-agent started in a scratch directory is
 # stopped first, and INT and TERM exit through the same trap. The helpers set globals rather than print, since state
 # set inside a command substitution's subshell does not reach this shell's trap.
 scratch_directories=()
 container=""
-cleanup() {
+_release_steps__remove_scratch_and_container() {
     local directory
     [[ -n "$container" ]] && sudo podman rm -f "$container" >/dev/null 2>&1
     for directory in "${scratch_directories[@]}"; do
@@ -95,29 +95,29 @@ cleanup() {
         rm -rf "$directory"
     done
 }
-trap cleanup EXIT
+trap _release_steps__remove_scratch_and_container EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# new_scratch: set `scratch` to a fresh directory under /dev/shm. A /dev/shm that is absent or not tmpfs refuses
-# before anything is created there, and the directory itself is checked after, so a key, a passphrase or a token does
-# not reach a disk-backed directory.
-new_scratch() {
+# _release_steps__create_scratch: set `scratch` to a fresh directory under /dev/shm. A /dev/shm that is absent
+# or not tmpfs refuses before anything is created there, and the directory itself is checked after, so a key, a
+# passphrase or a token does not reach a disk-backed directory.
+_release_steps__create_scratch() {
     [[ -d /dev/shm && "$(stat -f -c %T /dev/shm 2>/dev/null)" == tmpfs ]] \
-        || die "/dev/shm is absent or not tmpfs"
-    scratch="$(mktemp -d -p /dev/shm)" || die "no directory could be created under /dev/shm"
+        || _release_steps__die "/dev/shm is absent or not tmpfs"
+    scratch="$(mktemp -d -p /dev/shm)" || _release_steps__die "no directory could be created under /dev/shm"
     scratch_directories+=("$scratch")
-    [[ "$(stat -f -c %T "$scratch")" == tmpfs ]] || die "$scratch is not on tmpfs"
+    [[ "$(stat -f -c %T "$scratch")" == tmpfs ]] || _release_steps__die "$scratch is not on tmpfs"
 }
 
-require_env() {
+_release_steps__require_env() {
     local name
     for name in "$@"; do
-        [[ -n "${!name:-}" ]] || die "$name is empty; in CI it is $(env_hint "$name")"
+        [[ -n "${!name:-}" ]] || _release_steps__die "$name is empty; in CI it is $(_release_steps__format_env_hint "$name")"
     done
 }
 
-env_hint() {
+_release_steps__format_env_hint() {
     case "$1" in
         GPG_SIGNING_KEY) echo "the signing-subkey export, a secret of the release environment: gh secret set GPG_SIGNING_KEY --env release < signing-subkey.asc" ;;
         GPG_SIGNING_PASSPHRASE) echo "the signing subkey's passphrase, a secret of the release environment: gh secret set GPG_SIGNING_PASSPHRASE --env release" ;;
@@ -126,149 +126,152 @@ env_hint() {
     esac
 }
 
-# import_signing_key: import GPG_SIGNING_KEY into a fresh scratch keyring, export GNUPGHOME, set `signing_primary`.
-import_signing_key() {
-    new_scratch
+# _release_steps__import_signing_key: import GPG_SIGNING_KEY into a fresh scratch keyring, export GNUPGHOME,
+# set `signing_primary`.
+_release_steps__import_signing_key() {
+    _release_steps__create_scratch
     export GNUPGHOME="$scratch"
     printf '%s\n' "$GPG_SIGNING_KEY" | gpg --batch --quiet --import 2>/dev/null \
-        || die "GPG_SIGNING_KEY did not import: it is not an ASCII-armored key block. Export the signing subkey with gpg --armor --export-secret-subkeys '<subkey-fpr>!'"
+        || _release_steps__die "GPG_SIGNING_KEY did not import: it is not an ASCII-armored key block. Export the signing subkey with gpg --armor --export-secret-subkeys '<subkey-fpr>!'"
     gpg --batch --with-colons --list-secret-keys | grep -q '^sec:' \
-        || die "GPG_SIGNING_KEY carries no secret key: it is a public key, or an export without the secret part"
+        || _release_steps__die "GPG_SIGNING_KEY carries no secret key: it is a public key, or an export without the secret part"
     signing_primary="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
 }
 
-verify_tag() {
-    [[ "$#" -eq 2 ]] || die "usage: verify-tag <tag> <event-commit>"
+_release_steps__verify_tag() {
+    [[ "$#" -eq 2 ]] || _release_steps__die "usage: verify-tag <tag> <event-commit>"
     local tag="$1" event_commit="$2" tag_object embedded commit status primary
-    require_env TAG_SIGNER_PRIMARY_FINGERPRINTS TAG_SIGNER_KEY_URL
+    _release_steps__require_env TAG_SIGNER_PRIMARY_FINGERPRINTS TAG_SIGNER_KEY_URL
     git fetch --quiet --no-tags --force origin "+refs/tags/$tag:refs/tags/$tag" \
-        || die "refs/tags/$tag did not fetch from origin"
+        || _release_steps__die "refs/tags/$tag did not fetch from origin"
     tag_object="$(git rev-parse --verify --quiet "refs/tags/$tag^{tag}")" \
-        || die "$tag is not an annotated tag; a release tag is created with git tag -s"
+        || _release_steps__die "$tag is not an annotated tag; a release tag is created with git tag -s"
     embedded="$(git cat-file -p "$tag_object" | awk '/^tag / { print $2; exit }')"
     [[ "$embedded" == "$tag" ]] \
-        || die "the tag object names itself $embedded, not $tag; a tag object is published under its own name"
+        || _release_steps__die "the tag object names itself $embedded, not $tag; a tag object is published under its own name"
     commit="$(git rev-parse "$tag_object^{commit}")"
     [[ "$commit" == "$event_commit" && "$commit" == "$(git rev-parse HEAD)" ]] \
-        || die "$tag peels to $commit; the event's commit is $event_commit and the checkout is $(git rev-parse HEAD)"
-    new_scratch
+        || _release_steps__die "$tag peels to $commit; the event's commit is $event_commit and the checkout is $(git rev-parse HEAD)"
+    _release_steps__create_scratch
     export GNUPGHOME="$scratch"
     "${CURL[@]}" "$TAG_SIGNER_KEY_URL" | gpg --batch --quiet --import \
-        || die "the tag signers' key did not import from $TAG_SIGNER_KEY_URL"
-    status="$(git verify-tag --raw "$tag_object" 2>&1)" || die "$tag does not verify: $status"
+        || _release_steps__die "the tag signers' key did not import from $TAG_SIGNER_KEY_URL"
+    status="$(git verify-tag --raw "$tag_object" 2>&1)" || _release_steps__die "$tag does not verify: $status"
     primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF; exit }')"
     [[ -n "$primary" && " $TAG_SIGNER_PRIMARY_FINGERPRINTS " == *" $primary "* ]] \
-        || die "$tag is signed by primary ${primary:-none}, which is not on the pinned list: $TAG_SIGNER_PRIMARY_FINGERPRINTS"
+        || _release_steps__die "$tag is signed by primary ${primary:-none}, which is not on the pinned list: $TAG_SIGNER_PRIMARY_FINGERPRINTS"
     echo "$tag verified: tag object $tag_object, commit $commit, signed by $primary"
     if [[ -n "${GITHUB_ENV:-}" ]]; then
         printf 'RELEASE_COMMIT=%s\nRELEASE_TAG_OBJECT=%s\n' "$commit" "$tag_object" >> "$GITHUB_ENV"
     fi
 }
 
-preflight() {
+_release_steps__run_preflight() {
     local response
-    require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
+    _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
     # sign-rpms.sh reads the passphrase as the first stdin line, so a second line would corrupt the key read after it.
-    [[ "$GPG_SIGNING_PASSPHRASE" != *$'\n'* ]] || die "GPG_SIGNING_PASSPHRASE spans more than one line"
-    import_signing_key
+    [[ "$GPG_SIGNING_PASSPHRASE" != *$'\n'* ]] || _release_steps__die "GPG_SIGNING_PASSPHRASE spans more than one line"
+    _release_steps__import_signing_key
     echo "imported signing key: primary $signing_primary"
     [[ "$signing_primary" == "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" ]] \
-        || die "GPG_SIGNING_KEY is key $signing_primary, not the pinned artifact signer $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; a different primary is a different key, not a rotation"
+        || _release_steps__die "GPG_SIGNING_KEY is key $signing_primary, not the pinned artifact signer $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; a different primary is a different key, not a rotation"
     if [[ "${DISPATCH_RPM:-false}" == true ]]; then
-        require_env RPM_REPO_DISPATCH_TOKEN
+        _release_steps__require_env RPM_REPO_DISPATCH_TOKEN
         response="$(GH_TOKEN="$RPM_REPO_DISPATCH_TOKEN" gh api repos/dag-node/rpm --jq .full_name 2>&1)" \
-            || die "RPM_REPO_DISPATCH_TOKEN cannot read dag-node/rpm: $response"
+            || _release_steps__die "RPM_REPO_DISPATCH_TOKEN cannot read dag-node/rpm: $response"
         echo "the dispatch token reads $response"
     fi
 }
 
-# export_artifact_signer <file>: write the pinned primary's public key, from the imported secret, to <file>.
-export_artifact_signer() {
+# _release_steps__export_artifact_signer <file>: write the pinned primary's public key, from the imported
+# secret, to <file>.
+_release_steps__export_artifact_signer() {
     gpg --batch --armor --export "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" > "$1"
-    [[ -s "$1" ]] || die "the imported key does not hold the primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
+    [[ -s "$1" ]] || _release_steps__die "the imported key does not hold the primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
 }
 
-sign_files() {
-    [[ "$#" -ge 1 ]] || die "usage: sign-files <file>..."
+_release_steps__sign_files() {
+    [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-files <file>..."
     local file status primary
-    require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
-    import_signing_key
+    _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
+    _release_steps__import_signing_key
     for file in "$@"; do
-        [[ -f "$file" ]] || die "$file is not a file"
+        [[ -f "$file" ]] || _release_steps__die "$file is not a file"
         printf '%s' "$GPG_SIGNING_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
             --armor --detach-sign --output "$file.asc" "$file" \
-            || die "gpg did not sign $file"
-        status="$(gpg --batch --status-fd 1 --verify "$file.asc" "$file" 2>/dev/null)" || die "$file.asc does not verify"
+            || _release_steps__die "gpg did not sign $file"
+        status="$(gpg --batch --status-fd 1 --verify "$file.asc" "$file" 2>/dev/null)" || _release_steps__die "$file.asc does not verify"
         primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF; exit }')"
         [[ "$primary" == "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" ]] \
-            || die "$file.asc is signed by primary ${primary:-none}, not $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
+            || _release_steps__die "$file.asc is signed by primary ${primary:-none}, not $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
         echo "$file.asc verified: signed by $primary"
     done
 }
 
-build_rpm() {
-    [[ "$#" -ge 2 ]] || die "usage: build-rpm <output-directory> <render-nfpm.py arguments>..."
+_release_steps__build_rpm() {
+    [[ "$#" -ge 2 ]] || _release_steps__die "usage: build-rpm <output-directory> <render-nfpm.py arguments>..."
     local output="$1" download tarball nfpm dist config rpms
     shift
-    require_env SOURCE_DATE_EPOCH
-    [[ "$(uname -m)" == x86_64 ]] || die "the pinned nFPM checksum is for Linux x86_64, not $(uname -m)"
+    _release_steps__require_env SOURCE_DATE_EPOCH
+    [[ "$(uname -m)" == x86_64 ]] || _release_steps__die "the pinned nFPM checksum is for Linux x86_64, not $(uname -m)"
     mkdir -p "$output"
-    compgen -G "$output/*.rpm" >/dev/null && die "$output already holds an RPM; build-rpm writes into an empty directory"
-    new_scratch
+    compgen -G "$output/*.rpm" >/dev/null && _release_steps__die "$output already holds an RPM; build-rpm writes into an empty directory"
+    _release_steps__create_scratch
     download="$scratch"
     tarball="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
     "${CURL[@]}" -L -o "$download/$tarball" "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/$tarball" \
-        || die "nFPM $NFPM_VERSION did not download"
+        || _release_steps__die "nFPM $NFPM_VERSION did not download"
     echo "$NFPM_TARBALL_SHA256  $download/$tarball" | sha256sum --check --quiet \
-        || die "$tarball does not match the pinned SHA-256 $NFPM_TARBALL_SHA256"
-    tar -xzf "$download/$tarball" -C "$download" || die "$tarball did not extract"
+        || _release_steps__die "$tarball does not match the pinned SHA-256 $NFPM_TARBALL_SHA256"
+    tar -xzf "$download/$tarball" -C "$download" || _release_steps__die "$tarball did not extract"
     nfpm="$download/nfpm"
-    [[ -f "$nfpm" ]] || die "$tarball holds no nfpm binary at its top level"
+    [[ -f "$nfpm" ]] || _release_steps__die "$tarball holds no nfpm binary at its top level"
     for dist in "${!DIST_IMAGES[@]}"; do
         config="$download/nfpm-$dist.yaml"
         python3 "$PACKAGING/render-nfpm.py" "$@" --dist "$dist" --output "$config" \
-            || die "render-nfpm.py did not write the $dist configuration"
+            || _release_steps__die "render-nfpm.py did not write the $dist configuration"
         "$nfpm" package --config "$config" --packager rpm --target "$output/" </dev/null \
-            || die "nFPM did not build the $dist RPM from $config"
+            || _release_steps__die "nFPM did not build the $dist RPM from $config"
         rpms=("$output"/*."$dist".noarch.rpm)
         [[ "${#rpms[@]}" -eq 1 && -f "${rpms[0]}" ]] \
-            || die "nFPM wrote ${#rpms[@]} files matching $output/*.$dist.noarch.rpm, not one"
+            || _release_steps__die "nFPM wrote ${#rpms[@]} files matching $output/*.$dist.noarch.rpm, not one"
         echo "built ${rpms[0]} with nFPM $NFPM_VERSION, SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
     done
     rpms=("$output"/*.rpm)
     [[ "${#rpms[@]}" -eq "${#DIST_IMAGES[@]}" ]] \
-        || die "$output holds ${#rpms[@]} RPMs, not one for each of ${!DIST_IMAGES[*]}"
+        || _release_steps__die "$output holds ${#rpms[@]} RPMs, not one for each of ${!DIST_IMAGES[*]}"
 }
 
-# dist_image <rpm-file-name>: set `image` to the image of the distribution the file name's dist tag names.
-dist_image() {
+# _release_steps__resolve_dist_image <rpm-file-name>: set `image` to the image of the distribution the file
+# name's dist tag names.
+_release_steps__resolve_dist_image() {
     [[ "$1" =~ \.([a-z]+[0-9]+)\.noarch\.rpm$ && -n "${DIST_IMAGES[${BASH_REMATCH[1]}]:-}" ]] \
-        || die "$1 does not end in .<dist>.noarch.rpm with a dist tag of ${!DIST_IMAGES[*]}"
+        || _release_steps__die "$1 does not end in .<dist>.noarch.rpm with a dist tag of ${!DIST_IMAGES[*]}"
     image="${DIST_IMAGES[${BASH_REMATCH[1]}]}"
 }
 
-ensure_podman() {
+_release_steps__ensure_podman() {
     command -v podman >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q podman; } \
-        || die "podman is not installed and did not install"
+        || _release_steps__die "podman is not installed and did not install"
     sudo mkdir -p /etc/containers/containers.conf.d
     printf '[engine]\nruntime = "runc"\n' | sudo tee /etc/containers/containers.conf.d/10-runc.conf >/dev/null
     sudo podman info --format 'podman runtime: {{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Version}}'
 }
 
-sign_rpm() {
-    [[ "$#" -ge 1 ]] || die "usage: sign-rpm <rpm>..."
+_release_steps__sign_rpm() {
+    [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-rpm <rpm>..."
     local rpm name names=() work verify out image
-    require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
+    _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
     for rpm in "$@"; do
-        [[ -f "$rpm" ]] || die "$rpm is not a file"
-        dist_image "$(basename "$rpm")"
+        [[ -f "$rpm" ]] || _release_steps__die "$rpm is not a file"
+        _release_steps__resolve_dist_image "$(basename "$rpm")"
     done
-    ensure_podman
-    new_scratch
+    _release_steps__ensure_podman
+    _release_steps__create_scratch
     work="$scratch"
     for rpm in "$@"; do
         name="$(basename "$rpm")"
-        [[ -e "$work/$name" ]] && die "two RPMs are named $name"
+        [[ -e "$work/$name" ]] && _release_steps__die "two RPMs are named $name"
         cp "$rpm" "$work/$name"
         names+=("$name")
     done
@@ -279,7 +282,7 @@ sign_rpm() {
             set -euo pipefail
             bash /in/el-repos.sh
             dnf -y -q --setopt=install_weak_deps=False install rpm-sign gnupg2' </dev/null \
-        || die "rpm-sign and gnupg2 did not install in $EL9_IMAGE"
+        || _release_steps__die "rpm-sign and gnupg2 did not install in $EL9_IMAGE"
     sudo podman commit --quiet "$container" "$SIGN_IMAGE" >/dev/null
     sudo podman rm "$container" >/dev/null
 
@@ -292,9 +295,9 @@ sign_rpm() {
             mkdir /out
             for name in "$@"; do cp "/in/$name" /out/; done
             bash /in/sign-rpms.sh --secrets-stdin /out/sign-rpms.pub "${@/#//out/}"' _ "${names[@]}")" \
-        || die "sign-rpms.sh failed in $SIGN_IMAGE: $out"
+        || _release_steps__die "sign-rpms.sh failed in $SIGN_IMAGE: $out"
     printf '%s\n' "$out"
-    grep -q 'signed and verified' <<<"$out" || die "sign-rpms.sh did not run in $SIGN_IMAGE"
+    grep -q 'signed and verified' <<<"$out" || _release_steps__die "sign-rpms.sh did not run in $SIGN_IMAGE"
     for name in "${names[@]}"; do
         sudo podman cp "$container:/out/$name" "$work/$name"
         sudo chown "$(id -u):$(id -g)" "$work/$name"
@@ -302,24 +305,24 @@ sign_rpm() {
     sudo podman rm "$container" >/dev/null
     container=""
 
-    import_signing_key
-    new_scratch
+    _release_steps__import_signing_key
+    _release_steps__create_scratch
     verify="$scratch"
-    export_artifact_signer "$verify/artifact-signer.asc"
+    _release_steps__export_artifact_signer "$verify/artifact-signer.asc"
     for name in "${names[@]}"; do cp "$work/$name" "$verify/$name"; done
     chmod 0644 "$verify"/*
     chmod 0755 "$verify"
     for name in "${names[@]}"; do
-        dist_image "$name"
+        _release_steps__resolve_dist_image "$name"
         out="$(sudo podman run --rm --network=none --cap-drop=all --security-opt=no-new-privileges --read-only \
                 --pids-limit=64 --tmpfs /rpmdb --entrypoint /usr/bin/bash -v "$verify:/in:ro" "$image" -c '
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
                 rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
-            || die "rpmkeys -Kv refused $name in $image: $out"
+            || _release_steps__die "rpmkeys -Kv refused $name in $image: $out"
         printf '%s:\n%s\n' "$image" "$out"
         grep -Eqi "$SIGNATURE_OK_PATTERN" <<<"$out" \
-            || die "$name carries no signature that verifies in $image against $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
+            || _release_steps__die "$name carries no signature that verifies in $image against $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
     done
     for rpm in "$@"; do
         cp "$work/$(basename "$rpm")" "$rpm"
@@ -327,24 +330,24 @@ sign_rpm() {
     done
 }
 
-create_release() {
-    [[ "$#" -ge 3 ]] || die "usage: create-release <tag> <notes> <file>..."
+_release_steps__create_release() {
+    [[ "$#" -ge 3 ]] || _release_steps__die "usage: create-release <tag> <notes> <file>..."
     local tag="$1" notes="$2" remote flags=()
     shift 2
-    require_env GH_TOKEN RELEASE_TAG_OBJECT
+    _release_steps__require_env GH_TOKEN RELEASE_TAG_OBJECT
     remote="$(git ls-remote origin "refs/tags/$tag" | awk -v ref="refs/tags/$tag" '$2 == ref { print $1 }')"
     [[ "$remote" == "$RELEASE_TAG_OBJECT" ]] \
-        || die "refs/tags/$tag on the remote is ${remote:-absent}; the verified tag object is $RELEASE_TAG_OBJECT, so the tag moved and the release is not created"
+        || _release_steps__die "refs/tags/$tag on the remote is ${remote:-absent}; the verified tag object is $RELEASE_TAG_OBJECT, so the tag moved and the release is not created"
     # The version is the part after the last slash (v1.2.3, or <set>/v1.2.3), so a hyphen in a set name is not read
     # as a prerelease.
     [[ "${tag##*/}" == *-* ]] && flags+=(--prerelease)
     gh release create "$tag" --verify-tag --title "$tag" --notes "$notes" "${flags[@]}" "$@"
 }
 
-dispatch() {
-    [[ "$#" -eq 1 ]] || die "usage: dispatch <tag>"
+_release_steps__dispatch() {
+    [[ "$#" -eq 1 ]] || _release_steps__die "usage: dispatch <tag>"
     local tag="$1" attempts=5 attempt
-    require_env RPM_REPO_DISPATCH_TOKEN GITHUB_REPOSITORY
+    _release_steps__require_env RPM_REPO_DISPATCH_TOKEN GITHUB_REPOSITORY
     # preflight read dag-node/rpm with this token, so a failure here is transient and is retried with a backoff.
     for attempt in $(seq 1 "$attempts"); do
         # -f sends each value as the string it is; -F would read a value starting with @ as a file name.
@@ -357,19 +360,19 @@ dispatch() {
         fi
         [[ "$attempt" -lt "$attempts" ]] && sleep $((attempt * 10))
     done
-    die "the dispatch to dag-node/rpm failed after $attempts attempts; the release exists, and re-running this step dispatches again"
+    _release_steps__die "the dispatch to dag-node/rpm failed after $attempts attempts; the release exists, and re-running this step dispatches again"
 }
 
-[[ "$#" -ge 1 ]] || die "usage: release-steps.sh <verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
-    verify-tag) verify_tag "$@" ;;
-    preflight) preflight ;;
-    sign-files) sign_files "$@" ;;
-    build-rpm) build_rpm "$@" ;;
-    sign-rpm) sign_rpm "$@" ;;
-    create-release) create_release "$@" ;;
-    dispatch) dispatch "$@" ;;
-    *) die "unknown step $step" ;;
+    verify-tag) _release_steps__verify_tag "$@" ;;
+    preflight) _release_steps__run_preflight ;;
+    sign-files) _release_steps__sign_files "$@" ;;
+    build-rpm) _release_steps__build_rpm "$@" ;;
+    sign-rpm) _release_steps__sign_rpm "$@" ;;
+    create-release) _release_steps__create_release "$@" ;;
+    dispatch) _release_steps__dispatch "$@" ;;
+    *) _release_steps__die "unknown step $step" ;;
 esac
