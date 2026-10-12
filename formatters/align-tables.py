@@ -30,7 +30,7 @@ table needs a leading `|`. Hence this.
 Left alone: a Markdown table (GFM renders it, and this tree writes it compact), a line inside a
 fenced block or a shell heredoc body, and a run of one table line, since one row has no second to
 line up with.
-`formatters/emacs/ai-tools-fill.el` leaves a comment table as written, so the filler and this tool do
+`formatters/emacs/ai-tools-fill.el` leaves a pipe table as written, so the filler and this tool do
 not fight over one.
 """
 from __future__ import annotations
