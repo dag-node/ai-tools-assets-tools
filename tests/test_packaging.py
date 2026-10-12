@@ -167,7 +167,7 @@ class RenderToolsConfiguration(TemplateRules, unittest.TestCase):
         self.assertIn('release: "1.fc44"', text)
         self.assertNotRegex(text, r"@[A-Z_]+@")
         sources = [line.split("src: ", 1)[1] for line in text.splitlines() if line.strip().startswith("- src: ")]
-        self.assertEqual(sources, ["tools", "format", "fixtures", "formatters", "LICENSES", "LICENSE"])
+        self.assertEqual(sources, ["tools", "format", "formatters", "LICENSES", "LICENSE"])
         for source in sources:
             self.assertTrue((REPOSITORY / source).exists(), source)
         self.assert_no_entry_at_a_tree_destination(text)
