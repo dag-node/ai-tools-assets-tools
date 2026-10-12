@@ -6,6 +6,7 @@
 # prefix, and a release step after it does not run.
 #
 # ```bash
+# bash packaging/release-steps.sh check-images
 # bash packaging/release-steps.sh verify-tag <tag> <event-commit>
 # bash packaging/release-steps.sh preflight
 # bash packaging/release-steps.sh sign-files <file>...
@@ -15,7 +16,7 @@
 # bash packaging/release-steps.sh dispatch <tag>
 # ```
 #
-# Environment, by subcommand:
+# Environment, by subcommand (check-images reads none):
 #   verify-tag      TAG_SIGNER_PRIMARY_FINGERPRINTS (space-separated), TAG_SIGNER_KEY_URL
 #   preflight       GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; DISPATCH_RPM=true adds
 #                   RPM_REPO_DISPATCH_TOKEN
@@ -24,6 +25,11 @@
 #   sign-rpm        GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
 #   create-release  GH_TOKEN, RELEASE_TAG_OBJECT (written by verify-tag)
 #   dispatch        RPM_REPO_DISPATCH_TOKEN
+#
+# check-images asks each image's registry for the manifest at its pinned digest with `skopeo inspect --raw`, which does
+# not pull a layer, and prints one line per image. A digest the registry reports unknown fails with the digest the tag
+# names now, and a registry it could not read fails without naming one; a reference without a digest is refused. It does
+# not read a secret, so it runs on a pull request from a fork.
 #
 # verify-tag fetches the tag from origin and holds it to an annotated tag object that names itself, peels to the event's
 # commit and the checkout's HEAD, and carries a signature whose VALIDSIG primary is on the pinned list; the key is
@@ -65,9 +71,9 @@ NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
 # The multi-arch index digests of the Rocky 9 and 10 images, resolved from quay.io on 2026-10-08, and of the Fedora 44
 # image, resolved on 2026-10-12. Every image is pinned by digest: EL9_IMAGE runs with the signing key and its output is
-# published, and each verify image runs as root on the runner that holds the secrets. quay.io expires a Fedora digest
-# once the tag moves on, so a release that reports `manifest unknown` for FC44_IMAGE takes the digest the tag resolves
-# to now.
+# published, and each verify image runs as root on the runner that holds the secrets; check-images refuses an entry
+# without a digest. quay.io expires a Fedora digest once the tag moves on, so a release that reports `manifest unknown`
+# for FC44_IMAGE takes the digest the tag resolves to now.
 EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
 EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 FC44_IMAGE=quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
@@ -79,6 +85,18 @@ SIGN_IMAGE=localhost/ai-tools-assets-sign:el9
 PACKAGING="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One pattern for the line rpm 4 and rpm 6 print for a valid signature; a digest-only line does not match.
 SIGNATURE_OK_PATTERN='signature.*:[[:space:]]*OK[[:space:]]*$'
+# An image reference check-images accepts: <registry>/<path>:<tag>@sha256:<digest>, the tag kept for the refresh.
+_RELEASE_STEPS__IMAGE_REFERENCE_PATTERN='^([a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+):([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})@(sha256:[0-9a-f]{64})$'
+# The registry's answer for a digest it no longer serves; any other failure is a registry check-images could not read.
+_RELEASE_STEPS__MANIFEST_UNKNOWN_PATTERN='manifest unknown|MANIFEST_UNKNOWN'
+# The image pins check-images reads and what it found, set by the functions that name them.
+_RELEASE_STEPS__PIN_DISTS=()
+declare -A _RELEASE_STEPS__PIN_REFERENCES=()
+_RELEASE_STEPS__EXPIRED_DISTS=()
+declare -A _RELEASE_STEPS__CURRENT_DIGESTS=()
+_RELEASE_STEPS__FAILED_COUNT=0
+_RELEASE_STEPS__SERVED_DIGEST=""
+_RELEASE_STEPS__ANSWER=""
 
 _release_steps__die() { echo "::error::release-steps: $*" >&2; exit 1; }
 
@@ -87,6 +105,7 @@ _release_steps__die() { echo "::error::release-steps: $*" >&2; exit 1; }
 # set inside a command substitution's subshell does not reach this shell's trap.
 scratch_directories=()
 container=""
+_RELEASE_STEPS__TEMP_DIR=""
 _release_steps__remove_scratch_and_container() {
     local directory
     [[ -n "$container" ]] && sudo podman rm -f "$container" >/dev/null 2>&1
@@ -108,6 +127,14 @@ _release_steps__create_scratch() {
     scratch="$(mktemp -d -p /dev/shm)" || _release_steps__die "no directory could be created under /dev/shm"
     scratch_directories+=("$scratch")
     [[ "$(stat -f -c %T "$scratch")" == tmpfs ]] || _release_steps__die "$scratch is not on tmpfs"
+}
+
+# _release_steps__create_temp_dir: set _RELEASE_STEPS__TEMP_DIR to one ordinary temporary directory per run, for
+# data that is public (a manifest, a rewritten file, a command's diagnostics); a secret takes the tmpfs scratch.
+_release_steps__create_temp_dir() {
+    [[ -z "$_RELEASE_STEPS__TEMP_DIR" ]] || return 0
+    _RELEASE_STEPS__TEMP_DIR="$(mktemp -d)" || _release_steps__die "no temporary directory could be created"
+    scratch_directories+=("$_RELEASE_STEPS__TEMP_DIR")
 }
 
 _release_steps__require_env() {
@@ -250,6 +277,121 @@ _release_steps__resolve_dist_image() {
     image="${DIST_IMAGES[${BASH_REMATCH[1]}]}"
 }
 
+# _release_steps__parse_image_pins <script-text>: set _RELEASE_STEPS__PIN_DISTS to the dist tags of
+# the text's DIST_IMAGES declaration, in its order, and _RELEASE_STEPS__PIN_REFERENCES to the reference each
+# one's <DIST>_IMAGE line pins. The pins are read as text, so the pins of another commit are checked without running
+# that commit's code.
+_release_steps__parse_image_pins() {
+    local text="$1" declaration variable line dist
+    _RELEASE_STEPS__PIN_DISTS=()
+    _RELEASE_STEPS__PIN_REFERENCES=()
+    declaration="$(grep -E '^declare -A DIST_IMAGES=\(' <<<"$text")" \
+        || _release_steps__die "the release steps hold no \`declare -A DIST_IMAGES=(…)\` line"
+    while [[ "$declaration" =~ \[([a-z]+[0-9]+)\]=\"\$([A-Z][A-Z0-9]*_IMAGE)\"(.*)$ ]]; do
+        dist="${BASH_REMATCH[1]}" variable="${BASH_REMATCH[2]}" declaration="${BASH_REMATCH[3]}"
+        [[ "$variable" == "${dist^^}_IMAGE" ]] \
+            || _release_steps__die "DIST_IMAGES maps $dist to \$$variable, not \$${dist^^}_IMAGE"
+        line="$(grep -E "^$variable=" <<<"$text")" \
+            || _release_steps__die "the release steps hold no $variable= line"
+        [[ "$line" =~ ^$variable=([^[:space:]]+)([[:space:]]+#.*)?$ ]] \
+            || _release_steps__die "the $variable line is not \`$variable=<reference>\`, with an optional comment: $line"
+        _RELEASE_STEPS__PIN_DISTS+=("$dist")
+        _RELEASE_STEPS__PIN_REFERENCES[$dist]="${BASH_REMATCH[1]}"
+    done
+    [[ "${#_RELEASE_STEPS__PIN_DISTS[@]}" -gt 0 ]] \
+        || _release_steps__die "the DIST_IMAGES declaration names no image: $declaration"
+}
+
+# skopeo from PATH, or on a GitHub runner installed with apt-get, as ensure_podman installs podman.
+_release_steps__ensure_skopeo() {
+    command -v skopeo >/dev/null && return 0
+    if [[ "${GITHUB_ACTIONS:-}" == true ]] && command -v apt-get >/dev/null; then
+        { sudo apt-get update -q && sudo apt-get install -y -q skopeo; } >&2 || true
+    fi
+    command -v skopeo >/dev/null \
+        || _release_steps__die "\`skopeo\` is not installed and did not install; install it, then run again"
+}
+
+# _release_steps__read_manifest_digest <reference>: set _RELEASE_STEPS__SERVED_DIGEST to the SHA-256
+# digest of the manifest the registry returns for <reference>, hashed from the raw bytes, which are the bytes a digest
+# names. On a failure it returns 1 with skopeo's message, on one line, in _RELEASE_STEPS__ANSWER.
+_release_steps__read_manifest_digest() {
+    local manifest="$_RELEASE_STEPS__TEMP_DIR/manifest" answer
+    _RELEASE_STEPS__SERVED_DIGEST=""
+    if answer="$(skopeo inspect --raw "docker://$1" 2>&1 >"$manifest")"; then
+        _RELEASE_STEPS__SERVED_DIGEST="sha256:$(sha256sum <"$manifest" | cut -d' ' -f1)"
+        return 0
+    fi
+    answer="${answer//$'\n'/ }"
+    _RELEASE_STEPS__ANSWER="${answer:-skopeo exited non-zero and printed nothing}"
+    return 1
+}
+
+# Ask the registry of every reference in _RELEASE_STEPS__PIN_REFERENCES for the manifest at its pinned digest,
+# without pulling a layer, and print one line per image. A manifest the registry reports unknown is an expiry, and its
+# line names the digest the tag names now; any other failure is a registry that could not be read, and its line does
+# not name a replacement. Sets _RELEASE_STEPS__EXPIRED_DISTS, _RELEASE_STEPS__CURRENT_DIGESTS (dist
+# tag -> digest) and _RELEASE_STEPS__FAILED_COUNT.
+_release_steps__check_pins() {
+    local dist variable reference repository tag digest served
+    _RELEASE_STEPS__EXPIRED_DISTS=()
+    _RELEASE_STEPS__CURRENT_DIGESTS=()
+    _RELEASE_STEPS__FAILED_COUNT=0
+    _release_steps__ensure_skopeo
+    _release_steps__create_temp_dir
+    for dist in "${_RELEASE_STEPS__PIN_DISTS[@]}"; do
+        variable="${dist^^}_IMAGE" reference="${_RELEASE_STEPS__PIN_REFERENCES[$dist]}"
+        if [[ ! "$reference" =~ $_RELEASE_STEPS__IMAGE_REFERENCE_PATTERN ]]; then
+            if [[ "$reference" == *@* ]]; then
+                echo "::error::release-steps: $dist: $variable=$reference is not <repository>:<tag>@sha256:<digest>" >&2
+            else
+                echo "::error::release-steps: $dist: $variable=$reference carries no digest; every image is pinned as <repository>:<tag>@sha256:<digest>" >&2
+            fi
+            _RELEASE_STEPS__FAILED_COUNT=$((_RELEASE_STEPS__FAILED_COUNT + 1))
+            continue
+        fi
+        repository="${BASH_REMATCH[1]}" tag="${BASH_REMATCH[3]}" digest="${BASH_REMATCH[4]}"
+        if _release_steps__read_manifest_digest "$repository@$digest"; then
+            served="$_RELEASE_STEPS__SERVED_DIGEST"
+            if [[ "$served" == "$digest" ]]; then
+                echo "release-steps: ok: $dist $repository:$tag serves the pinned digest ${digest:0:19}"
+                continue
+            fi
+            _RELEASE_STEPS__ANSWER="the registry returned a manifest whose digest is $served"
+        elif [[ "$_RELEASE_STEPS__ANSWER" =~ $_RELEASE_STEPS__MANIFEST_UNKNOWN_PATTERN ]] \
+                && _release_steps__read_manifest_digest "$repository:$tag"; then
+            served="$_RELEASE_STEPS__SERVED_DIGEST"
+            echo "::error::release-steps: $dist: $repository:$tag no longer serves the pinned digest $digest (manifest unknown); the tag names $served now, so the pin to paste is $variable=$repository:$tag@$served" >&2
+            _RELEASE_STEPS__EXPIRED_DISTS+=("$dist")
+            _RELEASE_STEPS__CURRENT_DIGESTS[$dist]="$served"
+            _RELEASE_STEPS__FAILED_COUNT=$((_RELEASE_STEPS__FAILED_COUNT + 1))
+            continue
+        fi
+        echo "::error::release-steps: $dist: the registry could not be read for $repository:$tag ($_RELEASE_STEPS__ANSWER); this is an outage, not an expiry: retry later, nothing was changed" >&2
+        _RELEASE_STEPS__FAILED_COUNT=$((_RELEASE_STEPS__FAILED_COUNT + 1))
+    done
+}
+
+# check-images over this file's own pins, after proving that the text reader returns the DIST_IMAGES this shell holds,
+# since the same reader reads the pins of another commit.
+_release_steps__check_images() {
+    [[ "$#" -eq 0 ]] || _release_steps__die "usage: check-images"
+    local dist count
+    _release_steps__parse_image_pins "$(<"$PACKAGING/release-steps.sh")"
+    count="${#_RELEASE_STEPS__PIN_DISTS[@]}"
+    [[ "$count" -eq "${#DIST_IMAGES[@]}" ]] \
+        || _release_steps__die "the text of the release steps pins ${_RELEASE_STEPS__PIN_DISTS[*]}, not ${!DIST_IMAGES[*]}"
+    for dist in "${_RELEASE_STEPS__PIN_DISTS[@]}"; do
+        [[ "${_RELEASE_STEPS__PIN_REFERENCES[$dist]}" == "${DIST_IMAGES[$dist]:-}" ]] \
+            || _release_steps__die "the text of the release steps pins $dist at ${_RELEASE_STEPS__PIN_REFERENCES[$dist]}, not ${DIST_IMAGES[$dist]:-absent}"
+    done
+    echo "release-steps: check-images: checking $count images"
+    _release_steps__check_pins
+    [[ "$_RELEASE_STEPS__FAILED_COUNT" -eq 0 ]] \
+        || _release_steps__die "check-images: $_RELEASE_STEPS__FAILED_COUNT of $count images failed the check"
+    echo "release-steps: ok: every image resolves"
+}
+
 _release_steps__ensure_podman() {
     command -v podman >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q podman; } \
         || _release_steps__die "podman is not installed and did not install"
@@ -363,10 +505,11 @@ _release_steps__dispatch() {
     _release_steps__die "the dispatch to dag-node/rpm failed after $attempts attempts; the release exists, and re-running this step dispatches again"
 }
 
-[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
+    check-images) _release_steps__check_images "$@" ;;
     verify-tag) _release_steps__verify_tag "$@" ;;
     preflight) _release_steps__run_preflight ;;
     sign-files) _release_steps__sign_files "$@" ;;
