@@ -36,6 +36,13 @@
 # one `@<ref>`, a textual check, and a failed image adds that the tools' develop may already carry the refresh. It does
 # not read a secret, so it runs on a pull request from a fork.
 #
+# refresh-images and repin-tools carry a digest refresh, one half each: refresh-images rewrites the expired pins here
+# and opens their pull request, and repin-tools rewrites a caller's `uses:` lines to the merged commit, or to a release
+# of the tools whose tag verify-tag would accept and whose release run passed, and opens the caller's. Both run under
+# the operator's own git and gh credentials, so push rights are the permission and each merge stays the operator's.
+# A develop commit is pinned only when it changes image pin lines and CHANGELOG.md alone; any other change reaches
+# a caller through a release.
+#
 # verify-tag fetches the tag from origin and holds it to an annotated tag object that names itself, peels to the event's
 # commit and the checkout's HEAD, and carries a signature whose VALIDSIG primary is on the pinned list; the key is
 # fetched from TAG_SIGNER_KEY_URL for that one check, so a leaked CI secret cannot mint a release by itself. It appends
@@ -197,11 +204,11 @@ _release_steps__import_signing_key() {
     signing_primary="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
 }
 
-# _release_steps__resolve_tag_object <repository-dir> <tag>: set _RELEASE_STEPS__TAG_OBJECT to
-# the annotated tag object refs/tags/<tag> names, once that object names itself <tag>.
+# _release_steps__resolve_tag_object <repository-dir> <tag> [<revision>]: set _RELEASE_STEPS__TAG_OBJECT to
+# the annotated tag object <revision> (refs/tags/<tag> where not given) names, once that object names itself <tag>.
 _release_steps__resolve_tag_object() {
-    local directory="$1" tag="$2" tag_object embedded
-    tag_object="$(git -C "$directory" rev-parse --verify --quiet "refs/tags/$tag^{tag}")" \
+    local directory="$1" tag="$2" revision="${3:-refs/tags/$2}" tag_object embedded
+    tag_object="$(git -C "$directory" rev-parse --verify --quiet "$revision^{tag}")" \
         || _release_steps__die "$tag is not an annotated tag; a release tag is created with git tag -s"
     embedded="$(git -C "$directory" cat-file -p "$tag_object" | awk '/^tag / { print $2; exit }')"
     [[ "$embedded" == "$tag" ]] \
@@ -644,6 +651,16 @@ _RELEASE_STEPS__TARGET=""
 _RELEASE_STEPS__GITHUB_REPOSITORY=""
 _RELEASE_STEPS__WAITED_SECONDS=0
 _RELEASE_STEPS__PULL_REQUEST_URL=""
+# What repin-tools read: the tag signers the tools' release.yml pins, a refresh commit's dists and date, and
+# a release's commit, version and changelog headlines.
+_RELEASE_STEPS__TAG_SIGNERS=""
+_RELEASE_STEPS__TAG_SIGNER_KEY_URL=""
+_RELEASE_STEPS__REFRESH_DISTS=()
+declare -A _RELEASE_STEPS__REFRESH_DATES=()
+_RELEASE_STEPS__CALLER_PIN_COMMIT=""
+_RELEASE_STEPS__RELEASE_COMMIT=""
+_RELEASE_STEPS__RELEASE_VERSION=""
+_RELEASE_STEPS__RELEASE_HEADLINES=""
 # GitHub serves a pushed branch, a merged commit's pull request and a release lookup eventually; a lookup is retried
 # this many times, waiting attempt x this many seconds after each failure but the last, as dispatch retries.
 _RELEASE_STEPS__RETRY_ATTEMPTS=5
@@ -840,12 +857,11 @@ _release_steps__read_github() {
     return 2
 }
 
-# _release_steps__format_one_line <text>...: print the texts joined on one line, without a line break or an edge space.
+# _release_steps__format_one_line <text>...: print the texts on one line, each run of whitespace one space.
 _release_steps__format_one_line() {
-    local text="$*"
-    text="${text//$'\n'/ }"
-    text="${text#"${text%%[![:space:]]*}"}"
-    printf '%s' "${text%"${text##*[![:space:]]}"}"
+    local words
+    read -ra words <<<"${*//$'\n'/ }"
+    printf '%s' "${words[*]}"
 }
 
 # _release_steps__die_after_retries <what> <ref>: the refusal once read_github spent its attempts.
@@ -1002,10 +1018,10 @@ _release_steps__read_branch_date() {
     printf '%s' "${BASH_REMATCH[1]}"
 }
 
-# _release_steps__read_newest_version <changelog-file>: print the version of the newest `## [X.Y.Z]` heading.
+# _release_steps__read_newest_version <changelog-text>: print the version of the newest `## [X.Y.Z]` heading.
 _release_steps__read_newest_version() {
     local version
-    version="$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+[^]]*\]' "$1")" \
+    version="$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+[^]]*\]' <<<"$1")" \
         || _release_steps__die "\`CHANGELOG.md\` has no \`## [X.Y.Z]\` heading; the entry needs the previous version"
     version="${version#'## ['}"
     printf '%s' "${version%]}"
@@ -1212,7 +1228,7 @@ _release_steps__refresh_images() {
         _release_steps__replace_line "$file" "$(grep -n "^$variable=" "$file" | cut -d: -f1)" \
             "$variable=${references[count]}@sha256:${new[count]} # resolved $today"
     done
-    previous="$(_release_steps__read_newest_version "$_RELEASE_STEPS__WORKTREE/CHANGELOG.md")"
+    previous="$(_release_steps__read_newest_version "$(<"$_RELEASE_STEPS__WORKTREE/CHANGELOG.md")")"
     if [[ "${#dists[@]}" -eq 1 ]]; then
         entry="**$images image.** A release verifies its $images RPM in the image $serves serves for ${quoted[0]} on $today. $serves retired the digest $previous pinned, so \`check-images\` reported \`manifest unknown\` on every pull request."
     else
@@ -1264,12 +1280,384 @@ _release_steps__format_refresh_body() {
     _release_steps__format_wrapped 72 "" "" "A caller re-pins its \`uses:\` lines to this commit once it is on \`develop\`: \`release-steps.sh repin-tools --id $_RELEASE_STEPS__ID <sha>\`. No release is cut for a refresh; the next release carries it."
 }
 
+# _release_steps__read_tag_signers <tools-dir>: set _RELEASE_STEPS__TAG_SIGNERS and _RELEASE_STEPS__TAG_SIGNER_KEY_URL
+# to the primaries and the key URL the tools' release.yml pins for verify-tag, so repin-tools accepts the tags
+# a release of the tools accepts.
+_release_steps__read_tag_signers() {
+    local file="$1/.github/workflows/release.yml" line
+    _RELEASE_STEPS__TAG_SIGNERS=""
+    _RELEASE_STEPS__TAG_SIGNER_KEY_URL=""
+    [[ -f "$file" ]] || _release_steps__die "$file is absent; repin-tools reads the tag signers verify-tag pins from it"
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]+TAG_SIGNER_PRIMARY_FINGERPRINTS:[[:space:]]+([0-9A-F][0-9A-F ]*[0-9A-F])[[:space:]]*$ ]]; then
+            _RELEASE_STEPS__TAG_SIGNERS="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]]+TAG_SIGNER_KEY_URL:[[:space:]]+(https://[^[:space:]]+)[[:space:]]*$ ]]; then
+            _RELEASE_STEPS__TAG_SIGNER_KEY_URL="${BASH_REMATCH[1]}"
+        fi
+    done <"$file"
+    [[ -n "$_RELEASE_STEPS__TAG_SIGNERS" && -n "$_RELEASE_STEPS__TAG_SIGNER_KEY_URL" ]] \
+        || _release_steps__die "$file does not set TAG_SIGNER_PRIMARY_FINGERPRINTS and an https TAG_SIGNER_KEY_URL"
+}
+
+# _release_steps__list_release_headlines <changelog-text> <version>: print one headline per entry of the
+# `## [<version>]` section: its bold label, or else its first sentence, without the closing period.
+_release_steps__list_release_headlines() {
+    local version="$2" line entry="" next inside=false
+    while IFS= read -r line; do
+        if [[ "$line" == "## ["* ]]; then
+            [[ "$inside" == true ]] && break
+            [[ "$line" == "## [$version]"* ]] && inside=true
+            continue
+        fi
+        [[ "$inside" == true ]] || continue
+        if [[ "$line" =~ ^-[[:space:]]+(.*)$ ]]; then
+            # The capture is saved first: format_headline runs a regex of its own, which replaces BASH_REMATCH.
+            next="${BASH_REMATCH[1]}"
+            _release_steps__format_headline "$entry"
+            entry="$next"
+        elif [[ -n "$entry" && "$line" =~ ^[[:space:]]+(.*)$ ]]; then
+            entry+=" ${BASH_REMATCH[1]}"
+        else
+            _release_steps__format_headline "$entry"
+            entry=""
+        fi
+    done <<<"$1"
+    _release_steps__format_headline "$entry"
+}
+
+# _release_steps__format_headline <entry>: print the headline of one changelog entry, and no line for an empty entry.
+_release_steps__format_headline() {
+    local entry="$1" headline
+    [[ -n "$entry" ]] || return 0
+    if [[ "$entry" =~ ^\*\*([^*]+)\*\* ]]; then
+        headline="${BASH_REMATCH[1]}"
+    else
+        headline="${entry%%. *}"
+    fi
+    printf '%s\n' "${headline%.}"
+}
+
+# _release_steps__resolve_caller_pin <tools-dir> <ref>: set _RELEASE_STEPS__CALLER_PIN_COMMIT to the commit the
+# caller's `uses:` lines name on the tools' origin. A full SHA names one commit wherever it is held, so it is read from
+# the checkout and fetched only where the checkout lacks it; a tag or a branch name moves, so it is read from origin now
+# and fetched into FETCH_HEAD alone, which leaves the checkout's own tags as they are.
+_release_steps__resolve_caller_pin() {
+    local tools="$1" ref="$2" commit="" remote
+    if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+        commit="$(git -C "$tools" rev-parse --verify --quiet "$ref^{commit}")" || commit=""
+        if [[ -z "$commit" ]] && git -C "$tools" fetch --quiet --no-tags origin "$ref" 2>/dev/null; then
+            commit="$(git -C "$tools" rev-parse --verify --quiet "FETCH_HEAD^{commit}")" || commit=""
+        fi
+    else
+        remote="$(git -C "$tools" ls-remote origin "refs/tags/$ref" "refs/heads/$ref" 2>&1)" \
+            || _release_steps__die "the origin of ai-tools-assets-tools could not be read (${remote//$'\n'/ }); check the network, then run again"
+        # A name both a tag and a branch carry is ambiguous (GitHub picks one), so it is refused rather than resolved.
+        [[ "$(awk -v tag="refs/tags/$ref" -v head="refs/heads/$ref" '$2 == tag || $2 == head' <<<"$remote" | wc -l)" -le 1 ]] \
+            || _release_steps__die "the \`uses:\` lines pin @$ref, which names both a tag and a branch on ai-tools-assets-tools origin; pin a tag or a full commit SHA, then run again"
+        remote="$(awk 'NR == 1 { print $2 }' <<<"$remote")"
+        if [[ -n "$remote" ]] && git -C "$tools" fetch --quiet --no-tags origin "$remote" 2>/dev/null; then
+            commit="$(git -C "$tools" rev-parse --verify --quiet "FETCH_HEAD^{commit}")" || commit=""
+        fi
+    fi
+    [[ -n "$commit" ]] \
+        || _release_steps__die "the \`uses:\` lines pin @$ref, which is not a commit, a tag or a branch on ai-tools-assets-tools origin; fix the pins, then run again"
+    _RELEASE_STEPS__CALLER_PIN_COMMIT="$commit"
+}
+
+# _release_steps__require_pin_change <tools-dir> <base> <sha> <framing> <rule>: refuse unless the tree of <sha>
+# differs from that of <base> in CHANGELOG.md and <DIST>_IMAGE pin lines alone, at least one of them. A refusal opens
+# with <framing> (`<sha> changes`, or `from the pinned <commit>, <sha> changes`), names the file and the line, and ends
+# with <rule>. Sets _RELEASE_STEPS__REFRESH_DISTS to the dist tags whose pin differs, in DIST_IMAGES order, and
+# _RELEASE_STEPS__REFRESH_DATES to the `# resolved` date each one's line carries at <sha>, which refresh-images writes
+# and the caller's comment and body name, so a pin line without the date is refused.
+_release_steps__require_pin_change() {
+    local tools="$1" base="$2" sha="$3" framing="$4" rule="$5" file line old_line new_line variable dist changed=()
+    while IFS= read -r file; do
+        [[ "$file" == packaging/release-steps.sh || "$file" == CHANGELOG.md ]] \
+            || _release_steps__die "$framing $file, which is not an image pin or \`CHANGELOG.md\`; $rule"
+    done < <(git -C "$tools" diff --name-only "$base" "$sha")
+    _release_steps__parse_image_pins "$(git -C "$tools" show "$sha:packaging/release-steps.sh")"
+    _RELEASE_STEPS__REFRESH_DATES=()
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^@@\ -([0-9]+)(,[0-9]+)?\ \+([0-9]+) ]]; then
+            old_line="${BASH_REMATCH[1]}" new_line="${BASH_REMATCH[3]}"
+            continue
+        fi
+        [[ "$line" == [-+]* && "$line" != "---"* && "$line" != "+++"* ]] || continue
+        variable=""
+        [[ "$line" =~ ^[-+]([A-Z][A-Z0-9]*_IMAGE)= ]] && variable="${BASH_REMATCH[1]}"
+        dist="${variable%_IMAGE}"
+        dist="${dist,,}"
+        if [[ -z "$variable" || " ${_RELEASE_STEPS__PIN_DISTS[*]} " != *" $dist "* ]]; then
+            [[ "$line" == -* ]] && new_line="$old_line"
+            _release_steps__die "$framing packaging/release-steps.sh:$new_line, which is not an image pin or \`CHANGELOG.md\`; $rule"
+        fi
+        if [[ "$line" == +* ]]; then
+            [[ " ${changed[*]} " == *" $dist "* ]] || changed+=("$dist")
+            [[ "$line" =~ \#\ resolved\ ([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] \
+                || _release_steps__die "the $variable line at ${sha:0:7} carries no \`# resolved <date>\` comment, which refresh-images writes and the caller's pin comment names; refresh the pin with refresh-images"
+            _RELEASE_STEPS__REFRESH_DATES[$dist]="${BASH_REMATCH[1]}"
+            new_line=$((new_line + 1))
+        else
+            old_line=$((old_line + 1))
+        fi
+    done < <(git -C "$tools" diff --unified=0 --no-color "$base" "$sha" -- packaging/release-steps.sh)
+    [[ "${#changed[@]}" -gt 0 ]] || _release_steps__die "$framing no image pin; $rule"
+    _RELEASE_STEPS__REFRESH_DISTS=()
+    for dist in "${_RELEASE_STEPS__PIN_DISTS[@]}"; do
+        # An `if`, not `[[ ]] && …`: a false test as the function's last command would be its status under set -e.
+        if [[ " ${changed[*]} " == *" $dist "* ]]; then
+            _RELEASE_STEPS__REFRESH_DISTS+=("$dist")
+        fi
+    done
+}
+
+# _release_steps__verify_release <tools-dir> <tag>: refuse unless <tag> is a final vX.Y.Z on the tools' origin,
+# an annotated tag signed by a key the tools' release.yml pins, whose CHANGELOG.md opens with that version and lists
+# its entries, and which has a GitHub release, not a prerelease or a draft, whose release run passed. Sets
+# _RELEASE_STEPS__RELEASE_COMMIT, _RELEASE_STEPS__RELEASE_VERSION and _RELEASE_STEPS__RELEASE_HEADLINES.
+_release_steps__verify_release() {
+    local tools="$1" tag="$2" answer changelog newest status=0 sha jq_filter
+    [[ "$tag" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-.*)?$ ]] \
+        || _release_steps__die "give a commit SHA of the tools (a digest refresh) or a release tag \`vX.Y.Z\`"
+    [[ -z "${BASH_REMATCH[5]}" ]] || _release_steps__die "$tag is a prerelease; a caller pins a final release"
+    _RELEASE_STEPS__RELEASE_VERSION="${BASH_REMATCH[1]}"
+    _release_steps__step "verifying tag $tag"
+    # The tag is read from origin into FETCH_HEAD alone, so the checkout's own tag of that name is left as it is.
+    answer="$(git -C "$tools" ls-remote origin "refs/tags/$tag" 2>&1)" \
+        || _release_steps__die "the origin of ai-tools-assets-tools could not be read (${answer//$'\n'/ }); check the network, then run again"
+    [[ -n "$answer" ]] || _release_steps__die "tag $tag is not on ai-tools-assets-tools origin; push the tag, or check the spelling"
+    answer="$(git -C "$tools" fetch --quiet --no-tags origin "refs/tags/$tag" 2>&1)" \
+        || _release_steps__die "tag $tag did not fetch from ai-tools-assets-tools origin (${answer//$'\n'/ }); check the network, then run again"
+    _release_steps__resolve_tag_object "$tools" "$tag" FETCH_HEAD
+    _release_steps__read_tag_signers "$tools"
+    _release_steps__verify_tag_signature "$tools" "$tag" "$_RELEASE_STEPS__TAG_OBJECT" "$_RELEASE_STEPS__TAG_SIGNERS" \
+        "$_RELEASE_STEPS__TAG_SIGNER_KEY_URL"
+    sha="$(git -C "$tools" rev-parse "$_RELEASE_STEPS__TAG_OBJECT^{commit}")"
+    _RELEASE_STEPS__RELEASE_COMMIT="$sha"
+    changelog="$(git -C "$tools" show "$sha:CHANGELOG.md")"
+    newest="$(_release_steps__read_newest_version "$changelog")"
+    [[ "$newest" == "$_RELEASE_STEPS__RELEASE_VERSION" ]] \
+        || _release_steps__die "the tools' \`CHANGELOG.md\` at $tag opens its newest release with \`## [$newest]\`, not \`## [$_RELEASE_STEPS__RELEASE_VERSION]\`; the tag and the changelog disagree"
+    _RELEASE_STEPS__RELEASE_HEADLINES="$(_release_steps__list_release_headlines "$changelog" "$newest")"
+    [[ -n "$_RELEASE_STEPS__RELEASE_HEADLINES" ]] \
+        || _release_steps__die "the \`## [$newest]\` section of \`CHANGELOG.md\` has no entries; the body needs at least one"
+    _release_steps__ok "$tag is tag object ${_RELEASE_STEPS__TAG_OBJECT:0:7}, commit ${sha:0:7}, signed by $_RELEASE_STEPS__TAG_PRIMARY"
+    if [[ "$_RELEASE_STEPS__GH_READY" != true ]]; then
+        _release_steps__step "would check that $tag has a GitHub release whose release run passed"
+        return 0
+    fi
+    _release_steps__read_github "the GitHub release" "$tag" "release not found|Not Found" false \
+        gh release view "$tag" --repo "$_RELEASE_STEPS__TOOLS_REPOSITORY" --json isDraft,isPrerelease \
+        --jq '"\(.isDraft) \(.isPrerelease)"' || status=$?
+    [[ "$status" -ne 1 ]] || _release_steps__die "$tag has no GitHub release; a caller pins a final release"
+    [[ "$status" -eq 0 ]] || _release_steps__die_after_retries "the GitHub release" "$tag"
+    [[ "$_RELEASE_STEPS__ANSWER" == "false false" ]] \
+        || _release_steps__die "$tag is a prerelease or a draft on GitHub; a caller pins a final release"
+    jq_filter="[.workflow_runs[] | select(.path == \".github/workflows/release.yml\" and .head_sha == \"$sha\")][0]"
+    jq_filter+=' | "\(.conclusion // "absent") \(.html_url // "")"'
+    _release_steps__read_github "the release run" "$tag" "" false \
+        gh api "repos/$_RELEASE_STEPS__TOOLS_REPOSITORY/actions/runs?event=push&branch=$tag&per_page=100" \
+        --jq "$jq_filter" || status=$?
+    [[ "$status" -eq 0 ]] || _release_steps__die_after_retries "the release run" "$tag"
+    [[ "${_RELEASE_STEPS__ANSWER%% *}" == success ]] \
+        || _release_steps__die "the release run for $tag concluded ${_RELEASE_STEPS__ANSWER%% *} (${_RELEASE_STEPS__ANSWER#* }); fix or re-run it before re-pinning"
+    _release_steps__ok "$tag has a GitHub release whose release run passed (${_RELEASE_STEPS__ANSWER#* })"
+}
+
+# repin-tools: half two of a digest refresh, or a re-pin to a release of the tools, run in a caller's checkout from
+# the tools' tree.
+_release_steps__repin_tools() {
+    local tools caller="$PWD" target sha mode index dist names=() quoted=() noun images serves registries=()
+    local reference comment previous workflows=() workflow_list verb branch title body file files=() count
+    local pull_request status=0 date answer rule pinned old_comment pairs=() unreadable="" resolves=() changes=()
+    local -A seen=()
+    _release_steps__parse_change_arguments repin-tools "$@"
+    target="$_RELEASE_STEPS__TARGET"
+    _release_steps__require_caller_checkout "$caller"
+    _release_steps__require_tools_tree
+    tools="$(_release_steps__read_toplevel "$PACKAGING")"
+    _release_steps__require_gh
+    _release_steps__require_synced_develop "$caller"
+    _release_steps__read_caller_pins "$caller"
+    [[ "${#_RELEASE_STEPS__CALLER_REFS[@]}" -gt 0 ]] \
+        || _release_steps__die "no \`uses: $_RELEASE_STEPS__TOOLS_REPOSITORY/.github/workflows/…\` line under .github/workflows/; nothing to re-pin"
+    _release_steps__require_equal_caller_pins
+
+    _release_steps__step "fetching ai-tools-assets-tools origin/develop in $tools"
+    answer="$(git -C "$tools" fetch --quiet --no-tags origin +refs/heads/develop:refs/remotes/origin/develop 2>&1)" \
+        || _release_steps__die "\`git fetch origin develop\` failed in $tools (${answer//$'\n'/ }); check the network and the remote, then run again"
+    _release_steps__ok "ai-tools-assets-tools origin/develop = $(git -C "$tools" rev-parse --short=7 origin/develop)"
+    if [[ "$target" =~ ^v[0-9] ]]; then
+        mode=release
+        _release_steps__verify_release "$tools" "$target"
+        sha="$_RELEASE_STEPS__RELEASE_COMMIT"
+        comment="$target"
+        branch="ci/$_RELEASE_STEPS__ID-tools-$_RELEASE_STEPS__RELEASE_VERSION"
+        title="ci: call the ai-tools-assets-tools $_RELEASE_STEPS__RELEASE_VERSION workflows"
+    elif [[ "$target" =~ ^[0-9a-f]{7,40}$ ]]; then
+        mode=refresh
+        sha="$(git -C "$tools" rev-parse --verify --quiet "$target^{commit}")" || sha=""
+        if [[ -z "$sha" ]] || ! git -C "$tools" merge-base --is-ancestor "$sha" origin/develop; then
+            _release_steps__die "$target is not on ai-tools-assets-tools \`origin/develop\` (fetched now); a develop pin names a merged commit: merge the pull request, then run this command again"
+        fi
+    else
+        _release_steps__die "give a commit SHA of the tools (a digest refresh) or a release tag \`vX.Y.Z\`"
+    fi
+
+    count=0
+    for index in "${!_RELEASE_STEPS__CALLER_REFS[@]}"; do
+        [[ "${_RELEASE_STEPS__CALLER_REFS[index]}" == "$sha" ]] && count=$((count + 1))
+    done
+    if [[ "$count" -eq "${#_RELEASE_STEPS__CALLER_REFS[@]}" ]]; then
+        _release_steps__ok "the \`uses:\` lines already pin @$sha; nothing to do"
+        return 0
+    fi
+
+    if [[ "$mode" == refresh ]]; then
+        # The commit is a refresh against its parent, and the move from the caller's pin to it brings a refresh alone:
+        # a release tag and a release run attest to every other change, and a develop pin carries neither.
+        rule="a develop pin is for a digest refresh alone, and any other change reaches a caller through a release"
+        [[ "$(git -C "$tools" rev-list --parents -n 1 "$sha" | wc -w)" -eq 2 ]] \
+            || _release_steps__die "${sha:0:7} is not a commit with one parent; $rule"
+        _release_steps__require_pin_change "$tools" "$sha^" "$sha" "${sha:0:7} changes" "$rule"
+        _release_steps__resolve_caller_pin "$tools" "${_RELEASE_STEPS__CALLER_REFS[0]}"
+        pinned="$_RELEASE_STEPS__CALLER_PIN_COMMIT"
+        _release_steps__require_pin_change "$tools" "$pinned" "$sha" "from the pinned ${pinned:0:7}, ${sha:0:7} changes" \
+            "a develop pin is for a digest refresh alone, so this caller re-pins through a release of the tools: cut the release, then run this command with its tag (\`vX.Y.Z\`)"
+        if [[ -n "$_RELEASE_STEPS__PULL_REQUEST" ]]; then
+            pull_request="$_RELEASE_STEPS__PULL_REQUEST"
+        elif [[ "$_RELEASE_STEPS__GH_READY" == true ]]; then
+            _release_steps__read_github "the pull request of commit" "${sha:0:7}" "" false \
+                gh api "repos/$_RELEASE_STEPS__TOOLS_REPOSITORY/commits/$sha/pulls" --jq '.[0].number // empty' \
+                || status=$?
+            [[ "$status" -eq 0 ]] \
+                || _release_steps__die "no pull request names commit ${sha:0:7} (\`gh api repos/$_RELEASE_STEPS__TOOLS_REPOSITORY/commits/${sha:0:7}/pulls\` answered: $_RELEASE_STEPS__ANSWER, $_RELEASE_STEPS__RETRY_ATTEMPTS times over $_RELEASE_STEPS__WAITED_SECONDS s); pass it with \`--pr <number>\`"
+            pull_request="$_RELEASE_STEPS__ANSWER"
+            [[ "$pull_request" =~ ^[1-9][0-9]*$ ]] \
+                || _release_steps__die "GitHub names the pull request of commit ${sha:0:7} as \`$(_release_steps__format_one_line "$pull_request")\`, not a number; pass it with \`--pr <number>\`"
+        else
+            pull_request="<PR>"
+        fi
+        date=""
+        for dist in "${_RELEASE_STEPS__REFRESH_DISTS[@]}"; do
+            [[ -n "${_RELEASE_STEPS__DIST_NAMES[$dist]:-}" ]] \
+                || _release_steps__die "the dist tag $dist has no name in _RELEASE_STEPS__DIST_NAMES; add it beside DIST_IMAGES"
+            reference="${_RELEASE_STEPS__PIN_REFERENCES[$dist]}"
+            names+=("${_RELEASE_STEPS__DIST_NAMES[$dist]}")
+            quoted+=("\`${reference%@*}\`")
+            resolves+=("the digest \`${reference%@*}\` resolves to on ${_RELEASE_STEPS__REFRESH_DATES[$dist]}")
+            [[ " ${registries[*]} " == *" ${reference%%/*} "* ]] || registries+=("${reference%%/*}")
+            # The comment names the newest resolution date; the dates are ISO, so the greatest string is the newest.
+            [[ "${_RELEASE_STEPS__REFRESH_DATES[$dist]}" < "$date" ]] || date="${_RELEASE_STEPS__REFRESH_DATES[$dist]}"
+        done
+        noun=image images="$(_release_steps__format_list "${names[@]}")"
+        [[ "${#names[@]}" -eq 1 ]] || noun=images
+        serves="$(_release_steps__format_list "${registries[@]}")"
+        comment="develop $date, $(_release_steps__format_joined - "${_RELEASE_STEPS__REFRESH_DISTS[@]}") digest, ai-tools-assets-tools#$pull_request"
+        branch="ci/$_RELEASE_STEPS__ID-tools-$(_release_steps__format_joined - "${_RELEASE_STEPS__REFRESH_DISTS[@]}")-digest"
+        title="ci: call the ai-tools-assets-tools commit that pins the $images $noun"
+        _release_steps__ok "${sha:0:7} is on origin/develop and is ai-tools-assets-tools#$pull_request; from the pinned ${pinned:0:7} it changes image pins ($(_release_steps__format_joined ", " "${_RELEASE_STEPS__REFRESH_DISTS[@]}")) and CHANGELOG.md alone"
+    fi
+
+    _release_steps__parse_image_pins "$(git -C "$tools" show "$sha:packaging/release-steps.sh")"
+    _release_steps__step "checking ${#_RELEASE_STEPS__PIN_DISTS[@]} images at ${sha:0:7}"
+    _release_steps__check_pins
+    [[ "$_RELEASE_STEPS__FAILED_COUNT" -eq 0 ]] \
+        || _release_steps__die "the images ai-tools-assets-tools pins at ${sha:0:7} do not all resolve (the lines above); a caller pins a commit whose images resolve: run refresh-images in the tools first"
+    _release_steps__ok "every image at ${sha:0:7} resolves"
+
+    # The body names the previous pin from the old comments where every line carries one readable comment and they
+    # are one value; readable comments that differ are sources that disagree, and a line without one leaves the ref
+    # to stand for the pin.
+    previous=""
+    for index in "${!_RELEASE_STEPS__CALLER_COMMENTS[@]}"; do
+        old_comment="${_RELEASE_STEPS__CALLER_COMMENTS[index]}"
+        if [[ "$old_comment" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$old_comment" =~ ^develop\  ]]; then
+            seen[$old_comment]=1
+            previous="$old_comment"
+            pairs+=("${_RELEASE_STEPS__CALLER_FILES[index]}: \`# $old_comment\`")
+        else
+            unreadable="${unreadable:-${_RELEASE_STEPS__CALLER_FILES[index]}}"
+        fi
+    done
+    [[ "${#seen[@]}" -le 1 ]] \
+        || _release_steps__die "the \`uses:\` lines carry different pin comments ($(_release_steps__format_joined ", " "${pairs[@]}")); make them one, then run again"
+    if [[ -n "$unreadable" || -z "$previous" ]]; then
+        previous="${_RELEASE_STEPS__CALLER_REFS[0]}"
+        [[ "$previous" =~ ^[0-9a-f]{40}$ ]] && previous="${previous:0:7}"
+        _release_steps__warn "the comment after @${_RELEASE_STEPS__CALLER_REFS[0]} in $unreadable is not \`# vX.Y.Z\` or \`# develop …\`; the body names the previous pin as $previous"
+    fi
+    for file in "${_RELEASE_STEPS__CALLER_FILES[@]}"; do
+        [[ " ${files[*]} " == *" $file "* ]] && continue
+        files+=("$file")
+        file="${file##*/}"
+        workflows+=("${file%.y*ml}")
+    done
+    workflow_list="$(_release_steps__format_list "${workflows[@]}")"
+    if [[ "${#workflows[@]}" -gt 1 ]]; then
+        workflow_list+=" workflows" verb="They now call"
+    else
+        workflow_list+=" workflow" verb="It now calls"
+    fi
+
+    _release_steps__open_worktree "$caller"
+    _release_steps__step "writing $(_release_steps__format_joined ", " "${files[@]}") in the scratch worktree"
+    for index in "${!_RELEASE_STEPS__CALLER_FILES[@]}"; do
+        _release_steps__replace_line "$_RELEASE_STEPS__WORKTREE/${_RELEASE_STEPS__CALLER_FILES[index]}" \
+            "${_RELEASE_STEPS__CALLER_LINE_NUMBERS[index]}" \
+            "${_RELEASE_STEPS__CALLER_PREFIXES[index]}$_RELEASE_STEPS__TOOLS_REPOSITORY/.github/workflows/${_RELEASE_STEPS__CALLER_WORKFLOWS[index]}@$sha # $comment"
+    done
+    for file in "${files[@]}"; do
+        count=0
+        for index in "${!_RELEASE_STEPS__CALLER_FILES[@]}"; do
+            [[ "${_RELEASE_STEPS__CALLER_FILES[index]}" == "$file" ]] && count=$((count + 1))
+        done
+        changes+=("$file=$count/$count")
+    done
+    _release_steps__require_worktree_change "${changes[@]}"
+
+    if [[ "$mode" == release ]]; then
+        body="$(_release_steps__format_wrapped 72 "" "" "The $workflow_list previously called the $previous commit. ${verb} the $_RELEASE_STEPS__RELEASE_VERSION commit \`${sha:0:7}\` (release \`$target\`):")"
+        body+=$'\n'
+        while IFS= read -r reference; do
+            body+=$'\n'"$(_release_steps__format_wrapped 72 "- " "  " "$reference")"
+        done <<<"$_RELEASE_STEPS__RELEASE_HEADLINES"
+    else
+        # One date where every refreshed pin carries it; else each digest names the date its tag resolved to it.
+        if [[ "$noun" == image ]]; then
+            body="whose release steps pin a $images image digest $serves no longer serves"
+            resolves=("which pins the digest ${quoted[0]} resolves to on $date")
+        elif [[ "$(printf '%s\n' "${_RELEASE_STEPS__REFRESH_DATES[@]}" | sort -u | wc -l)" -eq 1 ]]; then
+            body="whose release steps pin $images image digests $serves no longer serves"
+            resolves=("which pins the digests $(_release_steps__format_list "${quoted[@]}") resolve to on $date")
+        else
+            body="whose release steps pin $images image digests $serves no longer serves"
+            resolves=("which pins $(_release_steps__format_list "${resolves[@]}")")
+        fi
+        body="$(_release_steps__format_wrapped 72 "" "" "The $workflow_list called the $previous commit, $body, so \`check-images\` failed every pull request here with \`manifest unknown\`. ${verb} the ai-tools-assets-tools \`develop\` commit \`${sha:0:7}\` ($_RELEASE_STEPS__TOOLS_REPOSITORY#$pull_request), ${resolves[0]}.")"
+        body+=$'\n\n'"$(_release_steps__format_wrapped 72 "" "" "Not a release of the tools: the next tools release carries the digest, and the next re-pin here names that release.")"
+    fi
+    _release_steps__read_github_repository "$caller"
+    _release_steps__list_open_pull_requests "$_RELEASE_STEPS__GITHUB_REPOSITORY" \
+        "each of them passes on a re-run once this pin is on develop"
+    _release_steps__deliver_change "$caller" "$branch" "$title" "$body"
+
+    if [[ "$_RELEASE_STEPS__DRY_RUN" == true ]]; then
+        _release_steps__next "to make the change: bash $0 repin-tools --id $_RELEASE_STEPS__ID $target${_RELEASE_STEPS__PULL_REQUEST:+ --pr $_RELEASE_STEPS__PULL_REQUEST}"
+        return 0
+    fi
+    _release_steps__read_github_repository "$caller"
+    _release_steps__next "after the merge: git ls-remote https://github.com/$_RELEASE_STEPS__GITHUB_REPOSITORY.git refs/heads/develop"
+}
+
 [[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|refresh-images|repin-tools|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
     check-images) _release_steps__check_images "$@" ;;
     refresh-images) _release_steps__refresh_images "$@" ;;
+    repin-tools) _release_steps__repin_tools "$@" ;;
     verify-tag) _release_steps__verify_tag "$@" ;;
     preflight) _release_steps__run_preflight ;;
     sign-files) _release_steps__sign_files "$@" ;;
