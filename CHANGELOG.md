@@ -7,6 +7,13 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Changed
+
+- The RPM `ai-tools-assets-tools` does not install the conformance fixtures
+  under `/usr/share/ai-tools-assets-tools/fixtures`; an upgrade removes them.
+  They ship in the release archive, where a validator held to them reads them,
+  and an installed tool does not read them.
+
 ### Fixed
 
 - `formatters/fill-comments.sh` refills a doc comment's hanging paragraph,
