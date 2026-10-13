@@ -7,6 +7,41 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **Suites tested for every caller.** The `validate` workflow's `tests` job
+  runs a caller's `tests/` and each `sets/*/skills/*/tests` that holds a test
+  module, at Python 3.9 and 3.12, and a caller gains the check runs
+  `<job> / tests (python 3.9)` and `<job> / tests (python 3.12)`.
+  Before, the job ran in this repository alone and a caller listed it
+  as skipped.
+- **The floor interpreter.** `release-steps.sh test-floor <directory>...` runs
+  the suites inside the pinned EL9 image, on the `python3` EL9 ships,
+  and refuses unless it is Python 3.9; the 3.9 leg of `validate`
+  and the release run through it. Before, they ran the 3.9 build `setup-python`
+  publishes.
+
+### Changed
+
+- **Fedora 44 image from Fedora's registry.** `FC44_IMAGE` names
+  `registry.fedoraproject.org/fedora:44`, which keeps the digests it serves.
+  Before, it named quay.io, which deletes a superseded digest within hours
+  of the daily rebuild, and `check-images` failed every pull request here
+  and in each caller from 2026-10-13.
+- **Ubuntu 26.04.** Every job runs on `ubuntu-26.04`, and the release steps
+  install `runc` where the runner image lacks it. Before, the jobs ran
+  on `ubuntu-24.04`.
+
+### Security
+
+- **Swap off for the signing key.** A release turns swap off before the signing
+  key enters memory, logs the memory and swap lines of `/proc/meminfo`,
+  and each signing step refuses to import the key while `/proc/swaps` lists
+  a device.
+- **Shared memory sized to its use.** The signing container's `/dev/shm` is 16
+  MiB, a verify container has none, and its rpm database tmpfs is 32 MiB;
+  `sign-rpms.sh` prints the size its scratch tree reached.
+
 ## [1.3.1] - 2026-10-13
 
 ### Fixed
