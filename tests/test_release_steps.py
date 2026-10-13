@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 REPOSITORY = TESTS.parent
@@ -1431,6 +1432,20 @@ class RepinToolsToARelease(RepinCase):
                                            "- Image check\n- Digest refresh\n"
                                            "- A release pulls every image before the first signature\n"), message)
         self.assertIn(f"signed by {self.primary}", stdout)
+
+    def test_a_caller_that_signs_its_commits_signs_the_re_pin_from_its_own_keyring(self):
+        """The tag check's scratch keyring holds public keys alone; the commit after it reaches the caller's."""
+        self.release(self.primary)
+        self.answer("gh", ["release", "view", "v1.3.0"], stdout="false false\n")
+        self.answer("gh", ["api"], stdout="success https://github.com/dag-node/ai-tools-assets-tools/actions/runs/7\n")
+        self.answer_caller_pull_request()
+        self.git(self.caller, "config", "commit.gpgsign", "true")
+        self.git(self.caller, "config", "user.signingkey", self.primary)
+        with mock.patch.dict(os.environ, {"GNUPGHOME": str(self.gnupg)}):
+            status, _, stderr = self.repin("v1.3.0")
+            self.assertEqual(status, 0, stderr)
+            signer = self.git(self.caller, "log", "-1", "--format=%GP", f"ci/{REFRESH_ID}-tools-1.3.0")
+        self.assertEqual(signer, self.primary)
 
     def test_a_tag_signed_by_another_key_is_refused(self):
         self.release("0" * 40)

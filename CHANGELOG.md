@@ -7,6 +7,13 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Fixed
+
+- **Signed re-pin commits.** `repin-tools` to a release signs its commit with
+  the caller's own key where git signs commits, and gpg asks for the
+  passphrase as for any signed commit. Before, gpg looked for that key in the
+  keyring that verified the tag, and the commit failed with `No secret key`.
+
 ## [1.3.0] - 2026-10-13
 
 ### Added
