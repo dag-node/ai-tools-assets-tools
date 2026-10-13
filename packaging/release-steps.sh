@@ -7,6 +7,7 @@
 #
 # ```bash
 # bash packaging/release-steps.sh check-images
+# bash <tools>/packaging/release-steps.sh test-floor <directory>...
 # bash packaging/release-steps.sh refresh-images --id <ID> [--caller <path>]... [--dry-run]
 # bash <tools>/packaging/release-steps.sh repin-tools --id <ID> <sha>|<vX.Y.Z> [--pr <number>] [--dry-run]
 # bash packaging/release-steps.sh verify-tag <tag> <event-commit>
@@ -18,8 +19,8 @@
 # bash packaging/release-steps.sh dispatch <tag>
 # ```
 #
-# Environment, by subcommand (check-images, refresh-images and repin-tools read none; the last two use the operator's
-# own git and gh credentials, and `--help` prints their usage):
+# Environment, by subcommand (check-images, test-floor, refresh-images and repin-tools read none; the last two use
+# the operator's own git and gh credentials, and `--help` prints their usage):
 #   verify-tag      TAG_SIGNER_PRIMARY_FINGERPRINTS (space-separated), TAG_SIGNER_KEY_URL
 #   preflight       GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; DISPATCH_RPM=true adds
 #                   RPM_REPO_DISPATCH_TOKEN
@@ -35,6 +36,14 @@
 # a caller's checkout, it first requires every `uses:` line naming a workflow of dag-node/ai-tools-assets-tools to carry
 # one `@<ref>`, a textual check, and a failed image adds that the tools' develop may already carry the refresh. It does
 # not read a secret, so it runs on a pull request from a fork.
+#
+# test-floor runs the Python suites of the current checkout at the floor the tools and the skills are written
+# for: in one container of EL9_IMAGE, with the checkout mounted read-only, it installs git, prints `python3 --version`
+# and refuses unless the image's interpreter is Python 3.9, then runs `python3 -m unittest discover -s <directory> -v`
+# for each directory as the calling user's uid and gid (setpriv), so a test that expects a permission refusal or a git
+# check of the checkout's owner sees the runner's user and not root. It exits non-zero when any directory's suite fails.
+# The container keeps the network for the install and does not receive a secret, and the release runs it
+# before the first step that does.
 #
 # refresh-images and repin-tools carry a digest refresh, one half each: refresh-images rewrites the expired pins here
 # and opens their pull request, and repin-tools rewrites a caller's `uses:` lines to the merged commit, or to a release
@@ -575,6 +584,48 @@ _release_steps__ensure_podman() {
     sudo mkdir -p /etc/containers/containers.conf.d
     printf '[engine]\nruntime = "runc"\n' | sudo tee /etc/containers/containers.conf.d/10-runc.conf >/dev/null
     sudo podman info --format 'podman runtime: {{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Version}}'
+}
+
+# Print `python3 --version` and refuse unless it names Python 3.9, the floor: the suite proves the floor only while
+# the interpreter it runs on is that release. test-floor runs it inside the container.
+_release_steps__require_floor_python() {
+    local version
+    version="$(python3 --version 2>&1)" \
+        || _release_steps__die "\`python3 --version\` failed ($(_release_steps__format_one_line "$version")); the floor suite does not run"
+    echo "$version"
+    [[ "$version" == "Python 3.9."* ]] \
+        || _release_steps__die "python3 is $(_release_steps__format_one_line "$version"), not Python 3.9; the floor suite runs only on the floor's interpreter"
+}
+
+_release_steps__test_floor() {
+    [[ "$#" -ge 1 ]] || _release_steps__die "usage: test-floor <directory>..."
+    local directory
+    for directory in "$@"; do
+        [[ "$directory" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && "/$directory/" != */../* && -d "$directory" ]] \
+            || _release_steps__die "$directory is not a directory under $PWD, named by a relative path"
+    done
+    _release_steps__ensure_podman
+    # The functions the container runs are this file's, written into its script, so the check there is the one the suite
+    # holds.
+    sudo podman run --rm --pull=missing --entrypoint /usr/bin/bash -v "$PWD:/src:ro" -v "$PACKAGING:/packaging:ro" \
+        -w /src -e PYTHONDONTWRITEBYTECODE=1 "$EL9_IMAGE" -c "set -euo pipefail
+_RELEASE_STEPS__DIE_PREFIX='' _RELEASE_STEPS__DIE_SUFFIX=''
+$(declare -f _release_steps__die _release_steps__format_one_line _release_steps__require_floor_python)"'
+uid="$1" gid="$2"
+shift 2
+bash /packaging/el-repos.sh
+dnf -y -q --setopt=install_weak_deps=False install git
+_release_steps__require_floor_python
+home="$(mktemp -d)"
+chown "$uid:$gid" "$home"
+failed=()
+for directory in "$@"; do
+    HOME="$home" setpriv --reuid="$uid" --regid="$gid" --clear-groups -- \
+        python3 -m unittest discover -s "$directory" -v || failed+=("$directory")
+done
+[[ "${#failed[@]}" -eq 0 ]] || _release_steps__die "the suite failed at the floor in ${failed[*]}"
+echo "the suite passed at the floor in $*"' _ "$(id -u)" "$(id -g)" "$@" </dev/null \
+        || _release_steps__die "the floor suite did not pass in $EL9_IMAGE"
 }
 
 _release_steps__sign_rpm() {
@@ -1780,11 +1831,12 @@ _release_steps__repin_tools() {
     _release_steps__next "after the merge: git ls-remote https://github.com/$_RELEASE_STEPS__GITHUB_REPOSITORY.git refs/heads/develop"
 }
 
-[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|refresh-images|repin-tools|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|test-floor|refresh-images|repin-tools|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
     check-images) _release_steps__check_images "$@" ;;
+    test-floor) _release_steps__test_floor "$@" ;;
     refresh-images) _release_steps__refresh_images "$@" ;;
     repin-tools) _release_steps__repin_tools "$@" ;;
     verify-tag) _release_steps__verify_tag "$@" ;;

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Releases this repository's tooling for a tag v<semver>: verifies the tag's signature against the maintainer's pinned
-# key, runs the suite, writes the source archive with its SHA-256 and a detached signature by the org package-signing
+# key, runs the suite at the Python floor inside the pinned EL9 image, writes the source archive with its SHA-256 and a detached signature by the org package-signing
 # key, builds the RPM ai-tools-assets-tools from that archive once for each distribution rpm.dagnode.com serves, signs
 # the RPMs inside an EL9 container and verifies each in its own distribution, creates the GitHub release with
 # the archive, its .sha256 and .asc and the RPMs, and asks dag-node/rpm to publish the RPMs at rpm.dagnode.com.
@@ -28,7 +28,8 @@ permissions:
   contents: read
 
 env:
-  # Python does not write a bytecode cache, so the suite adds no file to the checkout the release is built from.
+  # Python does not write a bytecode cache, so render-nfpm.py's imports add no file to the checkout the release is built
+  # from.
   PYTHONDONTWRITEBYTECODE: '1'
   TAG_SIGNER_PRIMARY_FINGERPRINTS: 225DFF22D0221D3DD68CCEFFFABAF500E7D90733
   TAG_SIGNER_KEY_URL: https://github.com/p4nda.gpg
@@ -67,14 +68,11 @@ jobs:
           EVENT_SHA: ${{ github.sha }}
         run: bash packaging/release-steps.sh verify-tag "$TAG" "$EVENT_SHA"
 
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.9'
-
-      - name: The suite passes at the verified commit
+      # The container runs before the first step that receives a secret.
+      - name: The suite passes at the verified commit, at the Python floor inside the pinned EL9 image
         run: |
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT" || { echo "::error::the checkout moved off $RELEASE_COMMIT" >&2; exit 1; }
-          python3 -m unittest discover -s tests
+          bash packaging/release-steps.sh test-floor tests
 
       - name: Write the archive of the verified commit and its SHA-256
         run: |

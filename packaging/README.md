@@ -71,6 +71,25 @@ runs the same check on every pull request and push. A release run pulls every
 image in its preflight step, before the first signature, so an image retired
 after the check stops the run before it signs anything.
 
+## Tests at the Python floor
+
+The `validate` workflow's `tests` job runs a caller's Python suites, `tests/`
+at the root and each `sets/*/skills/*/tests` that holds a `test*.py`. Its
+`tests (python 3.9)` leg runs them on the runner with:
+
+```bash
+bash "$TOOLS/packaging/release-steps.sh" test-floor sets/core/skills/ai-tools-reftags/tests
+```
+
+`test-floor` runs the suites in one container of the EL9 image the release
+steps pin, with the checkout mounted read-only. It installs `git`, refuses
+unless the image's `python3 --version` is Python 3.9, and runs
+`python3 -m unittest discover -s <directory> -v` for each directory
+as the runner's own user. This repository's release runs its suite the same
+way, before the first step that receives a secret. The step sets runc
+as podman's runtime under `/etc/containers/containers.conf.d/`, so it is
+a runner step and not a command for a workstation.
+
 ## When an image digest expires
 
 A registry can retire an image's digest once its tag moves on, and from then
@@ -142,7 +161,7 @@ before the release signs `SHA256SUMS`; the zip's own `.asc` covers it whole.
 
 | File | What it does |
 |---|---|
-| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml`; lists the distributions an RPM is built for |
+| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml`, and `test-floor` for `validate.yml`'s floor leg; lists the distributions an RPM is built for |
 | `render-nfpm.py` | writes the nFPM configuration of a set's RPM for one distribution from `nfpm-set.yaml.in`, the staged `set.conf` and `publisher.conf`, or of the tools RPM from `nfpm-tools.yaml.in` |
 | `nfpm-set.yaml.in` | the package a set ships as |
 | `nfpm-tools.yaml.in` | the package this repository's tools ship as, built by `release.yml` from the release archive |

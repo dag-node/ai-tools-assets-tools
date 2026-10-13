@@ -1801,6 +1801,55 @@ class SwapCheck(unittest.TestCase):
                 self.assertIn("so swap is not shown to be off; the signing key is not imported", stderr)
 
 
+class FloorPython(unittest.TestCase):
+    """The interpreter check test-floor runs inside the container, against a python3 that reports a version, and
+    test-floor's refusal of a directory it would not mount; the container run itself is proven by a workflow run."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def check(self, python3=None):
+        functions = shell_functions("_release_steps__require_floor_python", "_release_steps__die",
+                                    "_release_steps__format_one_line")
+        environment = {"PATH": str(self.root)}
+        if python3 is not None:
+            environment["BASH_FUNC_python3%%"] = python3
+        script = (f'set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n{functions}'
+                  '_release_steps__require_floor_python\necho checked\n')
+        completed = subprocess.run([BASH, "-c", script], env=environment, capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_python_3_9_passes(self):
+        self.assertEqual(self.check('() { echo "Python 3.9.21"; }'), (0, "Python 3.9.21\nchecked\n", ""))
+
+    def test_a_later_python_refuses(self):
+        status, stdout, stderr = self.check('() { echo "Python 3.14.4"; }')
+        self.assertEqual((status, stdout), (1, "Python 3.14.4\n"))
+        self.assertIn("::error::release-steps: python3 is Python 3.14.4, not Python 3.9; the floor suite runs only on"
+                      " the floor's interpreter", stderr)
+
+    def test_a_python3_that_fails_or_is_absent_refuses(self):
+        for name, python3 in (("fails", '() { echo "no interpreter" >&2; return 1; }'), ("absent", None)):
+            with self.subTest(python3=name):
+                status, stdout, stderr = self.check(python3)
+                self.assertEqual((status, stdout), (1, ""))
+                self.assertIn("::error::release-steps: `python3 --version` failed (", stderr)
+
+    def test_a_directory_outside_the_checkout_refuses_before_podman(self):
+        (self.root / "tests").mkdir()
+        for directory in ("../tests", "/tmp", "tests/../..", "absent", ""):
+            with self.subTest(directory=directory):
+                completed = subprocess.run([BASH, str(RELEASE_STEPS), "test-floor", directory], cwd=self.root,
+                                           capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn(f"::error::release-steps: {directory} is not a directory under {self.root}, named by"
+                              " a relative path", completed.stderr)
+                self.assertNotIn("podman", completed.stdout + completed.stderr)
+
+
 class ReleaseHeadlines(unittest.TestCase):
     """The changelog parser the release mode's body is built from, run on text alone, so its cases need no signed tag."""
 

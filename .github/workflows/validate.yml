@@ -12,9 +12,12 @@
 #
 # The status check a ruleset requires on main is `validate` in this repository and `<caller job> / validate` in
 # a caller. The calling job is named for the calling repository, as in the example for dag-node/ai-tools-assets, whose
-# check is `ai-tools-assets / validate`, the exact context that repository's ruleset requires. A caller also lists
-# `<caller job> / tests (python ${{ matrix.python }})` as skipped: the suite runs in this repository alone, and
-# a skipped job's name keeps its matrix expression.
+# check is `ai-tools-assets / validate`, the exact context that repository's ruleset requires.
+#
+# The tests job runs the caller's Python suites, tests/ at the root and each sets/*/skills/*/tests, where one holds
+# a test module, and reports `<caller job> / tests (python 3.9)` and `<caller job> / tests (python 3.12)`. The 3.9 leg
+# is the floor the tools and the skills are written for: `release-steps.sh test-floor` runs it inside the EL9 image
+# the release steps pin, on the python3 EL9 ships. The 3.12 leg runs on the runner under setup-python.
 #
 # The tools run from a checkout of the repository and commit that define this
 # workflow file -- job.workflow_repository, job.workflow_sha and job.workflow_file_path, which name the reusable
@@ -160,16 +163,81 @@ jobs:
 
   tests:
     name: tests (python ${{ matrix.python }})
-    # github.repository is the caller's in a called job, so this test alone keeps the suite to this repository's runs.
-    if: github.repository == 'dag-node/ai-tools-assets-tools'
     runs-on: ubuntu-24.04
+    env:
+      TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
     strategy:
       matrix:
         python: ['3.9', '3.12']
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out the repository under check
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # The validate job's resolve step, repeated: a composite action named by a relative path would resolve
+      # in the caller's checkout, and a `uses:` line does not take an expression for the tools commit.
+      - name: Resolve the tools repository and commit from the workflow file that defines this job
+        id: tools
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_FILE_PATH: ${{ job.workflow_file_path }}
+          TOOLS_REPOSITORY: ${{ inputs.tools-repository || 'dag-node/ai-tools-assets-tools' }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ] || [ -z "$WORKFLOW_FILE_PATH" ]; then
+            echo "job.workflow_repository, job.workflow_sha or job.workflow_file_path is empty (GitHub Enterprise Server does not define them); the tools cannot be checked out at a known commit. Run them from a local pin instead" >&2
+            exit 1
+          fi
+          if [ "${WORKFLOW_REPOSITORY,,}" != "${TOOLS_REPOSITORY,,}" ]; then
+            echo "this workflow file is defined in $WORKFLOW_REPOSITORY, not in $TOOLS_REPOSITORY; a fork of the tools is named in the tools-repository input" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_FILE_PATH" != ".github/workflows/validate.yml" ]; then
+            echo "this job is defined by $WORKFLOW_FILE_PATH, not .github/workflows/validate.yml; a copy of the workflow is not the tools" >&2
+            exit 1
+          fi
+          echo "repository=$WORKFLOW_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "sha=$WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tools at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ steps.tools.outputs.repository }}
+          ref: ${{ steps.tools.outputs.sha }}
+          path: .ai-tools-assets-tools
+          persist-credentials: false
+
+      # A directory is run where it holds a test module: from Python 3.12, unittest exits non-zero over one without.
+      - name: The test directories, tests/ at the root and each skill's tests/
+        run: |
+          shopt -s nullglob
+          directories=()
+          for directory in tests sets/*/skills/*/tests; do
+            if [ -d "$directory" ] && [ -n "$(find "$directory" -name 'test*.py' -print -quit)" ]; then
+              directories+=("$directory")
+            fi
+          done
+          if [ "${#directories[@]}" -eq 0 ]; then
+            echo "::notice::no tests/ at the root or sets/*/skills/*/tests holds a test*.py; the suite does not run"
+          fi
+          echo "TEST_DIRECTORIES=${directories[*]}" >> "$GITHUB_ENV"
+
+      # A directory is a portable name without a space, so each word is one directory.
+      - name: The suite at the Python floor, inside the EL9 image the release steps pin
+        if: matrix.python == '3.9' && env.TEST_DIRECTORIES != ''
+        run: bash "$TOOLS/packaging/release-steps.sh" test-floor $TEST_DIRECTORIES
+
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: matrix.python != '3.9' && env.TEST_DIRECTORIES != ''
         with:
           python-version: ${{ matrix.python }}
-      - name: The suite, the fixtures and the documented rules
-        run: python3 -m unittest discover -s tests -v
+
+      - name: The suite at a current Python
+        if: matrix.python != '3.9' && env.TEST_DIRECTORIES != ''
+        run: |
+          status=0
+          for directory in $TEST_DIRECTORIES; do
+            python3 -m unittest discover -s "$directory" -v || status=1
+          done
+          exit "$status"
