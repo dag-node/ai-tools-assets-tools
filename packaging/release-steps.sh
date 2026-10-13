@@ -85,6 +85,10 @@
 # mode. The containers run through `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its
 # default crun rejects the generated OCI spec. el-repos.sh points the EL9 container's repos at one ordered host list
 # before its `dnf install`.
+#
+# Each container's shared memory is sized to its use. The signing container's /dev/shm, which holds the keyring,
+# the passphrase file and the rpm macros sign-rpms.sh writes, is 16 MiB, and sign-rpms.sh prints the size its scratch
+# tree reached. A verify container has no /dev/shm (`--ipc=none`), and its rpm database is a 32 MiB tmpfs.
 set -euo pipefail
 
 NFPM_VERSION=2.47.0
@@ -605,8 +609,8 @@ _release_steps__sign_rpm() {
     # The key enters this container alone, and it has no network.
     container="ai-tools-assets-sign-$$"
     out="$(printf '%s\n%s\n' "$GPG_SIGNING_PASSPHRASE" "$GPG_SIGNING_KEY" \
-        | sudo podman run -i --pull=never --name "$container" --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" \
-            "$SIGN_IMAGE" -c '
+        | sudo podman run -i --pull=never --name "$container" --network=none --shm-size=16m --entrypoint /usr/bin/bash \
+            -v "$work:/in:ro" "$SIGN_IMAGE" -c '
             set -euo pipefail
             mkdir /out
             for name in "$@"; do cp "/in/$name" /out/; done
@@ -630,8 +634,12 @@ _release_steps__sign_rpm() {
     chmod 0755 "$verify"
     for name in "${names[@]}"; do
         _release_steps__resolve_dist_image "$name"
-        out="$(sudo podman run --rm --pull=never --network=none --cap-drop=all --security-opt=no-new-privileges --read-only \
-                --pids-limit=64 --tmpfs /rpmdb --entrypoint /usr/bin/bash -v "$verify:/in:ro" "$image" -c '
+        # An option list after `--tmpfs` replaces podman's defaults, so `rw,nosuid,nodev,noexec` are restated beside
+        # the size.
+        out="$(sudo podman run --rm --pull=never --network=none --ipc=none --cap-drop=all \
+                --security-opt=no-new-privileges --read-only --pids-limit=64 \
+                --tmpfs /rpmdb:rw,nosuid,nodev,noexec,size=32m,mode=0700 --entrypoint /usr/bin/bash -v "$verify:/in:ro" \
+                "$image" -c '
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
                 rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
