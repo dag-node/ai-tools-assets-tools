@@ -81,6 +81,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve the tools repository and commit from the workflow file that defines this job
         id: tools
@@ -112,6 +113,7 @@ jobs:
           repository: ${{ steps.tools.outputs.repository }}
           ref: ${{ steps.tools.outputs.sha }}
           path: .ai-tools-assets-tools
+          persist-credentials: false
 
       # The tools checkout sits inside the workspace, which is the only place actions/checkout places a second
       # repository; git's exclude file keeps it out of the tree under check, which reuse lint and check-licenses read
