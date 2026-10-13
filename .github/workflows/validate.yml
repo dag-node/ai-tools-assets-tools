@@ -27,6 +27,12 @@
 # runs the tools from a local pin instead. Over a repository with no publisher.conf (this one) the set checks are
 # skipped and the tree checks run. The sign-off check reads a pull request's own range, base.sha..head.sha, and reports
 # without failing the job until enforce-signoff is true.
+#
+# Every run checks that each image the release steps of the tools commit pin still resolves at its registry, and in
+# a caller that every `uses:` line naming a workflow of this repository carries one ref, so the images checked are
+# the ones a release through set-release.yml would use. A digest the registry retired fails the caller's pull requests
+# and pushes until the caller pins a tools commit that carries the new digest, ahead of any release tag that would have
+# spent its version on the expiry.
 name: validate
 
 on:
@@ -53,6 +59,11 @@ on:
 
 permissions:
   contents: read
+
+# Python does not write a bytecode cache, so a run adds no file to a checkout; tools/validate refuses a __pycache__
+# inside a set.
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   validate:
@@ -104,6 +115,10 @@ jobs:
       # through git's ignore rules.
       - name: Keep the tools checkout out of the tree under check
         run: echo '/.ai-tools-assets-tools/' >> .git/info/exclude
+
+      # The ubuntu runner image ships skopeo; check-images installs it only where an image stops doing so.
+      - name: Every image the pinned release steps name still resolves, and the caller's pins name one commit
+        run: bash "$TOOLS/packaging/release-steps.sh" check-images
 
       - name: Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

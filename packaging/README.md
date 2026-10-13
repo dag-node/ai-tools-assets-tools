@@ -46,10 +46,69 @@ equal the tag's.
 `@v1` follows the latest release of the tools; a full commit SHA in its place
 holds the caller to one reviewed version until the caller changes it.
 
+## Before a release tag
+
+Run the image check immediately before `git tag -s`. In this repository, at
+the commit the tag will name:
+
+```bash
+bash packaging/release-steps.sh check-images
+```
+
+In a caller, from the caller's checkout, with the tools checked out beside it
+at the commit its `uses:` lines pin:
+
+```bash
+tools=../ai-tools-assets-tools
+bash "$tools/packaging/release-steps.sh" check-images
+```
+
+It asks each image's registry for the manifest at the pinned digest, prints
+one line per image, and exits non-zero when a digest no longer resolves,
+naming the digest the tag resolves to now. In a caller it also requires every
+`uses:` line naming these workflows to carry one ref. The `validate` workflow
+runs the same check on every pull request and push. A release run pulls every
+image in its preflight step, before the first signature, so an image retired
+after the check stops the run before it signs anything.
+
+## When an image digest expires
+
+quay.io retires an image's digest once its tag moves on, and from then on
+`check-images` fails every pull request in this repository and in each caller.
+A refresh is a commit on this repository's `develop`, not a release: it changes
+the expired pin lines and `CHANGELOG.md` alone. Each caller pins
+that commit by its full SHA in every `uses:` line, and the next release of the
+tools carries the new digest.
+
+Two commands carry a refresh, each opening its pull request under your own git
+and `gh` credentials. In a clean checkout of the tools on `develop`:
+
+```bash
+bash packaging/release-steps.sh refresh-images --id ATR-261103a
+```
+
+Once that pull request is merged, in each caller's checkout, with the full
+SHA the tools' `develop` now names:
+
+```bash
+steps=../ai-tools-assets-tools/packaging/release-steps.sh
+bash "$steps" repin-tools --id ATR-261103a <sha>
+```
+
+`repin-tools` refuses the commit when the tools changed in more than pin
+lines and `CHANGELOG.md` since the caller's current pin: that caller re-pins
+through the next release of the tools instead, since a release tag and
+a release run attest to the other changes and a `develop` pin carries neither.
+
+The same `repin-tools` line with a tag (`v1.3.0`) re-pins a caller to
+a release. `--dry-run` prints the change and the pull-request body and does
+not commit, push or open a pull request; `--help` prints the usage; and the
+same line run again continues after an interruption.
+
 ## The release environment
 
 The called job runs under the calling repository's `release` environment.
-Create it before the first tag is pushed, with a deployment policy that admits
+Create it before the first tag is pushed, with a deployment policy that allows
 tags `*/v*` and no branch: GitHub creates an environment a workflow names and
 the repository lacks, with no protection rule, and `secrets: inherit` hands the
 job every secret the repository holds. The environment holds three secrets:

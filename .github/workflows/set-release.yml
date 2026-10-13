@@ -78,6 +78,10 @@ on:
 permissions:
   contents: read
 
+# Python does not write a bytecode cache, so no file the tag does not carry reaches the tree build-set stages.
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
   release:
     name: release
@@ -176,7 +180,7 @@ jobs:
           done
           echo "ZIP=$zip" >> "$GITHUB_ENV"
 
-      - name: The signing key is the pinned artifact signer and the dispatch token reads dag-node/rpm
+      - name: The signing key is the pinned artifact signer, the dispatch token reads dag-node/rpm, and every image is pulled
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_SIGNING_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
