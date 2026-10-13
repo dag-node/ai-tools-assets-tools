@@ -78,6 +78,10 @@ on:
 permissions:
   contents: read
 
+# Python does not write a bytecode cache, so no file the tag does not carry reaches the tree build-set stages.
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
   release:
     name: release
