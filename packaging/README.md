@@ -74,8 +74,9 @@ after the check stops the run before it signs anything.
 ## Tests at the Python floor
 
 The `validate` workflow's `tests` job runs a caller's Python suites, `tests/`
-at the root and each `sets/*/skills/*/tests` that holds a `test*.py`. Its
-`tests (python 3.9)` leg runs them on the runner with:
+at the root and each `sets/*/skills/*/tests` that holds a `test*.py`, which
+`release-steps.sh find-tests` prints one per line; a search that fails stops
+the job. Its `tests (python 3.9)` leg runs them on the runner with:
 
 ```bash
 bash "$TOOLS/packaging/release-steps.sh" test-floor sets/core/skills/ai-tools-reftags/tests
@@ -161,7 +162,7 @@ before the release signs `SHA256SUMS`; the zip's own `.asc` covers it whole.
 
 | File | What it does |
 |---|---|
-| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml`, and `test-floor` for `validate.yml`'s floor leg; lists the distributions an RPM is built for |
+| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml`, and `find-tests` and `test-floor` for `validate.yml`'s `tests` job; lists the distributions an RPM is built for |
 | `render-nfpm.py` | writes the nFPM configuration of a set's RPM for one distribution from `nfpm-set.yaml.in`, the staged `set.conf` and `publisher.conf`, or of the tools RPM from `nfpm-tools.yaml.in` |
 | `nfpm-set.yaml.in` | the package a set ships as |
 | `nfpm-tools.yaml.in` | the package this repository's tools ship as, built by `release.yml` from the release archive |

@@ -1873,6 +1873,52 @@ class WorkflowOrder(unittest.TestCase):
                 self.assertLess(swap_off[0], first_secret)
 
 
+class FindTests(unittest.TestCase):
+    """find-tests over a fixture tree, run from its root as validate.yml runs it from the caller's checkout."""
+
+    NOTICE = "::notice::no tests/ at the root or sets/*/skills/*/tests holds a test*.py; the suite does not run\n"
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def write(self, *paths: str):
+        for path in paths:
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text("", encoding="utf-8")
+
+    def find_tests(self, find=None):
+        environment = dict(os.environ)
+        if find is not None:
+            environment["BASH_FUNC_find%%"] = find
+        completed = subprocess.run([BASH, str(RELEASE_STEPS), "find-tests"], cwd=self.root, env=environment,
+                                   capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_a_directory_holding_a_test_module_is_printed(self):
+        self.write("tests/test_ok.py", "sets/s/skills/k/tests/test_k.py", "sets/s/skills/r/tests/README.md")
+        self.assertEqual(self.find_tests(), (0, "tests\nsets/s/skills/k/tests\n", ""))
+
+    def test_a_tree_without_a_test_directory_gives_the_notice(self):
+        self.write("README.md")
+        self.assertEqual(self.find_tests(), (0, "", self.NOTICE))
+
+    def test_a_directory_named_as_a_test_module_does_not_count(self):
+        (self.root / "tests" / "test_dir.py").mkdir(parents=True)
+        self.assertEqual(self.find_tests(), (0, "", self.NOTICE))
+
+    def test_a_failed_search_refuses(self):
+        self.write("tests/test_ok.py")
+        status, stdout, stderr = self.find_tests(
+            '() { echo tests/test_ok.py; echo "find: tests: denied" >&2; return 1; }')
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn("::error::release-steps: `find tests` failed (find: tests: denied tests/test_ok.py), so the test"
+                      " directories are unknown", stderr)
+        self.assertNotIn("::notice::", stderr)
+
+
 class FloorPython(unittest.TestCase):
     """The interpreter check test-floor runs inside the container, against a python3 that reports a version, and
     test-floor's refusal of a directory it would not mount; the container run itself is proven by a workflow run."""
