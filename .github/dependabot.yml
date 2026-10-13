@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Keeps the actions/checkout and actions/setup-python pins in .github/workflows/ current. Each pin is a commit SHA with
+# its version in a comment, and Dependabot rewrites both; it has been seen to leave the comment stale on some bumps
+# (dependabot/dependabot-core#13466), so a bump's comment is read against the action's release before it merges.
+# A Dependabot commit does not carry a Signed-off-by: check-signoff reports it, and does not fail the job while
+# enforce-signoff is false.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
