@@ -93,8 +93,9 @@
 # check-images names the digest to take when the registry retires a pin. preflight pulls every image after its key and
 # token checks, ahead of the first signature, and each container runs with `--pull=never`, so an image the registry
 # retires between check-images and the run stops the run before a signature or a version is spent. Each verify
-# container runs as root with `--cap-drop=all`, no new privileges, a read-only root, a bound on its processes and
-# the rpm database on a tmpfs, since the step's environment on the runner holds the secrets; it mounts a directory
+# container runs as root with `--cap-drop=all`, no new privileges, a read-only root without the writable tmpfs mounts
+# podman adds to one by default (`--read-only-tmpfs=false`), a bound on its processes and the rpm database on a tmpfs,
+# since the step's environment on the runner holds the secrets, and prints each tmpfs it holds; it mounts a directory
 # holding the public key and the signed RPMs alone, which root reads without the capability that bypasses a directory's
 # mode. The containers run through `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its
 # default crun rejects the generated OCI spec. ensure_podman installs runc where the runner image lacks it.
@@ -724,9 +725,12 @@ _release_steps__sign_rpm() {
         # An option list after `--tmpfs` replaces podman's defaults, so `rw,nosuid,nodev,noexec` are restated beside
         # the size.
         out="$(sudo podman run --rm --pull=never --network=none --ipc=none --cap-drop=all \
-                --security-opt=no-new-privileges --read-only --pids-limit=64 \
+                --security-opt=no-new-privileges --read-only --read-only-tmpfs=false --pids-limit=64 \
                 --tmpfs /rpmdb:rw,nosuid,nodev,noexec,size=32m,mode=0700 --entrypoint /usr/bin/bash -v "$verify:/in:ro" \
                 "$image" -c '
+                while read -r _ mountpoint type _; do
+                    [[ "$type" != tmpfs ]] || echo "tmpfs: $mountpoint"
+                done </proc/self/mounts
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
                 rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
