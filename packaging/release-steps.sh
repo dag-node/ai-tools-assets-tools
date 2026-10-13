@@ -7,6 +7,7 @@
 #
 # ```bash
 # bash packaging/release-steps.sh check-images
+# bash <tools>/packaging/release-steps.sh find-tests
 # bash <tools>/packaging/release-steps.sh test-floor <directory>...
 # bash packaging/release-steps.sh refresh-images --id <ID> [--caller <path>]... [--dry-run]
 # bash <tools>/packaging/release-steps.sh repin-tools --id <ID> <sha>|<vX.Y.Z> [--pr <number>] [--dry-run]
@@ -20,8 +21,8 @@
 # bash packaging/release-steps.sh dispatch <tag>
 # ```
 #
-# Environment, by subcommand (check-images, test-floor, refresh-images, repin-tools and swap-off read none;
-# refresh-images and repin-tools use the operator's own git and gh credentials, and `--help` prints their usage):
+# Environment, by subcommand (check-images, find-tests, test-floor, refresh-images, repin-tools and swap-off read
+# none; refresh-images and repin-tools use the operator's own git and gh credentials, and `--help` prints their usage):
 #   verify-tag      TAG_SIGNER_PRIMARY_FINGERPRINTS (space-separated), TAG_SIGNER_KEY_URL
 #   preflight       GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; DISPATCH_RPM=true adds
 #                   RPM_REPO_DISPATCH_TOKEN
@@ -44,7 +45,9 @@
 # for each directory as the calling user's uid and gid (setpriv), so a test that expects a permission refusal or a git
 # check of the checkout's owner sees the runner's user and not root. It exits non-zero when any directory's suite fails.
 # The container keeps the network for the install and does not receive a secret, and the release runs it
-# before the first step that does.
+# before the first step that does. find-tests prints the directories validate.yml passes to it, one per line: tests
+# and each sets/*/skills/*/tests that holds a file test*.py, since unittest discovery exits non-zero over a directory
+# without one from Python 3.12; a `find` that fails refuses, so a failed search does not read as none found.
 #
 # refresh-images and repin-tools carry a digest refresh, one half each: refresh-images rewrites the expired pins here
 # and opens their pull request, and repin-tools rewrites a caller's `uses:` lines to the merged commit, or to a release
@@ -610,6 +613,24 @@ _release_steps__require_floor_python() {
     echo "$version"
     [[ "$version" == "Python 3.9."* ]] \
         || _release_steps__die "python3 is $(_release_steps__format_one_line "$version"), not Python 3.9; the floor suite runs only on the floor's interpreter"
+}
+
+_release_steps__find_tests() {
+    [[ "$#" -eq 0 ]] || _release_steps__die "usage: find-tests"
+    local directory match found=()
+    shopt -s nullglob
+    for directory in tests sets/*/skills/*/tests; do
+        [[ -d "$directory" ]] || continue
+        _release_steps__read_output match find "$directory" -type f -name 'test*.py' -print -quit \
+            || _release_steps__die "\`find $directory\` failed ($_RELEASE_STEPS__ANSWER), so the test directories are unknown"
+        [[ -z "$match" ]] || found+=("$directory")
+    done
+    shopt -u nullglob
+    if [[ "${#found[@]}" -eq 0 ]]; then
+        echo "::notice::no tests/ at the root or sets/*/skills/*/tests holds a test*.py; the suite does not run" >&2
+        return 0
+    fi
+    printf '%s\n' "${found[@]}"
 }
 
 _release_steps__test_floor() {
@@ -1846,11 +1867,12 @@ _release_steps__repin_tools() {
     _release_steps__next "after the merge: git ls-remote https://github.com/$_RELEASE_STEPS__GITHUB_REPOSITORY.git refs/heads/develop"
 }
 
-[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|test-floor|refresh-images|repin-tools|swap-off|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|find-tests|test-floor|refresh-images|repin-tools|swap-off|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
     check-images) _release_steps__check_images "$@" ;;
+    find-tests) _release_steps__find_tests "$@" ;;
     test-floor) _release_steps__test_floor "$@" ;;
     refresh-images) _release_steps__refresh_images "$@" ;;
     repin-tools) _release_steps__repin_tools "$@" ;;

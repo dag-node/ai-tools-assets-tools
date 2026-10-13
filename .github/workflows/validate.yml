@@ -208,20 +208,12 @@ jobs:
           path: .ai-tools-assets-tools
           persist-credentials: false
 
-      # A directory is run where it holds a test module: from Python 3.12, unittest exits non-zero over one without.
+      # find-tests refuses a failed search; the assignment reads its status, which a substitution inside the echo
+      # would drop, reading the failure as none found.
       - name: The test directories, tests/ at the root and each skill's tests/
         run: |
-          shopt -s nullglob
-          directories=()
-          for directory in tests sets/*/skills/*/tests; do
-            if [ -d "$directory" ] && [ -n "$(find "$directory" -name 'test*.py' -print -quit)" ]; then
-              directories+=("$directory")
-            fi
-          done
-          if [ "${#directories[@]}" -eq 0 ]; then
-            echo "::notice::no tests/ at the root or sets/*/skills/*/tests holds a test*.py; the suite does not run"
-          fi
-          echo "TEST_DIRECTORIES=${directories[*]}" >> "$GITHUB_ENV"
+          directories="$(bash "$TOOLS/packaging/release-steps.sh" find-tests)" || exit 1
+          echo "TEST_DIRECTORIES=${directories//$'\n'/ }" >> "$GITHUB_ENV"
 
       # A directory is a portable name without a space, so each word is one directory.
       - name: The suite at the Python floor, inside the EL9 image the release steps pin
