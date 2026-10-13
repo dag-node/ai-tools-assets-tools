@@ -86,9 +86,10 @@ bash "$TOOLS/packaging/release-steps.sh" test-floor sets/core/skills/ai-tools-re
 steps pin, with the checkout mounted read-only. It installs `git`, refuses
 unless the image's `python3 --version` is Python 3.9, and runs
 `python3 -m unittest discover -s <directory> -v` for each directory
-as the runner's own user. This repository's release runs its suite the same
-way, before the first step that receives a secret. The step sets runc
-as podman's runtime under `/etc/containers/containers.conf.d/`, so it is
+as the runner's own user, with `no_new_privs` set, so a set-id binary does
+not raise a suite's privileges. This repository's release runs its suite
+the same way, before the first step that receives a secret. The step sets
+runc as podman's runtime under `/etc/containers/containers.conf.d/`, so it is
 a runner step and not a command for a workstation.
 
 ## When an image digest expires

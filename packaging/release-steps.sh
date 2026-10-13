@@ -43,11 +43,10 @@
 # for: in one container of EL9_IMAGE, with the checkout mounted read-only, it installs git, prints `python3 --version`
 # and refuses unless the image's interpreter is Python 3.9, then runs `python3 -m unittest discover -s <directory> -v`
 # for each directory as the calling user's uid and gid (setpriv), so a test that expects a permission refusal or a git
-# check of the checkout's owner sees the runner's user and not root. setpriv sets no_new_privs, so a set-id bit or a file
-# capability on a binary a suite runs does not raise its privileges; a control run through the same setpriv prints
-# the NoNewPrivs line of /proc/self/status and refuses unless it is 1. It exits non-zero when any directory's suite
-# fails.
-# The container keeps the network for the install and does not receive a secret, and the release runs it
+# check of the checkout's owner sees the runner's user and not root. setpriv sets no_new_privs, so a set-id bit or
+# a file capability on a binary a suite runs does not raise its privileges; a control run through the same setpriv
+# prints the NoNewPrivs line of /proc/self/status and refuses unless it is 1. It exits non-zero when any directory's
+# suite fails. The container keeps the network for the install and does not receive a secret, and the release runs it
 # before the first step that does. find-tests prints the directories validate.yml passes to it, one per line: tests
 # and each sets/*/skills/*/tests that holds a file test*.py, since unittest discovery exits non-zero over a directory
 # without one from Python 3.12; a `find` that fails refuses, so a failed search does not read as none found.
