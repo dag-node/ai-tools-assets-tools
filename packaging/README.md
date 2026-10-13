@@ -73,12 +73,15 @@ after the check stops the run before it signs anything.
 
 ## When an image digest expires
 
-quay.io retires an image's digest once its tag moves on, and from then on
-`check-images` fails every pull request in this repository and in each caller.
-A refresh is a commit on this repository's `develop`, not a release: it changes
-the expired pin lines and `CHANGELOG.md` alone. Each caller pins
-that commit by its full SHA in every `uses:` line, and the next release of the
-tools carries the new digest.
+A registry can retire an image's digest once its tag moves on, and from then
+on `check-images` fails every pull request in this repository and in each
+caller. Fedora's quay.io organization deletes a superseded digest within hours
+of its daily rebuild, so the Fedora 44 pin names
+`registry.fedoraproject.org/fedora:44`, which serves the same digests and keeps
+them. A refresh is a commit on this repository's `develop`, not a release: it
+changes the expired pin lines and `CHANGELOG.md` alone. Each caller pins
+that commit by its full SHA in every `uses:` line, and the next release
+of the tools carries the new digest.
 
 Two commands carry a refresh, each opening its pull request under your own git
 and `gh` credentials. In a clean checkout of the tools on `develop`:

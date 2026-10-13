@@ -86,14 +86,16 @@ set -euo pipefail
 
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
-# The multi-arch index digest of each image, each line ending in the date it was resolved. Every image is pinned by
-# digest: EL9_IMAGE runs with the signing key and its output is published, and each verify image runs as root on
-# the runner that holds the secrets; check-images refuses an entry without a digest. quay.io retires a digest once its
-# tag moves on. refresh-images then rewrites the line to the digest the tag resolves to, as a commit on develop that
-# each caller pins with repin-tools, and the next release carries it.
+# The multi-arch index digest of each image, each line ending in the date it was resolved. Every image is pinned
+# by digest: EL9_IMAGE runs with the signing key and its output is published, and each verify image runs as root
+# on the runner that holds the secrets; check-images refuses an entry without a digest. Fedora's quay.io organization
+# deletes a superseded digest within hours of its daily rebuild, so FC44_IMAGE names Fedora's own registry, which serves
+# the same digests and keeps them. Where a registry retires a pinned digest, refresh-images rewrites the line
+# to the digest the tag resolves to, as a commit on develop that each caller pins with repin-tools, and the next release
+# carries it.
 EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f # resolved 2026-10-08
 EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # resolved 2026-10-08
-FC44_IMAGE=quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d # resolved 2026-10-12
+FC44_IMAGE=registry.fedoraproject.org/fedora:44@sha256:959833699a2fb5da1bc70b4db659ab229252c2ba1ed8e2fa29d4b30a704c0f63 # resolved 2026-10-13
 # The distributions an RPM is built for, by dist tag, each with the image its signature is verified in.
 declare -A DIST_IMAGES=([el9]="$EL9_IMAGE" [el10]="$EL10_IMAGE" [fc44]="$FC44_IMAGE")
 # The name each distribution takes in the commit, the pull request and the changelog entry of a digest refresh.
