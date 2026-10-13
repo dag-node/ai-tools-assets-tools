@@ -12,9 +12,12 @@
 #
 # The status check a ruleset requires on main is `validate` in this repository and `<caller job> / validate` in
 # a caller. The calling job is named for the calling repository, as in the example for dag-node/ai-tools-assets, whose
-# check is `ai-tools-assets / validate`, the exact context that repository's ruleset requires. A caller also lists
-# `<caller job> / tests (python ${{ matrix.python }})` as skipped: the suite runs in this repository alone, and
-# a skipped job's name keeps its matrix expression.
+# check is `ai-tools-assets / validate`, the exact context that repository's ruleset requires.
+#
+# The tests job runs the caller's Python suites, tests/ at the root and each sets/*/skills/*/tests, where one holds
+# a test module, and reports `<caller job> / tests (python 3.9)` and `<caller job> / tests (python 3.12)`. The 3.9 leg
+# is the floor the tools and the skills are written for: `release-steps.sh test-floor` runs it inside the EL9 image
+# the release steps pin, on the python3 EL9 ships. The 3.12 leg runs on the runner under setup-python.
 #
 # The tools run from a checkout of the repository and commit that define this
 # workflow file -- job.workflow_repository, job.workflow_sha and job.workflow_file_path, which name the reusable
@@ -68,7 +71,12 @@ env:
 jobs:
   validate:
     name: validate
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    # Measured 2026-10-13: this job took 20-25 s in this repository on ubuntu-26.04 and 12-19 s in ai-tools-assets
+    # on ubuntu-24.04. Twice that would leave no room for the registry queries, the pip install and the apt-get
+    # installs that run where a runner image stops shipping skopeo or shellcheck, so the bound is the tests job's.
+    # A caller whose checks outgrow it raises it here.
+    timeout-minutes: 5
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
       # This repository's own run accepts its AGPL formatters and RPM signer; a caller passes its own pairs.
@@ -78,6 +86,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve the tools repository and commit from the workflow file that defines this job
         id: tools
@@ -109,6 +118,7 @@ jobs:
           repository: ${{ steps.tools.outputs.repository }}
           ref: ${{ steps.tools.outputs.sha }}
           path: .ai-tools-assets-tools
+          persist-credentials: false
 
       # The tools checkout sits inside the workspace, which is the only place actions/checkout places a second
       # repository; git's exclude file keeps it out of the tree under check, which reuse lint and check-licenses read
@@ -121,7 +131,7 @@ jobs:
         run: bash "$TOOLS/packaging/release-steps.sh" check-images
 
       - name: Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -160,16 +170,78 @@ jobs:
 
   tests:
     name: tests (python ${{ matrix.python }})
-    # github.repository is the caller's in a called job, so this test alone keeps the suite to this repository's runs.
-    if: github.repository == 'dag-node/ai-tools-assets-tools'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    # Measured 2026-10-13 on ubuntu-26.04: this repository's 3.9 leg took 118-131 s in the EL9 container, its suite 85 s
+    # of that, and its 3.12 leg 59-89 s; ai-tools-assets' skill suites run in under a minute. The bound is about twice
+    # the slowest leg, so a hung test fails the job early; the runner VM and the container end with the job, and
+    # the job does not receive a secret. A caller whose suites outgrow it raises it here.
+    timeout-minutes: 5
+    env:
+      TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
     strategy:
       matrix:
         python: ['3.9', '3.12']
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - name: Check out the repository under check
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # The validate job's resolve step, repeated: a composite action named by a relative path would resolve
+      # in the caller's checkout, and a `uses:` line does not take an expression for the tools commit.
+      - name: Resolve the tools repository and commit from the workflow file that defines this job
+        id: tools
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_FILE_PATH: ${{ job.workflow_file_path }}
+          TOOLS_REPOSITORY: ${{ inputs.tools-repository || 'dag-node/ai-tools-assets-tools' }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ] || [ -z "$WORKFLOW_FILE_PATH" ]; then
+            echo "job.workflow_repository, job.workflow_sha or job.workflow_file_path is empty (GitHub Enterprise Server does not define them); the tools cannot be checked out at a known commit. Run them from a local pin instead" >&2
+            exit 1
+          fi
+          if [ "${WORKFLOW_REPOSITORY,,}" != "${TOOLS_REPOSITORY,,}" ]; then
+            echo "this workflow file is defined in $WORKFLOW_REPOSITORY, not in $TOOLS_REPOSITORY; a fork of the tools is named in the tools-repository input" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_FILE_PATH" != ".github/workflows/validate.yml" ]; then
+            echo "this job is defined by $WORKFLOW_FILE_PATH, not .github/workflows/validate.yml; a copy of the workflow is not the tools" >&2
+            exit 1
+          fi
+          echo "repository=$WORKFLOW_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "sha=$WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tools at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ steps.tools.outputs.repository }}
+          ref: ${{ steps.tools.outputs.sha }}
+          path: .ai-tools-assets-tools
+          persist-credentials: false
+
+      # find-tests refuses a failed search; the assignment reads its status, which a substitution inside the echo
+      # would drop, reading the failure as none found.
+      - name: The test directories, tests/ at the root and each skill's tests/
+        run: |
+          directories="$(bash "$TOOLS/packaging/release-steps.sh" find-tests)" || exit 1
+          echo "TEST_DIRECTORIES=${directories//$'\n'/ }" >> "$GITHUB_ENV"
+
+      # A directory is a portable name without a space, so each word is one directory.
+      - name: The suite at the Python floor, inside the EL9 image the release steps pin
+        if: matrix.python == '3.9' && env.TEST_DIRECTORIES != ''
+        run: bash "$TOOLS/packaging/release-steps.sh" test-floor $TEST_DIRECTORIES
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: matrix.python != '3.9' && env.TEST_DIRECTORIES != ''
         with:
           python-version: ${{ matrix.python }}
-      - name: The suite, the fixtures and the documented rules
-        run: python3 -m unittest discover -s tests -v
+
+      - name: The suite at a current Python
+        if: matrix.python != '3.9' && env.TEST_DIRECTORIES != ''
+        run: |
+          status=0
+          for directory in $TEST_DIRECTORIES; do
+            python3 -m unittest discover -s "$directory" -v || status=1
+          done
+          exit "$status"

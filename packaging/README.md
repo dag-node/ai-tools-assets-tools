@@ -71,14 +71,38 @@ runs the same check on every pull request and push. A release run pulls every
 image in its preflight step, before the first signature, so an image retired
 after the check stops the run before it signs anything.
 
+## Tests at the Python floor
+
+The `validate` workflow's `tests` job runs a caller's Python suites, `tests/`
+at the root and each `sets/*/skills/*/tests` that holds a `test*.py`, which
+`release-steps.sh find-tests` prints one per line; a search that fails stops
+the job. Its `tests (python 3.9)` leg runs them on the runner with:
+
+```bash
+bash "$TOOLS/packaging/release-steps.sh" test-floor sets/core/skills/ai-tools-reftags/tests
+```
+
+`test-floor` runs the suites in one container of the EL9 image the release
+steps pin, with the checkout mounted read-only. It installs `git`, refuses
+unless the image's `python3 --version` is Python 3.9, and runs
+`python3 -m unittest discover -s <directory> -v` for each directory
+as the runner's own user, with `no_new_privs` set, so a set-id binary does
+not raise a suite's privileges. This repository's release runs its suite
+the same way, before the first step that receives a secret. The step sets
+runc as podman's runtime under `/etc/containers/containers.conf.d/`, so it is
+a runner step and not a command for a workstation.
+
 ## When an image digest expires
 
-quay.io retires an image's digest once its tag moves on, and from then on
-`check-images` fails every pull request in this repository and in each caller.
-A refresh is a commit on this repository's `develop`, not a release: it changes
-the expired pin lines and `CHANGELOG.md` alone. Each caller pins
-that commit by its full SHA in every `uses:` line, and the next release of the
-tools carries the new digest.
+A registry can retire an image's digest once its tag moves on, and from then
+on `check-images` fails every pull request in this repository and in each
+caller. Fedora's quay.io organization deletes a superseded digest within hours
+of its daily rebuild, so the Fedora 44 pin names
+`registry.fedoraproject.org/fedora:44`, which serves the same digests and keeps
+them. A refresh is a commit on this repository's `develop`, not a release: it
+changes the expired pin lines and `CHANGELOG.md` alone. Each caller pins
+that commit by its full SHA in every `uses:` line, and the next release
+of the tools carries the new digest.
 
 Two commands carry a refresh, each opening its pull request under your own git
 and `gh` credentials. In a clean checkout of the tools on `develop`:
@@ -139,7 +163,7 @@ before the release signs `SHA256SUMS`; the zip's own `.asc` covers it whole.
 
 | File | What it does |
 |---|---|
-| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml`; lists the distributions an RPM is built for |
+| `release-steps.sh` | one subcommand per release step, shared by `set-release.yml` and this repository's `release.yml`, and `find-tests` and `test-floor` for `validate.yml`'s `tests` job; lists the distributions an RPM is built for |
 | `render-nfpm.py` | writes the nFPM configuration of a set's RPM for one distribution from `nfpm-set.yaml.in`, the staged `set.conf` and `publisher.conf`, or of the tools RPM from `nfpm-tools.yaml.in` |
 | `nfpm-set.yaml.in` | the package a set ships as |
 | `nfpm-tools.yaml.in` | the package this repository's tools ship as, built by `release.yml` from the release archive |

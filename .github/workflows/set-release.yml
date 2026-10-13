@@ -85,7 +85,7 @@ env:
 jobs:
   release:
     name: release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     environment: release
     permissions:
@@ -153,6 +153,11 @@ jobs:
       - name: Keep the tools checkout out of the tree being released
         run: echo '/.ai-tools-assets-tools/' >> .git/info/exclude
 
+      # This step does not receive a secret. preflight, sign-files and sign-rpm, the steps that import the signing
+      # key, each check /proc/swaps again first.
+      - name: Swap is off before the first step that receives a secret
+        run: bash "$TOOLS/packaging/release-steps.sh" swap-off
+
       - name: The tag is annotated, names itself, points at this commit, and is signed by a pinned maintainer key
         env:
           EVENT_SHA: ${{ github.sha }}
@@ -161,7 +166,7 @@ jobs:
         run: bash "$TOOLS/packaging/release-steps.sh" verify-tag "$TAG" "$EVENT_SHA"
 
       - name: Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 

@@ -38,10 +38,16 @@ err() { echo "::error::sign-rpms: $*" >&2; }
 die() { err "$*"; exit 1; }
 warn() { echo "::warning::sign-rpms: $*" >&2; }
 
-# The EXIT trap main sets once the scratch tree exists: stop its gpg-agent, then remove the tree. The removal runs
-# whatever the stop answered, so an agent that does not stop does not leave the key and the passphrase file
-# on /dev/shm.
+# The EXIT trap main sets once the scratch tree exists: print the tree's size, which the signing container's /dev/shm is
+# sized against, stop its gpg-agent, then remove the tree. The removal runs whatever the stop answered, so an agent
+# that does not stop does not leave the key and the passphrase file on /dev/shm.
 remove_workdir() {
+    local size
+    if size="$(du -sk "${workdir}" 2>/dev/null)"; then
+        echo "sign-rpms: the scratch tree held ${size%%[[:space:]]*} KiB"
+    else
+        warn "the size of ${workdir} could not be read"
+    fi
     GNUPGHOME="${workdir}/gnupg" gpgconf --kill gpg-agent 2>/dev/null \
         || warn "the gpg-agent of ${workdir}/gnupg did not stop"
     rm -rf "${workdir}" || warn "${workdir} was not removed"

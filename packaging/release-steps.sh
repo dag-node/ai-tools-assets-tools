@@ -7,8 +7,11 @@
 #
 # ```bash
 # bash packaging/release-steps.sh check-images
+# bash <tools>/packaging/release-steps.sh find-tests
+# bash <tools>/packaging/release-steps.sh test-floor <directory>...
 # bash packaging/release-steps.sh refresh-images --id <ID> [--caller <path>]... [--dry-run]
 # bash <tools>/packaging/release-steps.sh repin-tools --id <ID> <sha>|<vX.Y.Z> [--pr <number>] [--dry-run]
+# bash packaging/release-steps.sh swap-off
 # bash packaging/release-steps.sh verify-tag <tag> <event-commit>
 # bash packaging/release-steps.sh preflight
 # bash packaging/release-steps.sh sign-files <file>...
@@ -18,8 +21,8 @@
 # bash packaging/release-steps.sh dispatch <tag>
 # ```
 #
-# Environment, by subcommand (check-images, refresh-images and repin-tools read none; the last two use the operator's
-# own git and gh credentials, and `--help` prints their usage):
+# Environment, by subcommand (check-images, find-tests, test-floor, refresh-images, repin-tools and swap-off read
+# none; refresh-images and repin-tools use the operator's own git and gh credentials, and `--help` prints their usage):
 #   verify-tag      TAG_SIGNER_PRIMARY_FINGERPRINTS (space-separated), TAG_SIGNER_KEY_URL
 #   preflight       GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; DISPATCH_RPM=true adds
 #                   RPM_REPO_DISPATCH_TOKEN
@@ -35,6 +38,18 @@
 # a caller's checkout, it first requires every `uses:` line naming a workflow of dag-node/ai-tools-assets-tools to carry
 # one `@<ref>`, a textual check, and a failed image adds that the tools' develop may already carry the refresh. It does
 # not read a secret, so it runs on a pull request from a fork.
+#
+# test-floor runs the Python suites of the current checkout at the floor the tools and the skills are written
+# for: in one container of EL9_IMAGE, with the checkout mounted read-only, it installs git, prints `python3 --version`
+# and refuses unless the image's interpreter is Python 3.9, then runs `python3 -m unittest discover -s <directory> -v`
+# for each directory as the calling user's uid and gid (setpriv), so a test that expects a permission refusal or a git
+# check of the checkout's owner sees the runner's user and not root. setpriv sets no_new_privs, so a set-id bit or
+# a file capability on a binary a suite runs does not raise its privileges; a control run through the same setpriv
+# prints the NoNewPrivs line of /proc/self/status and refuses unless it is 1. It exits non-zero when any directory's
+# suite fails. The container keeps the network for the install and does not receive a secret, and the release runs it
+# before the first step that does. find-tests prints the directories validate.yml passes to it, one per line: tests
+# and each sets/*/skills/*/tests that holds a file test*.py, since unittest discovery exits non-zero over a directory
+# without one from Python 3.12; a `find` that fails refuses, so a failed search does not read as none found.
 #
 # refresh-images and repin-tools carry a digest refresh, one half each: refresh-images rewrites the expired pins here
 # and opens their pull request, and repin-tools rewrites a caller's `uses:` lines to the merged commit, or to a release
@@ -53,12 +68,16 @@
 # create-release compares the remote's refs/tags/<tag> with RELEASE_TAG_OBJECT immediately before `gh release create
 # --verify-tag`, which checks that the name exists, not which object it names.
 #
-# The signing key is imported into a keyring under /dev/shm, which must be tmpfs; a /dev/shm that is absent or
-# not tmpfs refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it.
-# preflight refuses an imported key whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files
-# and sign-rpm verify against that primary's public key alone, so a signature by another key fails the step that made
-# it. Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails
-# the step.
+# The signing key is imported into a keyring under /dev/shm, which must be tmpfs; a /dev/shm that is absent or not tmpfs
+# refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it. swap-off runs
+# `sudo swapoff -a`, refuses while /proc/swaps then lists a device, and logs the memory and swap lines of /proc/meminfo;
+# a release workflow runs it in a step that does not receive a secret, before the first step that does.
+# preflight, sign-files and sign-rpm each refuse before the key enters a process while /proc/swaps lists a device, so
+# a page holding the key or the passphrase is not written to disk by this job's steps. The runner process holds
+# the job's secrets from before its first step, so a page of it written to swap before swap-off is outside this check.
+# preflight refuses an imported key whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files and
+# sign-rpm verify against that primary's public key alone, so a signature by another key fails the step that made it.
+# Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails the step.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds one
 # RPM without a signature per distribution DIST_IMAGES lists, each from the configuration render-nfpm.py writes for
@@ -76,24 +95,31 @@
 # check-images names the digest to take when the registry retires a pin. preflight pulls every image after its key and
 # token checks, ahead of the first signature, and each container runs with `--pull=never`, so an image the registry
 # retires between check-images and the run stops the run before a signature or a version is spent. Each verify
-# container runs as root with `--cap-drop=all`, no new privileges, a read-only root, a bound on its processes and
-# the rpm database on a tmpfs, since the step's environment on the runner holds the secrets; it mounts a directory
+# container runs as root with `--cap-drop=all`, no new privileges, a read-only root without the writable tmpfs mounts
+# podman adds to one by default (`--read-only-tmpfs=false`), a bound on its processes and the rpm database on a tmpfs,
+# since the step's environment on the runner holds the secrets, and prints each tmpfs it holds; it mounts a directory
 # holding the public key and the signed RPMs alone, which root reads without the capability that bypasses a directory's
 # mode. The containers run through `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its
-# default crun rejects the generated OCI spec. el-repos.sh points the EL9 container's repos at one ordered host list
-# before its `dnf install`.
+# default crun rejects the generated OCI spec. ensure_podman installs runc where the runner image lacks it.
+# el-repos.sh points the EL9 container's repos at one ordered host list before its `dnf install`.
+#
+# Each container's shared memory is sized to its use. The signing container's /dev/shm, which holds the keyring,
+# the passphrase file and the rpm macros sign-rpms.sh writes, is 16 MiB, and sign-rpms.sh prints the size its scratch
+# tree reached. A verify container has no /dev/shm (`--ipc=none`), and its rpm database is a 32 MiB tmpfs.
 set -euo pipefail
 
 NFPM_VERSION=2.47.0
 NFPM_TARBALL_SHA256=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
-# The multi-arch index digest of each image, each line ending in the date it was resolved. Every image is pinned by
-# digest: EL9_IMAGE runs with the signing key and its output is published, and each verify image runs as root on
-# the runner that holds the secrets; check-images refuses an entry without a digest. quay.io retires a digest once its
-# tag moves on. refresh-images then rewrites the line to the digest the tag resolves to, as a commit on develop that
-# each caller pins with repin-tools, and the next release carries it.
+# The multi-arch index digest of each image, each line ending in the date it was resolved. Every image is pinned
+# by digest: EL9_IMAGE runs with the signing key and its output is published, and each verify image runs as root
+# on the runner that holds the secrets; check-images refuses an entry without a digest. Fedora's quay.io organization
+# deletes a superseded digest within hours of its daily rebuild, so FC44_IMAGE names Fedora's own registry, which serves
+# the same digests and keeps them. Where a registry retires a pinned digest, refresh-images rewrites the line
+# to the digest the tag resolves to, as a commit on develop that each caller pins with repin-tools, and the next release
+# carries it.
 EL9_IMAGE=quay.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f # resolved 2026-10-08
 EL10_IMAGE=quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # resolved 2026-10-08
-FC44_IMAGE=quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d # resolved 2026-10-12
+FC44_IMAGE=registry.fedoraproject.org/fedora:44@sha256:959833699a2fb5da1bc70b4db659ab229252c2ba1ed8e2fa29d4b30a704c0f63 # resolved 2026-10-13
 # The distributions an RPM is built for, by dist tag, each with the image its signature is verified in.
 declare -A DIST_IMAGES=([el9]="$EL9_IMAGE" [el10]="$EL10_IMAGE" [fc44]="$FC44_IMAGE")
 # The name each distribution takes in the commit, the pull request and the changelog entry of a digest refresh.
@@ -187,6 +213,25 @@ _release_steps__create_temp_dir() {
     scratch_directories+=("$_RELEASE_STEPS__TEMP_DIR")
 }
 
+# Refuse unless /proc/swaps holds its header line alone; a file that cannot be read refuses too.
+_RELEASE_STEPS__PROC_SWAPS=/proc/swaps
+_release_steps__require_swap_off() {
+    local swaps
+    swaps="$(cat -- "$_RELEASE_STEPS__PROC_SWAPS" 2>&1)" \
+        || _release_steps__die "$_RELEASE_STEPS__PROC_SWAPS could not be read ($(_release_steps__format_one_line "$swaps")), so swap is not shown to be off; the signing key is not imported"
+    [[ "$swaps" =~ ^Filename[[:space:]] && "$swaps" != *$'\n'* ]] \
+        || _release_steps__die "$_RELEASE_STEPS__PROC_SWAPS does not hold its header line alone ($(_release_steps__format_one_line "$swaps")), so swap is not shown to be off; the signing key is imported only while it lists no device, which \`release-steps.sh swap-off\` sets with \`sudo swapoff -a\`"
+}
+
+_release_steps__swap_off() {
+    [[ "$#" -eq 0 ]] || _release_steps__die "usage: swap-off"
+    sudo swapoff -a || _release_steps__die "\`sudo swapoff -a\` failed; the signing steps refuse to import the key while swap may be on"
+    _release_steps__require_swap_off
+    echo "swap is off: $_RELEASE_STEPS__PROC_SWAPS lists no device"
+    awk '/^(MemTotal|MemAvailable|Shmem|SwapTotal|SwapFree):/ { print "memory: " $1 " " $2 " " $3 }' /proc/meminfo \
+        || _release_steps__warn "/proc/meminfo could not be read; the memory lines are not logged"
+}
+
 _release_steps__require_env() {
     local name
     for name in "$@"; do
@@ -273,6 +318,7 @@ _release_steps__run_preflight() {
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
     # sign-rpms.sh reads the passphrase as the first stdin line, so a second line would corrupt the key read after it.
     [[ "$GPG_SIGNING_PASSPHRASE" != *$'\n'* ]] || _release_steps__die "GPG_SIGNING_PASSPHRASE spans more than one line"
+    _release_steps__require_swap_off
     _release_steps__import_signing_key
     echo "imported signing key: primary $signing_primary"
     [[ "$signing_primary" == "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" ]] \
@@ -303,6 +349,7 @@ _release_steps__sign_files() {
     [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-files <file>..."
     local file status primary
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
+    _release_steps__require_swap_off
     _release_steps__import_signing_key
     for file in "$@"; do
         [[ -f "$file" ]] || _release_steps__die "$file is not a file"
@@ -544,18 +591,89 @@ _release_steps__check_images() {
     echo "release-steps: ok: every image resolves"
 }
 
+# podman and runc from PATH, or installed with apt-get where the runner image lacks them; ubuntu-26.04 ships podman
+# without runc.
 _release_steps__ensure_podman() {
-    command -v podman >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q podman; } \
-        || _release_steps__die "podman is not installed and did not install"
+    local command missing=()
+    for command in podman runc; do
+        command -v "$command" >/dev/null || missing+=("$command")
+    done
+    if [[ "${#missing[@]}" -gt 0 ]]; then
+        { sudo apt-get update -q && sudo apt-get install -y -q "${missing[@]}"; } \
+            || _release_steps__die "${missing[*]} not installed and did not install"
+    fi
     sudo mkdir -p /etc/containers/containers.conf.d
     printf '[engine]\nruntime = "runc"\n' | sudo tee /etc/containers/containers.conf.d/10-runc.conf >/dev/null
     sudo podman info --format 'podman runtime: {{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Version}}'
+}
+
+# Print `python3 --version` and refuse unless it names Python 3.9, the floor: the suite proves the floor only while
+# the interpreter it runs on is that release. test-floor runs it inside the container.
+_release_steps__require_floor_python() {
+    local version
+    version="$(python3 --version 2>&1)" \
+        || _release_steps__die "\`python3 --version\` failed ($(_release_steps__format_one_line "$version")); the floor suite does not run"
+    echo "$version"
+    [[ "$version" == "Python 3.9."* ]] \
+        || _release_steps__die "python3 is $(_release_steps__format_one_line "$version"), not Python 3.9; the floor suite runs only on the floor's interpreter"
+}
+
+_release_steps__find_tests() {
+    [[ "$#" -eq 0 ]] || _release_steps__die "usage: find-tests"
+    local directory match found=()
+    shopt -s nullglob
+    for directory in tests sets/*/skills/*/tests; do
+        [[ -d "$directory" ]] || continue
+        _release_steps__read_output match find "$directory" -type f -name 'test*.py' -print -quit \
+            || _release_steps__die "\`find $directory\` failed ($_RELEASE_STEPS__ANSWER), so the test directories are unknown"
+        [[ -z "$match" ]] || found+=("$directory")
+    done
+    shopt -u nullglob
+    if [[ "${#found[@]}" -eq 0 ]]; then
+        echo "::notice::no tests/ at the root or sets/*/skills/*/tests holds a test*.py; the suite does not run" >&2
+        return 0
+    fi
+    printf '%s\n' "${found[@]}"
+}
+
+_release_steps__test_floor() {
+    [[ "$#" -ge 1 ]] || _release_steps__die "usage: test-floor <directory>..."
+    local directory
+    for directory in "$@"; do
+        [[ "$directory" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && "/$directory/" != */../* && -d "$directory" ]] \
+            || _release_steps__die "$directory is not a directory under $PWD, named by a relative path"
+    done
+    _release_steps__ensure_podman
+    # The functions the container runs are this file's, written into its script, so the check there is the one the suite
+    # holds.
+    sudo podman run --rm --pull=missing --entrypoint /usr/bin/bash -v "$PWD:/src:ro" -v "$PACKAGING:/packaging:ro" \
+        -w /src -e PYTHONDONTWRITEBYTECODE=1 "$EL9_IMAGE" -c "set -euo pipefail
+_RELEASE_STEPS__DIE_PREFIX='' _RELEASE_STEPS__DIE_SUFFIX=''
+$(declare -f _release_steps__die _release_steps__format_one_line _release_steps__require_floor_python)"'
+uid="$1" gid="$2"
+shift 2
+bash /packaging/el-repos.sh
+dnf -y -q --setopt=install_weak_deps=False install git
+_release_steps__require_floor_python
+home="$(mktemp -d)"
+chown "$uid:$gid" "$home"
+drop=(setpriv --reuid="$uid" --regid="$gid" --clear-groups --no-new-privs --)
+HOME="$home" "${drop[@]}" grep -x "NoNewPrivs:[[:space:]]*1" /proc/self/status \
+    || _release_steps__die "the suites would run without no_new_privs under ${drop[*]}"
+failed=()
+for directory in "$@"; do
+    HOME="$home" "${drop[@]}" python3 -m unittest discover -s "$directory" -v || failed+=("$directory")
+done
+[[ "${#failed[@]}" -eq 0 ]] || _release_steps__die "the suite failed at the floor in ${failed[*]}"
+echo "the suite passed at the floor in $*"' _ "$(id -u)" "$(id -g)" "$@" </dev/null \
+        || _release_steps__die "the floor suite did not pass in $EL9_IMAGE"
 }
 
 _release_steps__sign_rpm() {
     [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-rpm <rpm>..."
     local rpm name names=() work verify out image
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
+    _release_steps__require_swap_off
     for rpm in "$@"; do
         [[ -f "$rpm" ]] || _release_steps__die "$rpm is not a file"
         _release_steps__resolve_dist_image "$(basename "$rpm")"
@@ -583,8 +701,8 @@ _release_steps__sign_rpm() {
     # The key enters this container alone, and it has no network.
     container="ai-tools-assets-sign-$$"
     out="$(printf '%s\n%s\n' "$GPG_SIGNING_PASSPHRASE" "$GPG_SIGNING_KEY" \
-        | sudo podman run -i --pull=never --name "$container" --network=none --entrypoint /usr/bin/bash -v "$work:/in:ro" \
-            "$SIGN_IMAGE" -c '
+        | sudo podman run -i --pull=never --name "$container" --network=none --shm-size=16m --entrypoint /usr/bin/bash \
+            -v "$work:/in:ro" "$SIGN_IMAGE" -c '
             set -euo pipefail
             mkdir /out
             for name in "$@"; do cp "/in/$name" /out/; done
@@ -608,8 +726,15 @@ _release_steps__sign_rpm() {
     chmod 0755 "$verify"
     for name in "${names[@]}"; do
         _release_steps__resolve_dist_image "$name"
-        out="$(sudo podman run --rm --pull=never --network=none --cap-drop=all --security-opt=no-new-privileges --read-only \
-                --pids-limit=64 --tmpfs /rpmdb --entrypoint /usr/bin/bash -v "$verify:/in:ro" "$image" -c '
+        # An option list after `--tmpfs` replaces podman's defaults, so `rw,nosuid,nodev,noexec` are restated beside
+        # the size.
+        out="$(sudo podman run --rm --pull=never --network=none --ipc=none --cap-drop=all \
+                --security-opt=no-new-privileges --read-only --read-only-tmpfs=false --pids-limit=64 \
+                --tmpfs /rpmdb:rw,nosuid,nodev,noexec,size=32m,mode=0700 --entrypoint /usr/bin/bash -v "$verify:/in:ro" \
+                "$image" -c '
+                while read -r _ mountpoint type _; do
+                    [[ "$type" != tmpfs ]] || echo "tmpfs: $mountpoint"
+                done </proc/self/mounts
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
                 rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
@@ -1750,13 +1875,16 @@ _release_steps__repin_tools() {
     _release_steps__next "after the merge: git ls-remote https://github.com/$_RELEASE_STEPS__GITHUB_REPOSITORY.git refs/heads/develop"
 }
 
-[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|refresh-images|repin-tools|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|find-tests|test-floor|refresh-images|repin-tools|swap-off|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
     check-images) _release_steps__check_images "$@" ;;
+    find-tests) _release_steps__find_tests "$@" ;;
+    test-floor) _release_steps__test_floor "$@" ;;
     refresh-images) _release_steps__refresh_images "$@" ;;
     repin-tools) _release_steps__repin_tools "$@" ;;
+    swap-off) _release_steps__swap_off "$@" ;;
     verify-tag) _release_steps__verify_tag "$@" ;;
     preflight) _release_steps__run_preflight ;;
     sign-files) _release_steps__sign_files "$@" ;;

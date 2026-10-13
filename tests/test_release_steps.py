@@ -1728,6 +1728,7 @@ class Cleanup(unittest.TestCase):
                 script = f'{definitions}\nworkdir="$1"\ngpgconf() {{ return {status}; }}\n{trap}\nexit 0\n'
                 completed = subprocess.run([BASH, "-c", script, "_", str(workdir)], capture_output=True, text=True)
                 self.assertFalse(workdir.exists(), completed.stderr)
+                self.assertRegex(completed.stdout, r"^sign-rpms: the scratch tree held [0-9]+ KiB\n$")
                 warning = f"::warning::sign-rpms: the gpg-agent of {workdir}/gnupg did not stop"
                 (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
 
@@ -1749,6 +1750,242 @@ class Cleanup(unittest.TestCase):
                             f"::warning::release-steps: the gpg-agent of {second} did not stop"]
                 for warning in warnings:
                     (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
+
+
+class SwapCheck(unittest.TestCase):
+    """The check preflight, sign-files and sign-rpm run before the key enters a process, on /proc/swaps fixtures."""
+
+    HEADER = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def check(self, swaps: pathlib.Path):
+        functions = shell_functions("_release_steps__require_swap_off", "_release_steps__die",
+                                    "_release_steps__format_one_line")
+        script = (f'set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n{functions}'
+                  '_RELEASE_STEPS__PROC_SWAPS="$1"\n_release_steps__require_swap_off\necho checked\n')
+        completed = subprocess.run([BASH, "-c", script, "_", str(swaps)], capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_the_header_alone_passes(self):
+        swaps = self.root / "swaps"
+        swaps.write_text(self.HEADER, encoding="utf-8")
+        self.assertEqual(self.check(swaps), (0, "checked\n", ""))
+
+    def test_a_device_line_refuses(self):
+        swaps = self.root / "swaps"
+        swaps.write_text(self.HEADER + "/mnt/swapfile                           file\t\t4194300\t\t0\t\t-2\n",
+                         encoding="utf-8")
+        status, stdout, stderr = self.check(swaps)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn(f"::error::release-steps: {swaps} does not hold its header line alone (Filename Type Size Used"
+                      " Priority /mnt/swapfile file 4194300 0 -2), so swap is not shown to be off; the signing key is"
+                      " imported only while it lists no device, which `release-steps.sh swap-off` sets with"
+                      " `sudo swapoff -a`", stderr)
+
+    def test_an_empty_or_unreadable_file_refuses(self):
+        empty = self.root / "empty"
+        empty.write_text("", encoding="utf-8")
+        status, stdout, stderr = self.check(empty)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn(f"::error::release-steps: {empty} does not hold its header line alone (), so swap is not shown"
+                      " to be off", stderr)
+        for swaps in (self.root / "absent", self.root):
+            with self.subTest(swaps=swaps.name):
+                status, stdout, stderr = self.check(swaps)
+                self.assertEqual((status, stdout), (1, ""))
+                self.assertIn(f"::error::release-steps: {swaps} could not be read (", stderr)
+                self.assertIn("so swap is not shown to be off; the signing key is not imported", stderr)
+
+
+class SwapOff(unittest.TestCase):
+    """swap-off with a `sudo` function standing for `sudo swapoff -a`, over /proc/swaps fixtures."""
+
+    DEVICE = "/mnt/swapfile                           file\t\t4194300\t\t0\t\t-2\n"
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def swap_off(self, sudo_status: int, swaps_text: str):
+        swaps = self.root / "swaps"
+        swaps.write_text(swaps_text, encoding="utf-8")
+        functions = shell_functions("_release_steps__swap_off", "_release_steps__require_swap_off",
+                                    "_release_steps__die", "_release_steps__warn", "_release_steps__format_one_line")
+        script = (f'set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n{functions}'
+                  f'sudo() {{ return {sudo_status}; }}\n_RELEASE_STEPS__PROC_SWAPS="$1"\n_release_steps__swap_off\n')
+        completed = subprocess.run([BASH, "-c", script, "_", str(swaps)], capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_a_failed_swapoff_refuses_before_the_check(self):
+        status, stdout, stderr = self.swap_off(1, SwapCheck.HEADER + self.DEVICE)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn("::error::release-steps: `sudo swapoff -a` failed; the signing steps refuse to import the key"
+                      " while swap may be on", stderr)
+        self.assertNotIn("does not hold its header line alone", stderr)
+
+    def test_a_device_left_after_swapoff_refuses(self):
+        status, stdout, stderr = self.swap_off(0, SwapCheck.HEADER + self.DEVICE)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn("does not hold its header line alone", stderr)
+
+    def test_the_header_alone_passes_and_logs_memory(self):
+        status, stdout, stderr = self.swap_off(0, SwapCheck.HEADER)
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertIn(f"swap is off: {self.root / 'swaps'} lists no device\n", stdout)
+        self.assertRegex(stdout, r"(?m)^memory: MemTotal: [0-9]+ kB$")
+
+
+class WorkflowOrder(unittest.TestCase):
+    """The release workflows, read as text: one step runs swap-off, it receives no secret, and it stands before
+    the first step that does."""
+
+    def steps(self, workflow: str) -> "tuple[str, list[str]]":
+        """The text before the first `steps:` line, and each step's text after it, comment lines dropped."""
+        text = (REPOSITORY / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        text = "".join(line for line in text.splitlines(keepends=True) if not line.lstrip().startswith("#"))
+        head, _, body = text.partition("\n    steps:\n")
+        self.assertTrue(body, f"{workflow} has no `steps:` line")
+        steps = []
+        for line in body.splitlines():
+            if line.startswith("      - "):
+                steps.append(line + "\n")
+            elif steps:
+                steps[-1] += line + "\n"
+        return head, steps
+
+    def test_swap_off_runs_without_a_secret_before_the_first_secret(self):
+        for workflow in ("release.yml", "set-release.yml"):
+            with self.subTest(workflow=workflow):
+                head, steps = self.steps(workflow)
+                self.assertNotIn("secrets.", head)
+                swap_off = [index for index, step in enumerate(steps)
+                            if re.search(r'release-steps\.sh"? swap-off\b', step)]
+                self.assertEqual(len(swap_off), 1, f"{workflow}: the steps running swap-off: {swap_off}")
+                self.assertNotIn("secrets.", steps[swap_off[0]])
+                first_secret = next(index for index, step in enumerate(steps) if "secrets." in step)
+                self.assertLess(swap_off[0], first_secret)
+
+
+class WorkflowSettings(unittest.TestCase):
+    """The keys the workflows set on their jobs and steps, read as text with WorkflowOrder's helper."""
+
+    WORKFLOWS = ("release.yml", "set-release.yml", "validate.yml")
+
+    steps = WorkflowOrder.steps
+
+    def test_the_validate_job_is_bounded(self):
+        # The head ends at the validate job's `steps:`, ahead of the tests job and its own bound.
+        self.assertRegex(self.steps("validate.yml")[0], r"\n    timeout-minutes: \d+\n")
+
+    def test_every_checkout_leaves_the_token_out_of_git_config(self):
+        for workflow in self.WORKFLOWS:
+            checkouts = [step for step in self.steps(workflow)[1] if "actions/checkout@" in step]
+            self.assertTrue(checkouts, f"{workflow} has no checkout step")
+            for step in checkouts:
+                with self.subTest(workflow=workflow, step=step.splitlines()[0].strip()):
+                    self.assertRegex(step, r"\n +persist-credentials: false\n")
+
+
+class FindTests(unittest.TestCase):
+    """find-tests over a fixture tree, run from its root as validate.yml runs it from the caller's checkout."""
+
+    NOTICE = "::notice::no tests/ at the root or sets/*/skills/*/tests holds a test*.py; the suite does not run\n"
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def write(self, *paths: str):
+        for path in paths:
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text("", encoding="utf-8")
+
+    def find_tests(self, find=None):
+        environment = dict(os.environ)
+        if find is not None:
+            environment["BASH_FUNC_find%%"] = find
+        completed = subprocess.run([BASH, str(RELEASE_STEPS), "find-tests"], cwd=self.root, env=environment,
+                                   capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_a_directory_holding_a_test_module_is_printed(self):
+        self.write("tests/test_ok.py", "sets/s/skills/k/tests/test_k.py", "sets/s/skills/r/tests/README.md")
+        self.assertEqual(self.find_tests(), (0, "tests\nsets/s/skills/k/tests\n", ""))
+
+    def test_a_tree_without_a_test_directory_gives_the_notice(self):
+        self.write("README.md")
+        self.assertEqual(self.find_tests(), (0, "", self.NOTICE))
+
+    def test_a_directory_named_as_a_test_module_does_not_count(self):
+        (self.root / "tests" / "test_dir.py").mkdir(parents=True)
+        self.assertEqual(self.find_tests(), (0, "", self.NOTICE))
+
+    def test_a_failed_search_refuses(self):
+        self.write("tests/test_ok.py")
+        status, stdout, stderr = self.find_tests(
+            '() { echo tests/test_ok.py; echo "find: tests: denied" >&2; return 1; }')
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn("::error::release-steps: `find tests` failed (find: tests: denied tests/test_ok.py), so the test"
+                      " directories are unknown", stderr)
+        self.assertNotIn("::notice::", stderr)
+
+
+class FloorPython(unittest.TestCase):
+    """The interpreter check test-floor runs inside the container, against a python3 that reports a version, and
+    test-floor's refusal of a directory it would not mount; the container run itself is proven by a workflow run."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def check(self, python3=None):
+        functions = shell_functions("_release_steps__require_floor_python", "_release_steps__die",
+                                    "_release_steps__format_one_line")
+        environment = {"PATH": str(self.root)}
+        if python3 is not None:
+            environment["BASH_FUNC_python3%%"] = python3
+        script = (f'set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n{functions}'
+                  '_release_steps__require_floor_python\necho checked\n')
+        completed = subprocess.run([BASH, "-c", script], env=environment, capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_python_3_9_passes(self):
+        self.assertEqual(self.check('() { echo "Python 3.9.21"; }'), (0, "Python 3.9.21\nchecked\n", ""))
+
+    def test_a_later_python_refuses(self):
+        status, stdout, stderr = self.check('() { echo "Python 3.14.4"; }')
+        self.assertEqual((status, stdout), (1, "Python 3.14.4\n"))
+        self.assertIn("::error::release-steps: python3 is Python 3.14.4, not Python 3.9; the floor suite runs only on"
+                      " the floor's interpreter", stderr)
+
+    def test_a_python3_that_fails_or_is_absent_refuses(self):
+        for name, python3 in (("fails", '() { echo "no interpreter" >&2; return 1; }'), ("absent", None)):
+            with self.subTest(python3=name):
+                status, stdout, stderr = self.check(python3)
+                self.assertEqual((status, stdout), (1, ""))
+                self.assertIn("::error::release-steps: `python3 --version` failed (", stderr)
+
+    def test_a_directory_outside_the_checkout_refuses_before_podman(self):
+        (self.root / "tests").mkdir()
+        for directory in ("../tests", "/tmp", "tests/../..", "absent", ""):
+            with self.subTest(directory=directory):
+                completed = subprocess.run([BASH, str(RELEASE_STEPS), "test-floor", directory], cwd=self.root,
+                                           capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn(f"::error::release-steps: {directory} is not a directory under {self.root}, named by"
+                              " a relative path", completed.stderr)
+                self.assertNotIn("podman", completed.stdout + completed.stderr)
 
 
 class ReleaseHeadlines(unittest.TestCase):
