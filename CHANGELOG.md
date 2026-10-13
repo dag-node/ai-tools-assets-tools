@@ -34,10 +34,13 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ### Security
 
-- **Swap off for the signing key.** A release turns swap off before the signing
-  key enters memory, logs the memory and swap lines of `/proc/meminfo`,
-  and each signing step refuses to import the key while `/proc/swaps` lists
-  a device.
+- **Swap off for the signing key.** A release workflow runs
+  `release-steps.sh swap-off` in a step that does not receive a secret,
+  before the first step that does: it turns swap off and logs the memory
+  and swap lines of `/proc/meminfo`. `preflight`, `sign-files` and `sign-rpm` each
+  refuse to import the key while `/proc/swaps` lists a device. The runner
+  process holds the job's secrets from before its first step, so a page of it
+  written to swap before `swap-off` is outside the check.
 - **Shared memory sized to its use.** The signing container's `/dev/shm` is 16
   MiB, a verify container has none, and its rpm database tmpfs is 32 MiB;
   `sign-rpms.sh` prints the size its scratch tree reached.

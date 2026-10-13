@@ -1784,7 +1784,8 @@ class SwapCheck(unittest.TestCase):
         self.assertEqual((status, stdout), (1, ""))
         self.assertIn(f"::error::release-steps: {swaps} does not hold its header line alone (Filename Type Size Used"
                       " Priority /mnt/swapfile file 4194300 0 -2), so swap is not shown to be off; the signing key is"
-                      " imported only while it lists no device, which preflight sets with `sudo swapoff -a`", stderr)
+                      " imported only while it lists no device, which `release-steps.sh swap-off` sets with"
+                      " `sudo swapoff -a`", stderr)
 
     def test_an_empty_or_unreadable_file_refuses(self):
         empty = self.root / "empty"
@@ -1799,6 +1800,77 @@ class SwapCheck(unittest.TestCase):
                 self.assertEqual((status, stdout), (1, ""))
                 self.assertIn(f"::error::release-steps: {swaps} could not be read (", stderr)
                 self.assertIn("so swap is not shown to be off; the signing key is not imported", stderr)
+
+
+class SwapOff(unittest.TestCase):
+    """swap-off with a `sudo` function standing for `sudo swapoff -a`, over /proc/swaps fixtures."""
+
+    DEVICE = "/mnt/swapfile                           file\t\t4194300\t\t0\t\t-2\n"
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def swap_off(self, sudo_status: int, swaps_text: str):
+        swaps = self.root / "swaps"
+        swaps.write_text(swaps_text, encoding="utf-8")
+        functions = shell_functions("_release_steps__swap_off", "_release_steps__require_swap_off",
+                                    "_release_steps__die", "_release_steps__warn", "_release_steps__format_one_line")
+        script = (f'set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n{functions}'
+                  f'sudo() {{ return {sudo_status}; }}\n_RELEASE_STEPS__PROC_SWAPS="$1"\n_release_steps__swap_off\n')
+        completed = subprocess.run([BASH, "-c", script, "_", str(swaps)], capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_a_failed_swapoff_refuses_before_the_check(self):
+        status, stdout, stderr = self.swap_off(1, SwapCheck.HEADER + self.DEVICE)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn("::error::release-steps: `sudo swapoff -a` failed; the signing steps refuse to import the key"
+                      " while swap may be on", stderr)
+        self.assertNotIn("does not hold its header line alone", stderr)
+
+    def test_a_device_left_after_swapoff_refuses(self):
+        status, stdout, stderr = self.swap_off(0, SwapCheck.HEADER + self.DEVICE)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn("does not hold its header line alone", stderr)
+
+    def test_the_header_alone_passes_and_logs_memory(self):
+        status, stdout, stderr = self.swap_off(0, SwapCheck.HEADER)
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertIn(f"swap is off: {self.root / 'swaps'} lists no device\n", stdout)
+        self.assertRegex(stdout, r"(?m)^memory: MemTotal: [0-9]+ kB$")
+
+
+class WorkflowOrder(unittest.TestCase):
+    """The release workflows, read as text: one step runs swap-off, it receives no secret, and it stands before
+    the first step that does."""
+
+    def steps(self, workflow: str) -> "tuple[str, list[str]]":
+        """The text before the first `steps:` line, and each step's text after it, comment lines dropped."""
+        text = (REPOSITORY / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        text = "".join(line for line in text.splitlines(keepends=True) if not line.lstrip().startswith("#"))
+        head, _, body = text.partition("\n    steps:\n")
+        self.assertTrue(body, f"{workflow} has no `steps:` line")
+        steps = []
+        for line in body.splitlines():
+            if line.startswith("      - "):
+                steps.append(line + "\n")
+            elif steps:
+                steps[-1] += line + "\n"
+        return head, steps
+
+    def test_swap_off_runs_without_a_secret_before_the_first_secret(self):
+        for workflow in ("release.yml", "set-release.yml"):
+            with self.subTest(workflow=workflow):
+                head, steps = self.steps(workflow)
+                self.assertNotIn("secrets.", head)
+                swap_off = [index for index, step in enumerate(steps)
+                            if re.search(r'release-steps\.sh"? swap-off\b', step)]
+                self.assertEqual(len(swap_off), 1, f"{workflow}: the steps running swap-off: {swap_off}")
+                self.assertNotIn("secrets.", steps[swap_off[0]])
+                first_secret = next(index for index, step in enumerate(steps) if "secrets." in step)
+                self.assertLess(swap_off[0], first_secret)
 
 
 class FloorPython(unittest.TestCase):
