@@ -1751,6 +1751,55 @@ class Cleanup(unittest.TestCase):
                     (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
 
 
+class SwapCheck(unittest.TestCase):
+    """The check preflight, sign-files and sign-rpm run before the key enters a process, on /proc/swaps fixtures."""
+
+    HEADER = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def check(self, swaps: pathlib.Path):
+        functions = shell_functions("_release_steps__require_swap_off", "_release_steps__die",
+                                    "_release_steps__format_one_line")
+        script = (f'set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n{functions}'
+                  '_RELEASE_STEPS__PROC_SWAPS="$1"\n_release_steps__require_swap_off\necho checked\n')
+        completed = subprocess.run([BASH, "-c", script, "_", str(swaps)], capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def test_the_header_alone_passes(self):
+        swaps = self.root / "swaps"
+        swaps.write_text(self.HEADER, encoding="utf-8")
+        self.assertEqual(self.check(swaps), (0, "checked\n", ""))
+
+    def test_a_device_line_refuses(self):
+        swaps = self.root / "swaps"
+        swaps.write_text(self.HEADER + "/mnt/swapfile                           file\t\t4194300\t\t0\t\t-2\n",
+                         encoding="utf-8")
+        status, stdout, stderr = self.check(swaps)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn(f"::error::release-steps: {swaps} does not hold its header line alone (Filename Type Size Used"
+                      " Priority /mnt/swapfile file 4194300 0 -2), so swap is not shown to be off; the signing key is"
+                      " imported only while it lists no device, which preflight sets with `sudo swapoff -a`", stderr)
+
+    def test_an_empty_or_unreadable_file_refuses(self):
+        empty = self.root / "empty"
+        empty.write_text("", encoding="utf-8")
+        status, stdout, stderr = self.check(empty)
+        self.assertEqual((status, stdout), (1, ""))
+        self.assertIn(f"::error::release-steps: {empty} does not hold its header line alone (), so swap is not shown"
+                      " to be off", stderr)
+        for swaps in (self.root / "absent", self.root):
+            with self.subTest(swaps=swaps.name):
+                status, stdout, stderr = self.check(swaps)
+                self.assertEqual((status, stdout), (1, ""))
+                self.assertIn(f"::error::release-steps: {swaps} could not be read (", stderr)
+                self.assertIn("so swap is not shown to be off; the signing key is not imported", stderr)
+
+
 class ReleaseHeadlines(unittest.TestCase):
     """The changelog parser the release mode's body is built from, run on text alone, so its cases need no signed tag."""
 
