@@ -1728,6 +1728,7 @@ class Cleanup(unittest.TestCase):
                 script = f'{definitions}\nworkdir="$1"\ngpgconf() {{ return {status}; }}\n{trap}\nexit 0\n'
                 completed = subprocess.run([BASH, "-c", script, "_", str(workdir)], capture_output=True, text=True)
                 self.assertFalse(workdir.exists(), completed.stderr)
+                self.assertRegex(completed.stdout, r"^sign-rpms: the scratch tree held [0-9]+ KiB\n$")
                 warning = f"::warning::sign-rpms: the gpg-agent of {workdir}/gnupg did not stop"
                 (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
 
