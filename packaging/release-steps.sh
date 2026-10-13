@@ -862,7 +862,13 @@ _release_steps__read_output() {
     shift
     _release_steps__create_temp_dir
     "$@" >"$_RELEASE_STEPS__TEMP_DIR/read-output" 2>"$_RELEASE_STEPS__TEMP_DIR/read-diagnostics" || captured_status=$?
-    captured_output="$(<"$_RELEASE_STEPS__TEMP_DIR/read-output")"
+    # Callers run this as `read_output … || die`, where `set -e` is off, so the read-back's own status is read here.
+    # `cat`, not `$(<file)`: bash's form returns 0 with an empty answer when the read fails after the open succeeds.
+    if ! captured_output="$(cat -- "$_RELEASE_STEPS__TEMP_DIR/read-output")"; then
+        _RELEASE_STEPS__ANSWER="the output of \`$1\` could not be read back"
+        printf -v "$captured_variable" '%s' ""
+        return 1
+    fi
     if [[ "$captured_status" -ne 0 ]]; then
         _RELEASE_STEPS__ANSWER="$(_release_steps__format_one_line "$(<"$_RELEASE_STEPS__TEMP_DIR/read-diagnostics")" \
             "$captured_output")"

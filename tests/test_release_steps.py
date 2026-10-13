@@ -67,16 +67,19 @@ class ReleaseStepsCase(unittest.TestCase):
         self.fault_log = self.root / "faults.log"
         self.fault_log.write_text("", encoding="utf-8")
 
-    def fault(self, command: str, when: str, stdout="", lines=None, status=2, call=None, warning=None):
+    def fault(self, command: str, when: str, stdout="", lines=None, status=2, call=None, warning=None, after=None):
         """Make <command> fail with <status> in the next runs of the release steps, on each call whose arguments,
         joined as " $* ", match the bash pattern <when>, or on the <call>-th such call alone; every other call runs
         the real command. A failing call prints <stdout>, or the first <lines> lines of the real command's output.
-        With <warning>, the call instead prints it on stderr and runs the real command, keeping its status. Each such
-        call is recorded in the fault log, so a test asserts that the failure it names happened. The test's own git
-        calls run the real command."""
+        With <warning>, the call instead prints it on stderr and runs the real command, keeping its status; with
+        <after>, it runs the real command, then the bash command <after> in the script's shell, keeping the real
+        command's status. Each such call is recorded in the fault log, so a test asserts that the failure it names
+        happened. The test's own git calls run the real command."""
         counter = self.root / f"fault-{len(self.faults)}.count"
         counter.write_text("0", encoding="utf-8")
-        if warning is not None:
+        if after is not None:
+            action = f'command {command} "$@"; local fault_status=$?; {after}; return $fault_status;'
+        elif warning is not None:
             action = f'printf %s {shlex.quote(warning)} >&2; command {command} "$@"; return $?;'
         elif lines is None:
             action = f"printf %s {shlex.quote(stdout)}; return {status};"
@@ -1360,6 +1363,23 @@ class RepinTools(RepinCase):
         status, _, stderr = self.repin(sha, "--pr", "31")
         self.assert_refused_with_the_caller_unchanged(
             status, stderr, f"::error::release-steps: `git status` could not read the tree of {self.caller} (")
+        self.assertEqual(len(self.faulted()), 1)
+        self.assertEqual(workflow.read_text(encoding="utf-8"), edited)
+
+    def test_a_status_whose_output_cannot_be_read_back_is_refused(self):
+        """`git status` succeeds and its captured output is replaced by a directory before the helper reads it: the
+        read-back failed while the status stayed 0, and the dirty tree read as clean."""
+        sha = self.push_refresh()
+        workflow = self.caller / ".github" / "workflows" / "release.yml"
+        edited = workflow.read_text(encoding="utf-8").replace("set-release.yml@", "validate.yml@")
+        workflow.write_text(edited, encoding="utf-8")
+        self.answer_caller_pull_request()
+        self.fault("git", '*" status --porcelain "*', after='rm -f "$_RELEASE_STEPS__TEMP_DIR/read-output";'
+                   ' mkdir "$_RELEASE_STEPS__TEMP_DIR/read-output"')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: `git status` could not read the tree of {self.caller} (the output"
+            " of `git` could not be read back)")
         self.assertEqual(len(self.faulted()), 1)
         self.assertEqual(workflow.read_text(encoding="utf-8"), edited)
 
