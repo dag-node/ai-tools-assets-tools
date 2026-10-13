@@ -20,6 +20,9 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   and refuses unless it is Python 3.9; the 3.9 leg of `validate`
   and the release run through it. Before, they ran the 3.9 build `setup-python`
   publishes.
+- **A failed search for test directories stops the job.**
+  `release-steps.sh find-tests` prints the directories the `tests` job runs,
+  and refuses when a search fails.
 
 ### Changed
 
@@ -37,13 +40,22 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 - **Swap off for the signing key.** A release workflow runs
   `release-steps.sh swap-off` in a step that does not receive a secret,
   before the first step that does: it turns swap off and logs the memory
-  and swap lines of `/proc/meminfo`. `preflight`, `sign-files` and `sign-rpm` each
-  refuse to import the key while `/proc/swaps` lists a device. The runner
-  process holds the job's secrets from before its first step, so a page of it
-  written to swap before `swap-off` is outside the check.
+  and swap lines of `/proc/meminfo`. `preflight`, `sign-files`
+  and `sign-rpm` each refuse to import the key while `/proc/swaps` lists
+  a device. The runner process holds the job's secrets from before its first
+  step, so a page of it written to swap before `swap-off` is outside the check.
 - **Shared memory sized to its use.** The signing container's `/dev/shm` is 16
   MiB, a verify container has none, and its rpm database tmpfs is 32 MiB;
   `sign-rpms.sh` prints the size its scratch tree reached.
+- **Verify containers without default writable mounts.** Each container that
+  verifies an RPM's signature runs with `--read-only-tmpfs=false`, so podman
+  does not add its writable tmpfs mounts to the read-only root, and the release
+  log lists each tmpfs the container holds. Before, `/run`, `/tmp` and
+  `/var/tmp` were writable in it.
+- **The floor suite keeps its privilege drop.** `test-floor` runs the suites
+  under `setpriv --no-new-privs` and refuses unless `/proc/self/status`
+  shows `NoNewPrivs: 1`, so a set-id binary does not raise a suite's
+  privileges inside the container.
 
 ## [1.3.1] - 2026-10-13
 
