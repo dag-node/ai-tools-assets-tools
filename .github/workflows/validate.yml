@@ -164,8 +164,11 @@ jobs:
   tests:
     name: tests (python ${{ matrix.python }})
     runs-on: ubuntu-26.04
-    # The release job's bound, not a contract: re-measured against a caller's suites as they grow.
-    timeout-minutes: 15
+    # Measured 2026-10-13 on ubuntu-26.04: this repository's 3.9 leg took 118-131 s in the EL9 container, its suite 85 s
+    # of that, and its 3.12 leg 59-89 s; ai-tools-assets' skill suites run in under a minute. The bound is about twice
+    # the slowest leg, so a hung test fails the job early; the runner VM and the container end with the job, and
+    # the job does not receive a secret. A caller whose suites outgrow it raises it here.
+    timeout-minutes: 5
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
     strategy:
