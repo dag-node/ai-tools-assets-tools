@@ -821,8 +821,11 @@ _release_steps__require_synced_develop() {
     # `--no-tags`: the fetch updates origin/develop alone and does not add a tag to the checkout.
     answer="$(git -C "$directory" fetch --quiet --no-tags origin +refs/heads/develop:refs/remotes/origin/develop 2>&1)" \
         || _release_steps__die "\`git fetch origin develop\` failed in $directory (${answer//$'\n'/ }); check the network and the remote, then run again"
-    counts="$(git -C "$directory" rev-list --left-right --count develop...origin/develop)"
-    ahead="${counts%%[[:space:]]*}" behind="${counts##*[[:space:]]}"
+    _release_steps__read_output counts git -C "$directory" rev-list --left-right --count develop...origin/develop \
+        || _release_steps__die "\`git rev-list\` could not compare develop with origin/develop in $directory ($_RELEASE_STEPS__ANSWER); run the same command again"
+    [[ "$counts" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]] \
+        || _release_steps__die "\`git rev-list --count\` answered \`$(_release_steps__format_one_line "$counts")\` in $directory, not two counts; run the same command again"
+    ahead="${BASH_REMATCH[1]}" behind="${BASH_REMATCH[2]}"
     if [[ "$behind" -gt 0 && "$ahead" -gt 0 ]]; then
         _release_steps__die "\`develop\` is $behind behind and $ahead ahead of \`origin/develop\` after a fetch; rebase the local commits on \`origin/develop\` first"
     elif [[ "$behind" -gt 0 ]]; then
@@ -1116,7 +1119,8 @@ _release_steps__deliver_change() {
         || _release_steps__die "the origin of $directory could not be read ($_RELEASE_STEPS__ANSWER); check the network, then run again"
     remote_tip="${remote_tip%%[[:space:]]*}"
     local_tip="$(git -C "$directory" rev-parse --verify --quiet "refs/heads/$branch")" || local_tip=""
-    develop="$(git -C "$directory" rev-parse develop)"
+    develop="$(git -C "$directory" rev-parse develop)" \
+        || _release_steps__die "develop could not be read in $directory; no commit was made and nothing was pushed: run the same command again"
     if [[ -n "$local_tip" ]]; then
         if [[ "$(git -C "$directory" rev-parse --verify --quiet "$local_tip^")" != "$develop" ]] \
                 || ! git -C "$worktree" diff --quiet "$local_tip" --; then
@@ -1134,12 +1138,18 @@ _release_steps__deliver_change() {
         return 0
     fi
     message="$_RELEASE_STEPS__TEMP_DIR/message"
-    printf '%s\n\n%s\n' "$title" "$body" >"$message"
+    # The body file is written before the commit, so a failure to write it refuses before a commit or a branch exists.
+    if ! body_file="$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir)/release-steps/${branch//\//-}.md" \
+            || ! mkdir -p "${body_file%/*}" || ! printf '%s\n\n%s\n' "$title" "$body" >"$message" \
+            || ! printf '%s\n' "$body" >"$body_file"; then
+        _release_steps__die "the commit message or the pull request body for $branch could not be written; no commit was made and nothing was pushed: run the same command again"
+    fi
     if [[ -z "$local_tip" ]]; then
         _release_steps__step "committing on $branch"
         answer="$(git -C "$worktree" commit --quiet -s -a -F "$message" 2>&1)" \
             || _release_steps__die "the commit on $branch failed (${answer//$'\n'/ }); no branch was created and nothing was pushed"
-        local_tip="$(git -C "$worktree" rev-parse HEAD)"
+        local_tip="$(git -C "$worktree" rev-parse HEAD)" \
+            || _release_steps__die "the commit on $branch was made in the scratch worktree and could not be read back; no branch was created and nothing was pushed: run the same command again"
         answer="$(git -C "$directory" update-ref "refs/heads/$branch" "$local_tip" "" 2>&1)" \
             || _release_steps__die "branch $branch could not be created at ${local_tip:0:7} (${answer//$'\n'/ }); nothing was pushed: run the same command again"
         _release_steps__ok "commit ${local_tip:0:7} (signed off by $(git -C "$directory" config user.name))"
@@ -1150,14 +1160,12 @@ _release_steps__deliver_change() {
         _release_steps__step "pushing $branch"
         answer="$(git -C "$directory" push --quiet origin "refs/heads/$branch:refs/heads/$branch" 2>&1)" \
             || _release_steps__die "the push of $branch was refused (${answer//$'\n'/ }); the branch is local and nothing was opened; fix the cause and run again"
-        remote_tip="$(git -C "$directory" ls-remote origin "refs/heads/$branch")"
+        _release_steps__read_output remote_tip git -C "$directory" ls-remote origin "refs/heads/$branch" \
+            || _release_steps__die "the push of $branch ran and origin could not be read after it ($_RELEASE_STEPS__ANSWER); the pull request is not open: run the same command again"
         [[ "${remote_tip%%[[:space:]]*}" == "$local_tip" ]] \
             || _release_steps__die "after the push, origin/$branch is ${remote_tip:-absent}, not ${local_tip:0:7}; run the same command again"
         _release_steps__ok "origin/$branch = ${local_tip:0:7}"
     fi
-    body_file="$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir)/release-steps/${branch//\//-}.md"
-    mkdir -p "$(dirname "$body_file")"
-    printf '%s\n' "$body" >"$body_file"
     _release_steps__read_github "the pull request lookup" "$branch" "" true \
         gh pr list --repo "$repository" --head "$branch" --base develop --state open --json url \
         --jq '.[0].url // empty' || status=$?
@@ -1171,7 +1179,8 @@ _release_steps__deliver_change() {
     for ((attempt = 1; attempt <= _RELEASE_STEPS__RETRY_ATTEMPTS; attempt++)); do
         if answer="$(gh pr create --repo "$repository" --base develop --head "$branch" --title "$title" \
                 --body-file "$body_file" 2>&1)"; then
-            url="$(grep -oE 'https://[^[:space:]]+' <<<"$answer" | tail -n 1)"
+            # The pull request exists once gh succeeds, so an answer without a URL ends in the `ok:` line, not a refusal.
+            url="$(grep -oE 'https://[^[:space:]]+' <<<"$answer" | tail -n 1)" || url=""
             _RELEASE_STEPS__PULL_REQUEST_URL="$url"
             _release_steps__ok "${url:-the pull request is open}"
             return 0
@@ -1483,9 +1492,11 @@ _release_steps__verify_release() {
     _release_steps__read_tag_signers "$tools"
     _release_steps__verify_tag_signature "$tools" "$tag" "$_RELEASE_STEPS__TAG_OBJECT" "$_RELEASE_STEPS__TAG_SIGNERS" \
         "$_RELEASE_STEPS__TAG_SIGNER_KEY_URL"
-    sha="$(git -C "$tools" rev-parse "$_RELEASE_STEPS__TAG_OBJECT^{commit}")"
+    sha="$(git -C "$tools" rev-parse "$_RELEASE_STEPS__TAG_OBJECT^{commit}")" \
+        || _release_steps__die "the commit of $tag could not be read in $tools; nothing was written: run the same command again"
     _RELEASE_STEPS__RELEASE_COMMIT="$sha"
-    changelog="$(git -C "$tools" show "$sha:CHANGELOG.md")"
+    changelog="$(git -C "$tools" show "$sha:CHANGELOG.md")" \
+        || _release_steps__die "\`CHANGELOG.md\` at $tag could not be read in $tools; nothing was written: run the same command again"
     newest="$(_release_steps__read_newest_version "$changelog")"
     [[ "$newest" == "$_RELEASE_STEPS__RELEASE_VERSION" ]] \
         || _release_steps__die "the tools' \`CHANGELOG.md\` at $tag opens its newest release with \`## [$newest]\`, not \`## [$_RELEASE_STEPS__RELEASE_VERSION]\`; the tag and the changelog disagree"

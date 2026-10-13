@@ -1469,6 +1469,58 @@ class RepinTools(RepinCase):
         self.assertIn("tag v9.9.9 is not on ai-tools-assets-tools origin; push the tag, or check the spelling", stderr)
         self.assertEqual(len(self.faulted()), 1)
 
+    def test_a_count_read_that_fails_is_refused_with_a_message(self):
+        """`set -e` ended the run on a failed `git rev-list --count` with its own status and no `::error::` line."""
+        sha = self.push_refresh()
+        self.fault("git", '*" rev-list --left-right "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: `git rev-list` could not compare develop with origin/develop in"
+            f" {self.caller} (exit status 2, no output); run the same command again")
+        self.assertEqual(len(self.faulted()), 1)
+
+    def test_a_commit_that_cannot_be_read_back_is_refused_and_a_rerun_finishes(self):
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", '*" rev-parse HEAD "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: the commit on {CALLER_BRANCH} was made in the scratch worktree and"
+            " could not be read back; no branch was created and nothing was pushed: run the same command again")
+        self.assertEqual(len(self.faulted()), 1)
+        self.faults.clear()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH), self.git(self.caller, "rev-parse", CALLER_BRANCH))
+        self.assertEqual(len(self.pull_request_creations()), 1)
+
+    def test_an_origin_unreadable_after_the_push_is_refused_and_a_rerun_opens_the_pull_request(self):
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", f'*" ls-remote origin refs/heads/{CALLER_BRANCH} "*', call=2)
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1, stderr)
+        self.assertIn(f"::error::release-steps: the push of {CALLER_BRANCH} ran and origin could not be read after it"
+                      " (exit status 2, no output); the pull request is not open: run the same command again", stderr)
+        tip = self.git(self.caller, "rev-parse", CALLER_BRANCH)
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH), tip)
+        self.assertEqual(self.pull_request_creations(), [])
+        self.faults.clear()
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"release-steps: ok: origin/{CALLER_BRANCH} = {tip[:7]}, pushed before", stdout)
+        self.assertEqual(len(self.pull_request_creations()), 1)
+
+    def test_a_pull_request_answer_without_a_url_ends_in_the_ok_line(self):
+        sha = self.push_refresh()
+        self.answer_open_pull_requests(CALLER_SLUG)
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"])
+        self.answer("gh", ["pr", "create"], stdout="created\n")
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("release-steps: ok: the pull request is open\n", stdout)
+        self.assertEqual(len(self.pull_request_creations()), 1)
+
     def test_a_dry_run_writes_nothing(self):
         sha = self.push_refresh()
         self.answer_caller_pull_request()
