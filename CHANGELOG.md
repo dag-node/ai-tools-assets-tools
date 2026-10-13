@@ -7,6 +7,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-13
+
 ### Fixed
 
 - **Signed re-pin commits.** `repin-tools` to a release signs its commit with
