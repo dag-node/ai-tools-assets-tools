@@ -4,7 +4,8 @@ repin-tools.
 
 The registry is `command_stub.py` standing in for skopeo, exported to the script as a bash function, so a test decides
 which manifest each reference returns; gh, sleep and, where a test injects a failure, awk and date are stubbed the same
-way. Each test runs a copy of the release steps whose image pins name digests of the stub's manifests, and asserts
+way. A test that fails a real command part way (git, sha256sum) wraps it with `fault`, which runs the real command on
+every call but the one it fails. Each test runs a copy of the release steps whose image pins name digests of the stub's manifests, and asserts
 before its first run that the stub, not an installed command, answers the call. The two change commands run in scratch
 checkouts whose origin is a bare repository under the test's directory, so a push or a pull request in an assertion is
 a local push or a recorded `gh pr create` call. The release itself (the pull in preflight, the hardened verify runs)
@@ -18,14 +19,17 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 REPOSITORY = TESTS.parent
 RELEASE_STEPS = REPOSITORY / "packaging" / "release-steps.sh"
+SIGN_RPMS = REPOSITORY / "packaging" / "sign-rpms.sh"
 STUB = TESTS / "command_stub.py"
 BASH = shutil.which("bash")
 
@@ -59,6 +63,38 @@ class ReleaseStepsCase(unittest.TestCase):
         self.answers_written = False
         self.log = self.root / "stub.log"
         self.log.write_text("", encoding="utf-8")
+        self.faults = {}
+        self.fault_log = self.root / "faults.log"
+        self.fault_log.write_text("", encoding="utf-8")
+
+    def fault(self, command: str, when: str, stdout="", lines=None, status=2, call=None, warning=None, after=None):
+        """Make <command> fail with <status> in the next runs of the release steps, on each call whose arguments,
+        joined as " $* ", match the bash pattern <when>, or on the <call>-th such call alone; every other call runs
+        the real command. A failing call prints <stdout>, or the first <lines> lines of the real command's output.
+        With <warning>, the call instead prints it on stderr and runs the real command, keeping its status; with
+        <after>, it runs the real command, then the bash command <after> in the script's shell, keeping the real
+        command's status. Each such call is recorded in the fault log, so a test asserts that the failure it names
+        happened. The test's own git calls run the real command."""
+        counter = self.root / f"fault-{len(self.faults)}.count"
+        counter.write_text("0", encoding="utf-8")
+        if after is not None:
+            action = f'command {command} "$@"; local fault_status=$?; {after}; return $fault_status;'
+        elif warning is not None:
+            action = f'printf %s {shlex.quote(warning)} >&2; command {command} "$@"; return $?;'
+        elif lines is None:
+            action = f"printf %s {shlex.quote(stdout)}; return {status};"
+        else:
+            action = f'command {command} "$@" | head -n {lines}; return {status};'
+        due = "true" if call is None else f'[[ "$fault_count" -eq {call} ]]'
+        self.faults[command] = (
+            f'() {{ if [[ " $* " == {when} ]]; then local fault_count; fault_count=$(( $(<{shlex.quote(str(counter))}) + 1 ));'
+            f' printf %s "$fault_count" >{shlex.quote(str(counter))};'
+            f' if {due}; then printf "%s %s\\n" {command} "$*" >>{shlex.quote(str(self.fault_log))}; {action} fi; fi;'
+            f' command {command} "$@"; }}')
+
+    def faulted(self) -> list:
+        """The calls a fault failed, as "<command> <arguments>"."""
+        return self.fault_log.read_text(encoding="utf-8").splitlines()
 
     def tearDown(self):
         shutil.rmtree(self.root)
@@ -103,7 +139,8 @@ class ReleaseStepsCase(unittest.TestCase):
             (self.root / "answers.json").write_text(json.dumps(self.answers), encoding="utf-8")
             self.answers_written = True
         environment = self.environment(path, stubbed)
-        for command in self.stubbed if stubbed is None else stubbed:
+        environment.update({f"BASH_FUNC_{command}%%": body for command, body in self.faults.items()})
+        for command in (*(self.stubbed if stubbed is None else stubbed), *self.faults):
             kind = subprocess.run([BASH, "-c", f"type -t {command}"], env=environment, capture_output=True, text=True)
             self.assertEqual(kind.stdout.strip(), "function", f"{command} does not resolve to the stub")
         completed = subprocess.run([BASH, str(script), *arguments], cwd=cwd, env=environment, capture_output=True,
@@ -239,6 +276,19 @@ class CheckImages(RegistryCase):
         status, _, stderr = self.check()
         self.assertEqual(status, 1)
         self.assertIn(f"the registry returned a manifest whose digest is {CURRENT['fc44']}", stderr)
+
+    def test_a_hash_that_fails_or_is_cut_short_fails_the_check(self):
+        """The third sha256sum is the Fedora pin's; a failed one that prints the pinned digest does not pass it."""
+        self.answer_pinned(*IMAGES)
+        for stdout, status in (("", 2), ("e01fa6", 2), (f"{PINNED['fc44'][7:]}  -\n", 2), ("e01fa6  -\n", 0)):
+            with self.subTest(stdout=stdout, status=status):
+                self.fault("sha256sum", "*", stdout=stdout, status=status, call=3)
+                exit_status, _, stderr = self.check()
+                self.assertEqual(exit_status, 1, stderr)
+                self.assertIn(f"fc44: the registry could not be read for {IMAGES['fc44']} (sha256sum ", stderr)
+                self.assertNotIn("the tag names", stderr)
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
 
     def test_an_absent_skopeo_is_named(self):
         farm = self.root / "bin"
@@ -653,6 +703,24 @@ class RefreshImages(ChangeCase):
             self.assertIn("; the file is unchanged", stderr)
             self.assert_tools_unchanged(develop)
 
+    def test_a_hash_that_fails_or_is_cut_short_is_not_pinned(self):
+        """The third sha256sum is the hash of the manifest the Fedora tag names now, which the refresh pins."""
+        develop = self.git(self.tools, "rev-parse", "develop")
+        self.answer_expired_fedora()
+        self.answer_pull_request()
+        for stdout, status in (("", 2), ("e01fa6", 2), (f"{CURRENT['fc44'][7:]}  -\n", 2), ("e01fa6  -\n", 0)):
+            with self.subTest(stdout=stdout, status=status):
+                self.fault("sha256sum", "*", stdout=stdout, status=status, call=3)
+                exit_status, _, stderr = self.refresh()
+                self.assertEqual(exit_status, 1, stderr)
+                self.assertIn(f"fc44: the registry could not be read for {IMAGES['fc44']} (sha256sum ", stderr)
+                self.assertNotIn("the tag names", stderr)
+                self.assertIn("check-images could not read every image (the lines above), so an expiry cannot be told"
+                              " from an outage", stderr)
+                self.assert_tools_unchanged(develop)
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
     def test_a_commit_that_fails_creates_no_branch_and_a_rerun_finishes(self):
         develop = self.git(self.tools, "rev-parse", "develop")
         self.git(self.tools, "config", "user.useConfigOnly", "true")
@@ -691,6 +759,29 @@ class RefreshImages(ChangeCase):
         self.assertEqual(self.remote_branch(self.tools, REFRESH_BRANCH), tip)
         self.assertIn(f"# resolved 2026-11-03\n", self.git(self.tools, "show", f"{REFRESH_BRANCH}:packaging/release-steps.sh"))
         self.assertEqual(len(self.pull_request_creations()), 1)
+
+    def test_a_branch_whose_script_cannot_be_read_is_refused_not_redated(self):
+        """The branch exists, so its date is the one to keep; a failed read of it fell back to today's."""
+        self.answer_expired_fedora()
+        self.answer_pull_request()
+        self.answer("date", ["-u", "+%Y-%m-%d"], stdout="2026-11-03\n")
+        stubbed = (*self.stubbed, "date")
+        self.set_origin_writable("tools", False)
+        try:
+            status, _, stderr = self.refresh(stubbed=stubbed)
+        finally:
+            self.set_origin_writable("tools", True)
+        self.assertEqual(status, 1, stderr)
+        tip = self.git(self.tools, "rev-parse", REFRESH_BRANCH)
+        self.answer("date", ["-u", "+%Y-%m-%d"], stdout="2026-11-04\n", first=True)
+        self.fault("git", f'*" show refs/heads/{REFRESH_BRANCH}:packaging/release-steps.sh "*')
+        status, _, stderr = self.refresh(stubbed=stubbed)
+        self.assertEqual(status, 1, stderr)
+        self.assertIn(f"::error::release-steps: branch {REFRESH_BRANCH} exists and its packaging/release-steps.sh could"
+                      f" not be read in {self.tools} (exit status 2, no output); nothing was written", stderr)
+        self.assertEqual(self.git(self.tools, "rev-parse", REFRESH_BRANCH), tip)
+        self.assertEqual(self.remote_branch(self.tools, REFRESH_BRANCH), "")
+        self.assertEqual(len(self.faulted()), 1)
 
     def test_two_expired_images_become_one_commit(self):
         self.answer_pinned("el10")
@@ -882,6 +973,18 @@ class RefreshImages(ChangeCase):
 
     def test_a_caller_branch_already_on_origin_refuses_before_the_tools_change(self):
         self.git(self.caller, "push", "--quiet", "origin", f"develop:refs/heads/ci/{REFRESH_ID}-tools-fc44-digest")
+        status, _, stderr = self.refresh("--caller", str(self.caller))
+        self.assertEqual(status, 1)
+        self.assertIn(f"caller {self.caller}: branch ci/{REFRESH_ID}-tools-fc44-digest already exists on origin; pick"
+                      " the next letter for `--id`", stderr)
+
+    def test_a_caller_branch_on_origin_is_refused_whatever_grep_answers(self):
+        """The branch names of the caller's checked `ls-remote` answer are matched in bash; a grep that failed read as
+        no match."""
+        self.git(self.caller, "push", "--quiet", "origin", f"develop:refs/heads/ci/{REFRESH_ID}-tools-fc44-digest")
+        self.answer_expired_fedora()
+        self.answer_pull_request()
+        self.fault("grep", '*" -oE "*', call=1)
         status, _, stderr = self.refresh("--caller", str(self.caller))
         self.assertEqual(status, 1)
         self.assertIn(f"caller {self.caller}: branch ci/{REFRESH_ID}-tools-fc44-digest already exists on origin; pick"
@@ -1192,6 +1295,108 @@ class RepinTools(RepinCase):
         self.assertEqual(status, 1)
         self.assertIn(f"{sha[:7]} changes README.md, which is not an image pin or `CHANGELOG.md`", stderr)
 
+    def assert_refused_with_the_caller_unchanged(self, status: int, stderr: str, *phrases: str):
+        self.assertEqual(status, 1, stderr)
+        for phrase in phrases:
+            self.assertIn(phrase, stderr)
+        self.assert_caller_unchanged()
+
+    def test_a_file_list_that_fails_is_refused(self):
+        """A failed `git diff --name-only` read as its output lists no file, or the allowed files alone, so a commit
+        that changes another file passed as a refresh."""
+        sha = self.push_refresh({"README.md": "a change\n"})
+        self.answer_caller_pull_request()
+        for stdout in ("", "CHANGELOG.md\npackaging/release-steps.sh\n"):
+            with self.subTest(stdout=stdout):
+                self.fault("git", '*" diff --name-only "*', stdout=stdout)
+                status, _, stderr = self.repin(sha, "--pr", "31")
+                self.assert_refused_with_the_caller_unchanged(
+                    status, stderr, f"::error::release-steps: the files {sha[:7]} changes against {sha}^ could not be"
+                    f" listed in {self.tools} (`git diff`: ", "); nothing was written: run the same command again")
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
+    def test_a_line_diff_that_fails_part_way_is_refused(self):
+        """A failed `git diff --unified=0` read as its output passes the hunks it printed before it failed, so a later
+        change to another line of the script passed as a refresh."""
+        sha = self.push_refresh({"packaging/release-steps.sh": self.refreshed_script() + "\n# an unrelated change\n"})
+        self.answer_caller_pull_request()
+        hunks = self.git(self.tools, "diff", "--unified=0", "--no-color", f"{sha}^", sha, "--",
+                         "packaging/release-steps.sh").splitlines()
+        second_hunk = [index for index, line in enumerate(hunks) if line.startswith("@@")][1]
+        for lines in (0, second_hunk):
+            with self.subTest(lines=lines):
+                self.fault("git", '*" diff --unified=0 "*', lines=lines)
+                status, _, stderr = self.repin(sha, "--pr", "31")
+                self.assert_refused_with_the_caller_unchanged(
+                    status, stderr, f"::error::release-steps: the lines {sha[:7]} changes in packaging/release-steps.sh"
+                    f" against {sha}^ could not be read in {self.tools} (`git diff`: ")
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
+    def test_a_script_read_that_fails_part_way_is_refused(self):
+        """Each `git show` of the target's script that fails after its pins and DIST_IMAGES printed: the parent check's,
+        the check from the caller's pin, and the read whose pins the registry is asked for."""
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        script = self.git(self.tools, "show", f"{sha}:packaging/release-steps.sh").splitlines()
+        lines = next(index for index, line in enumerate(script) if line.startswith("declare -A DIST_IMAGES=")) + 1
+        for call in (1, 2, 3):
+            with self.subTest(call=call):
+                self.fault("git", '*" show "*":packaging/release-steps.sh "', lines=lines, call=call)
+                status, _, stderr = self.repin(sha, "--pr", "31")
+                self.assert_refused_with_the_caller_unchanged(
+                    status, stderr, f"::error::release-steps: packaging/release-steps.sh at {sha[:7]} could not be read"
+                    f" in {self.tools} (`git show`: ")
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
+    def test_a_status_read_that_fails_keeps_an_uncommitted_edit_out_of_the_pin(self):
+        """A failed `git status --porcelain` read as a clean tree, and the pins are read from the working tree while
+        the change is built on committed develop, so an uncommitted edit of a `uses:` line reached the pull request."""
+        sha = self.push_refresh()
+        workflow = self.caller / ".github" / "workflows" / "release.yml"
+        edited = workflow.read_text(encoding="utf-8").replace("set-release.yml@", "validate.yml@")
+        workflow.write_text(edited, encoding="utf-8")
+        self.answer_caller_pull_request()
+        self.fault("git", '*" status --porcelain "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: `git status` could not read the tree of {self.caller} (")
+        self.assertEqual(len(self.faulted()), 1)
+        self.assertEqual(workflow.read_text(encoding="utf-8"), edited)
+
+    def test_a_status_whose_output_cannot_be_read_back_is_refused(self):
+        """`git status` succeeds and its captured output is replaced by a directory before the helper reads it: the
+        read-back failed while the status stayed 0, and the dirty tree read as clean."""
+        sha = self.push_refresh()
+        workflow = self.caller / ".github" / "workflows" / "release.yml"
+        edited = workflow.read_text(encoding="utf-8").replace("set-release.yml@", "validate.yml@")
+        workflow.write_text(edited, encoding="utf-8")
+        self.answer_caller_pull_request()
+        self.fault("git", '*" status --porcelain "*', after='rm -f "$_RELEASE_STEPS__TEMP_DIR/read-output";'
+                   ' mkdir "$_RELEASE_STEPS__TEMP_DIR/read-output"')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: `git status` could not read the tree of {self.caller} (the output"
+            " of `git` could not be read back)")
+        self.assertEqual(len(self.faulted()), 1)
+        self.assertEqual(workflow.read_text(encoding="utf-8"), edited)
+
+    def test_a_pin_both_a_tag_and_a_branch_carry_is_refused_whatever_awk_answers(self):
+        """The rows of the checked `ls-remote` answer are counted in bash, so a failing awk does not count them as
+        one."""
+        self.git(self.tools, "tag", "v1.2.0", self.initial)
+        self.git(self.tools, "push", "--quiet", "origin", "v1.2.0")
+        self.git(self.tools, "push", "--quiet", "origin", "develop:refs/heads/v1.2.0")
+        self.commit_caller(self.caller_pins("v1.2.0"), "pin by a name a branch carries too")
+        sha = self.push_refresh()
+        self.fault("awk", "*")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, "the `uses:` lines pin @v1.2.0, which names both a tag and a branch on"
+            " ai-tools-assets-tools origin")
+
     def test_a_release_commit_is_not_a_refresh(self):
         sha = self.commit_tools({"CHANGELOG.md": RELEASE_CHANGELOG}, "chore: release 1.3.0")
         status, _, stderr = self.repin(sha, "--pr", "31", "--dry-run")
@@ -1272,6 +1477,152 @@ class RepinTools(RepinCase):
         self.assertIn(f"release-steps: ok: origin/{CALLER_BRANCH} = {tip[:7]}, pushed before", stdout)
         self.assertEqual(len(self.pull_request_creations()), 2)
 
+    REDIRECT_WARNING = "warning: redirecting to https://github.com/dag-node/ai-tools-assets.git/\n"
+
+    def test_a_warning_beside_the_branch_read_is_not_a_branch_on_origin(self):
+        """git prints a redirect warning on stderr beside a successful `ls-remote`; merged into the answer, it read as
+        the tip of a branch on origin and refused the re-pin."""
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", f'*" ls-remote origin refs/heads/{CALLER_BRANCH} "*', warning=self.REDIRECT_WARNING)
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH), self.git(self.caller, "rev-parse", CALLER_BRANCH))
+        self.assertEqual(len(self.pull_request_creations()), 1)
+        self.assertGreaterEqual(len(self.faulted()), 1)
+
+    def test_a_warning_beside_the_branch_read_resumes_after_the_push(self):
+        sha = self.push_refresh()
+        self.answer_open_pull_requests(CALLER_SLUG)
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"])
+        self.answer("gh", ["pr", "create"], stderr="HTTP 502: Bad Gateway\n", status=1, times=1)
+        self.answer("gh", ["pr", "create"], stdout=f"{CALLER_PULL_REQUEST_URL}\n")
+        self.assertEqual(self.repin(sha, "--pr", "31")[0], 1)
+        tip = self.git(self.caller, "rev-parse", CALLER_BRANCH)
+        self.fault("git", f'*" ls-remote origin refs/heads/{CALLER_BRANCH} "*', warning=self.REDIRECT_WARNING)
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"release-steps: ok: origin/{CALLER_BRANCH} = {tip[:7]}, pushed before", stdout)
+        self.assertEqual(len(self.pull_request_creations()), 2)
+        self.assertGreaterEqual(len(self.faulted()), 1)
+
+    def test_a_warning_beside_an_absent_tag_does_not_read_as_the_tag(self):
+        self.fault("git", '*" ls-remote origin refs/tags/v9.9.9 "*', warning=self.REDIRECT_WARNING)
+        status, _, stderr = self.repin("v9.9.9")
+        self.assertEqual(status, 1)
+        self.assertIn("tag v9.9.9 is not on ai-tools-assets-tools origin; push the tag, or check the spelling", stderr)
+        self.assertEqual(len(self.faulted()), 1)
+
+    def test_the_tools_checkout_is_refused_as_a_caller_whatever_git_answers(self):
+        """The caller check compares paths with the script's directory; it read the tools' toplevel with git, and
+        a failed read passed the tools' own checkout as a caller."""
+        self.fault("git", f'*" -C {self.tools}/packaging rev-parse --show-toplevel "*')
+        status, _, stderr = self.run_steps(self.script, "repin-tools", "--id", REFRESH_ID, "abc1234", cwd=self.tools)
+        self.assertEqual(status, 1)
+        self.assertIn(f"{self.tools} is not a checkout of a caller with a `.github/workflows/`; run from the"
+                      " repository root", stderr)
+
+    def test_a_parent_read_that_fails_is_refused(self):
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", '*" rev-list --parents "*', stdout=f"{sha} {self.git(self.tools, 'rev-parse', f'{sha}^')}\n")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: the parents of {sha[:7]} could not be read in {self.tools} (")
+        self.assertEqual(len(self.faulted()), 1)
+
+    def test_two_refreshes_on_one_date_name_it_once_whatever_sort_answers(self):
+        """The distinct dates are counted in bash; a sort that failed counted none and named each date apart."""
+        repository = IMAGES["el9"].rsplit(":", 1)[0]
+        self.answer_registry({f"{repository}@{CURRENT['el9']}": manifest("el9 current")})
+        self.commit_tools({"packaging/release-steps.sh": self.refreshed_script("el9", REFRESH_DATE)},
+                          "build(packaging): pin the Rocky 9 image quay.io serves")
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("sort", "*")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        message = unwrap(self.git(self.caller, "log", "-1", "--format=%B", f"ci/{REFRESH_ID}-tools-el9-fc44-digest"))
+        self.assertIn(f"which pins the digests `{IMAGES['el9']}` and `{IMAGES['fc44']}` resolve to on {REFRESH_DATE}.",
+                      message)
+
+    def test_a_last_line_without_a_newline_keeps_its_bytes(self):
+        """The `uses:` line is the file's last and has no final newline. A failed read of the last byte read as
+        a newline, and the rewrite added one where numstat still saw one line changed."""
+        files = self.caller_pins()
+        lines = files[".github/workflows/release.yml"].splitlines()
+        uses = next(line for line in lines if "uses:" in line)
+        original = "\n".join([line for line in lines if line != uses] + [uses])
+        files[".github/workflows/release.yml"] = original
+        self.commit_caller(files, "the pin last, without a final newline")
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("tail", '*" -c 1 "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, "::error::release-steps: the last byte of ", "; the file is unchanged")
+        self.assertEqual(len(self.faulted()), 1)
+        self.faults.clear()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        written = subprocess.run(["git", "-C", str(self.caller), "show", f"{CALLER_BRANCH}:.github/workflows/release.yml"],
+                                 env=self.environment(stubbed=()), capture_output=True, check=True).stdout
+        pinned = uses.replace(f"@{self.initial} # v1.2.0",
+                              f"@{sha} # develop {REFRESH_DATE}, fc44 digest, ai-tools-assets-tools#31")
+        self.assertEqual(written, original.replace(uses, pinned).encode("utf-8"))
+
+    def test_a_count_read_that_fails_is_refused_with_a_message(self):
+        """`set -e` ended the run on a failed `git rev-list --count` with its own status and no `::error::` line."""
+        sha = self.push_refresh()
+        self.fault("git", '*" rev-list --left-right "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: `git rev-list` could not compare develop with origin/develop in"
+            f" {self.caller} (exit status 2, no output); run the same command again")
+        self.assertEqual(len(self.faulted()), 1)
+
+    def test_a_commit_that_cannot_be_read_back_is_refused_and_a_rerun_finishes(self):
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", '*" rev-parse HEAD "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: the commit on {CALLER_BRANCH} was made in the scratch worktree and"
+            " could not be read back; no branch was created and nothing was pushed: run the same command again")
+        self.assertEqual(len(self.faulted()), 1)
+        self.faults.clear()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH), self.git(self.caller, "rev-parse", CALLER_BRANCH))
+        self.assertEqual(len(self.pull_request_creations()), 1)
+
+    def test_an_origin_unreadable_after_the_push_is_refused_and_a_rerun_opens_the_pull_request(self):
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", f'*" ls-remote origin refs/heads/{CALLER_BRANCH} "*', call=2)
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 1, stderr)
+        self.assertIn(f"::error::release-steps: the push of {CALLER_BRANCH} ran and origin could not be read after it"
+                      " (exit status 2, no output); the pull request is not open: run the same command again", stderr)
+        tip = self.git(self.caller, "rev-parse", CALLER_BRANCH)
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH), tip)
+        self.assertEqual(self.pull_request_creations(), [])
+        self.faults.clear()
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"release-steps: ok: origin/{CALLER_BRANCH} = {tip[:7]}, pushed before", stdout)
+        self.assertEqual(len(self.pull_request_creations()), 1)
+
+    def test_a_pull_request_answer_without_a_url_ends_in_the_ok_line(self):
+        sha = self.push_refresh()
+        self.answer_open_pull_requests(CALLER_SLUG)
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"])
+        self.answer("gh", ["pr", "create"], stdout="created\n")
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("release-steps: ok: the pull request is open\n", stdout)
+        self.assertEqual(len(self.pull_request_creations()), 1)
+
     def test_a_dry_run_writes_nothing(self):
         sha = self.push_refresh()
         self.answer_caller_pull_request()
@@ -1342,10 +1693,62 @@ def shell_functions(*names: str) -> str:
     text = RELEASE_STEPS.read_text(encoding="utf-8")
     functions = []
     for name in names:
-        match = re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n", text, flags=re.M | re.S)
+        match = (re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n", text, flags=re.M | re.S)
+                 or re.search(rf"^{re.escape(name)}\(\) \{{ .*\}}\n", text, flags=re.M))
         assert match, name
         functions.append(match.group(0))
     return "".join(functions)
+
+
+class Cleanup(unittest.TestCase):
+    """The exit traps of the release steps and of sign-rpms.sh, run with a cleanup command that fails, beside a control
+    where it succeeds: each removal still runs, and the failure is named in a warning."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def keyring(self, name: str) -> pathlib.Path:
+        """A scratch directory shaped as one holding an imported secret key: a public test marker, no key."""
+        directory = self.root / name
+        (directory / "gnupg" / "private-keys-v1.d").mkdir(parents=True)
+        (directory / "private-keys-v1.d").mkdir()
+        (directory / "marker").write_text("public test marker\n", encoding="utf-8")
+        return directory
+
+    def test_the_signers_trap_removes_the_tree_when_the_agent_does_not_stop(self):
+        text = SIGN_RPMS.read_text(encoding="utf-8")
+        definitions = text[:text.rindex('\nmain "$@"')]
+        trap = re.search(r"^\s*(trap .* EXIT)$", text, flags=re.M).group(1)
+        for status in (0, 2):
+            with self.subTest(status=status):
+                workdir = self.keyring(f"workdir-{status}")
+                script = f'{definitions}\nworkdir="$1"\ngpgconf() {{ return {status}; }}\n{trap}\nexit 0\n'
+                completed = subprocess.run([BASH, "-c", script, "_", str(workdir)], capture_output=True, text=True)
+                self.assertFalse(workdir.exists(), completed.stderr)
+                warning = f"::warning::sign-rpms: the gpg-agent of {workdir}/gnupg did not stop"
+                (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
+
+    def test_the_release_steps_trap_removes_every_directory_when_a_removal_before_it_fails(self):
+        functions = shell_functions("_release_steps__remove_scratch_and_container", "_release_steps__warn")
+        for status in (0, 1):
+            with self.subTest(status=status):
+                first, second = self.keyring(f"first-{status}"), self.keyring(f"second-{status}")
+                script = (f'set -euo pipefail\n{functions}container=ai-tools-assets-sign-1\n_RELEASE_STEPS__WORKTREE=""\n'
+                          f'scratch_directories=("$1" "$2")\nsudo() {{ return {status}; }}\n'
+                          f'gpgconf() {{ return {status}; }}\ntrap _release_steps__remove_scratch_and_container EXIT\n'
+                          'exit 0\n')
+                completed = subprocess.run([BASH, "-c", script, "_", str(first), str(second)], capture_output=True,
+                                           text=True)
+                self.assertFalse(first.exists(), completed.stderr)
+                self.assertFalse(second.exists(), completed.stderr)
+                warnings = [f"::warning::release-steps: the container ai-tools-assets-sign-1 was not removed",
+                            f"::warning::release-steps: the gpg-agent of {first} did not stop",
+                            f"::warning::release-steps: the gpg-agent of {second} did not stop"]
+                for warning in warnings:
+                    (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
 
 
 class ReleaseHeadlines(unittest.TestCase):
@@ -1398,6 +1801,12 @@ class RepinToolsToARelease(RepinCase):
                             if line.startswith("fpr:"))
         self.answer("curl", [], stdout=self.gpg("--armor", "--export", self.primary))
 
+    def tearDown(self):
+        # The generated keyring's gpg-agent is stopped before its home is removed under it.
+        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
+                       capture_output=True)
+        super().tearDown()
+
     def gpg(self, *arguments: str) -> str:
         return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",
                                *arguments], capture_output=True, text=True, check=True).stdout
@@ -1431,6 +1840,20 @@ class RepinToolsToARelease(RepinCase):
                                            "- Image check\n- Digest refresh\n"
                                            "- A release pulls every image before the first signature\n"), message)
         self.assertIn(f"signed by {self.primary}", stdout)
+
+    def test_a_caller_that_signs_its_commits_signs_the_re_pin_from_its_own_keyring(self):
+        """The tag check's scratch keyring holds public keys alone; the commit after it reaches the caller's."""
+        self.release(self.primary)
+        self.answer("gh", ["release", "view", "v1.3.0"], stdout="false false\n")
+        self.answer("gh", ["api"], stdout="success https://github.com/dag-node/ai-tools-assets-tools/actions/runs/7\n")
+        self.answer_caller_pull_request()
+        self.git(self.caller, "config", "commit.gpgsign", "true")
+        self.git(self.caller, "config", "user.signingkey", self.primary)
+        with mock.patch.dict(os.environ, {"GNUPGHOME": str(self.gnupg)}):
+            status, _, stderr = self.repin("v1.3.0")
+            self.assertEqual(status, 0, stderr)
+            signer = self.git(self.caller, "log", "-1", "--format=%GP", f"ci/{REFRESH_ID}-tools-1.3.0")
+        self.assertEqual(signer, self.primary)
 
     def test_a_tag_signed_by_another_key_is_refused(self):
         self.release("0" * 40)

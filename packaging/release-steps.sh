@@ -41,7 +41,10 @@
 # of the tools whose tag verify-tag would accept and whose release run passed, and opens the caller's. Both run under
 # the operator's own git and gh credentials, so push rights are the permission and each merge stays the operator's.
 # A develop commit is pinned only when it changes image pin lines and CHANGELOG.md alone; any other change reaches
-# a caller through a release.
+# a caller through a release. A command whose output decides a check is read with its status first, through
+# _release_steps__read_output or an assignment followed by a refusal, so a failed one refuses instead of reading
+# as an empty or partial answer. A refusal names what the run left: no commit, a local branch that is not pushed,
+# or a pushed branch whose pull request is not open; the same command run again continues from it.
 #
 # verify-tag fetches the tag from origin and holds it to an annotated tag object that names itself, peels to the event's
 # commit and the checkout's HEAD, and carries a signature whose VALIDSIG primary is on the pinned list; the key is
@@ -112,6 +115,7 @@ _RELEASE_STEPS__EXPIRED_DISTS=()
 declare -A _RELEASE_STEPS__CURRENT_DIGESTS=()
 _RELEASE_STEPS__FAILED_COUNT=0
 _RELEASE_STEPS__SERVED_DIGEST=""
+_RELEASE_STEPS__BRANCH_DATE=""
 _RELEASE_STEPS__ANSWER=""
 # The repository whose workflows a caller pins, and each `uses:` line of a caller that names one, by position.
 _RELEASE_STEPS__TOOLS_REPOSITORY=dag-node/ai-tools-assets-tools
@@ -134,8 +138,10 @@ _release_steps__die() {
 }
 
 # Every scratch directory and the signing container are removed on exit, a gpg-agent started in a scratch directory is
-# stopped first, and INT and TERM exit through the same trap. The helpers set globals rather than print, since state
-# set inside a command substitution's subshell does not reach this shell's trap.
+# stopped first, and INT and TERM exit through the same trap. Each removal runs whatever the one before it answered,
+# and one that fails prints a warning naming what it left, so a container that is not removed does not keep a keyring
+# directory under /dev/shm from removal. The helpers set globals rather than print, since state set inside a command
+# substitution's subshell does not reach this shell's trap.
 scratch_directories=()
 container=""
 _RELEASE_STEPS__TEMP_DIR=""
@@ -143,14 +149,19 @@ _RELEASE_STEPS__WORKTREE=""
 _RELEASE_STEPS__WORKTREE_REPOSITORY=""
 _release_steps__remove_scratch_and_container() {
     local directory
-    [[ -n "$container" ]] && sudo podman rm -f "$container" >/dev/null 2>&1
+    if [[ -n "$container" ]] && ! sudo podman rm -f "$container" >/dev/null 2>&1; then
+        _release_steps__warn "the container $container was not removed; remove it with \`sudo podman rm -f $container\`"
+    fi
     if [[ -n "$_RELEASE_STEPS__WORKTREE" ]]; then
         git -C "$_RELEASE_STEPS__WORKTREE_REPOSITORY" worktree remove --force \
             "$_RELEASE_STEPS__WORKTREE" >/dev/null 2>&1 || true
     fi
     for directory in "${scratch_directories[@]}"; do
-        GNUPGHOME="$directory" gpgconf --kill gpg-agent 2>/dev/null || true
-        rm -rf "$directory"
+        # Only the agent of a directory holding a secret keyring can hold a key, so a failed stop is warned of there.
+        if ! GNUPGHOME="$directory" gpgconf --kill gpg-agent >/dev/null 2>&1 && [[ -d "$directory/private-keys-v1.d" ]]; then
+            _release_steps__warn "the gpg-agent of $directory did not stop; stop it with \`GNUPGHOME=$directory gpgconf --kill gpg-agent\`"
+        fi
+        rm -rf "$directory" || _release_steps__warn "$directory was not removed; remove it with \`rm -rf $directory\`"
     done
 }
 trap _release_steps__remove_scratch_and_container EXIT
@@ -193,11 +204,13 @@ _release_steps__format_env_hint() {
 }
 
 # _release_steps__import_signing_key: import GPG_SIGNING_KEY into a fresh scratch keyring, export GNUPGHOME,
-# set `signing_primary`.
+# set `signing_primary`. GNUPGHOME names that keyring for the rest of the process, so a subcommand that calls this does
+# not make a signed git commit or tag after it, which would look for its key there. gpg's import diagnostics name key
+# IDs and user IDs, which are public, and stay on stderr for a key that does not import.
 _release_steps__import_signing_key() {
     _release_steps__create_scratch
     export GNUPGHOME="$scratch"
-    printf '%s\n' "$GPG_SIGNING_KEY" | gpg --batch --quiet --import 2>/dev/null \
+    printf '%s\n' "$GPG_SIGNING_KEY" | gpg --batch --quiet --import \
         || _release_steps__die "GPG_SIGNING_KEY did not import: it is not an ASCII-armored key block. Export the signing subkey with gpg --armor --export-secret-subkeys '<subkey-fpr>!'"
     gpg --batch --with-colons --list-secret-keys | grep -q '^sec:' \
         || _release_steps__die "GPG_SIGNING_KEY carries no secret key: it is a public key, or an export without the secret part"
@@ -219,16 +232,16 @@ _release_steps__resolve_tag_object() {
 # _release_steps__verify_tag_signature <repository-dir> <tag> <tag-object> <fingerprints> <key-url>: refuse
 # a tag object without a PGP signature, then import the signers' keys from <key-url> into a scratch keyring and require
 # `git verify-tag` to report a VALIDSIG primary on the space-separated <fingerprints>. Sets
-# _RELEASE_STEPS__TAG_PRIMARY.
+# _RELEASE_STEPS__TAG_PRIMARY. GNUPGHOME names the scratch keyring for the import and the check alone, so a signed
+# `git commit` later in the same run reaches the caller's own keyring and agent.
 _release_steps__verify_tag_signature() {
     local directory="$1" tag="$2" tag_object="$3" fingerprints="$4" key_url="$5" status primary
     git -C "$directory" cat-file -p "$tag_object" | grep -qx -- '-----BEGIN PGP SIGNATURE-----' \
         || _release_steps__die "$tag carries no PGP signature; a release tag is created with git tag -s"
     _release_steps__create_scratch
-    export GNUPGHOME="$scratch"
-    "${CURL[@]}" "$key_url" | gpg --batch --quiet --import \
+    "${CURL[@]}" "$key_url" | GNUPGHOME="$scratch" gpg --batch --quiet --import \
         || _release_steps__die "the tag signers' key did not import from $key_url"
-    status="$(git -C "$directory" verify-tag --raw "$tag_object" 2>&1)" \
+    status="$(GNUPGHOME="$scratch" git -C "$directory" verify-tag --raw "$tag_object" 2>&1)" \
         || _release_steps__die "$tag does not verify: $status"
     primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF; exit }')"
     [[ -n "$primary" && " $fingerprints " == *" $primary "* ]] \
@@ -383,12 +396,23 @@ _release_steps__ensure_skopeo() {
 
 # _release_steps__read_manifest_digest <reference>: set _RELEASE_STEPS__SERVED_DIGEST to the SHA-256
 # digest of the manifest the registry returns for <reference>, hashed from the raw bytes, which are the bytes a digest
-# names. On a failure it returns 1 with skopeo's message, on one line, in _RELEASE_STEPS__ANSWER.
+# names. On a failure it returns 1 with skopeo's or sha256sum's message, on one line, in _RELEASE_STEPS__ANSWER. It is
+# called as an `if` condition, where `set -e` is off, so each command's status is read here, and a hash that is not
+# 64 hex digits is a failure: a pin and the refresh's replacement take the digest this function sets.
 _release_steps__read_manifest_digest() {
-    local manifest="$_RELEASE_STEPS__TEMP_DIR/manifest" answer
+    local manifest="$_RELEASE_STEPS__TEMP_DIR/manifest" answer hash
     _RELEASE_STEPS__SERVED_DIGEST=""
     if answer="$(skopeo inspect --raw "docker://$1" 2>&1 >"$manifest")"; then
-        _RELEASE_STEPS__SERVED_DIGEST="sha256:$(sha256sum <"$manifest" | cut -d' ' -f1)"
+        if ! hash="$(sha256sum <"$manifest" 2>&1)"; then
+            _RELEASE_STEPS__ANSWER="sha256sum did not hash the manifest of $1 ($(_release_steps__format_one_line "$hash"))"
+            return 1
+        fi
+        hash="${hash%% *}"
+        if [[ ! "$hash" =~ ^[0-9a-f]{64}$ ]]; then
+            _RELEASE_STEPS__ANSWER="sha256sum answered \`$(_release_steps__format_one_line "$hash")\` for the manifest of $1, not a SHA-256 digest"
+            return 1
+        fi
+        _RELEASE_STEPS__SERVED_DIGEST="sha256:$hash"
         return 0
     fi
     answer="${answer//$'\n'/ }"
@@ -763,10 +787,12 @@ _release_steps__require_tools_checkout() {
 # _release_steps__require_caller_checkout <directory>: refuse unless <directory> is the root of a checkout
 # of a repository other than the tools that holds a .github/workflows/ directory.
 _release_steps__require_caller_checkout() {
-    local directory="$1" here
+    local directory="$1" here packaging
+    # The tools' own checkout is the one whose packaging/ holds this script, a path comparison with no read to fail.
+    packaging="$(realpath "$PACKAGING")" || _release_steps__die "the directory of this script, $PACKAGING, could not be resolved"
     here="$(realpath "$directory" 2>/dev/null)" || here=""
     [[ -n "$here" && "$(_release_steps__read_toplevel "$directory")" == "$here" \
-        && -d "$here/.github/workflows" && "$here" != "$(_release_steps__read_toplevel "$PACKAGING")" ]] \
+        && -d "$here/.github/workflows" && "$here/packaging" != "$packaging" ]] \
         || _release_steps__die "$directory is not a checkout of a caller with a \`.github/workflows/\`; run from the repository root"
 }
 
@@ -796,8 +822,10 @@ _release_steps__require_gh() {
 # _release_steps__require_synced_develop <directory>: refuse unless the checkout is clean, on develop, and
 # develop equals origin/develop after a fetch.
 _release_steps__require_synced_develop() {
-    local directory="$1" branch answer counts behind ahead
-    if [[ -n "$(git -C "$directory" status --porcelain)" ]]; then
+    local directory="$1" branch answer counts behind ahead changes
+    _release_steps__read_output changes git -C "$directory" status --porcelain \
+        || _release_steps__die "\`git status\` could not read the tree of $directory ($_RELEASE_STEPS__ANSWER); fix the checkout, then run again"
+    if [[ -n "$changes" ]]; then
         git -C "$directory" status --short >&2
         _release_steps__die "the tree has uncommitted changes (\`git status --short\` printed above); commit or stash them, then run again"
     fi
@@ -808,8 +836,11 @@ _release_steps__require_synced_develop() {
     # `--no-tags`: the fetch updates origin/develop alone and does not add a tag to the checkout.
     answer="$(git -C "$directory" fetch --quiet --no-tags origin +refs/heads/develop:refs/remotes/origin/develop 2>&1)" \
         || _release_steps__die "\`git fetch origin develop\` failed in $directory (${answer//$'\n'/ }); check the network and the remote, then run again"
-    counts="$(git -C "$directory" rev-list --left-right --count develop...origin/develop)"
-    ahead="${counts%%[[:space:]]*}" behind="${counts##*[[:space:]]}"
+    _release_steps__read_output counts git -C "$directory" rev-list --left-right --count develop...origin/develop \
+        || _release_steps__die "\`git rev-list\` could not compare develop with origin/develop in $directory ($_RELEASE_STEPS__ANSWER); run the same command again"
+    [[ "$counts" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]] \
+        || _release_steps__die "\`git rev-list --count\` answered \`$(_release_steps__format_one_line "$counts")\` in $directory, not two counts; run the same command again"
+    ahead="${BASH_REMATCH[1]}" behind="${BASH_REMATCH[2]}"
     if [[ "$behind" -gt 0 && "$ahead" -gt 0 ]]; then
         _release_steps__die "\`develop\` is $behind behind and $ahead ahead of \`origin/develop\` after a fetch; rebase the local commits on \`origin/develop\` first"
     elif [[ "$behind" -gt 0 ]]; then
@@ -818,6 +849,34 @@ _release_steps__require_synced_develop() {
         _release_steps__die "\`develop\` is $ahead ahead of \`origin/develop\` after a fetch; push or rebase the local commits first"
     fi
     _release_steps__ok "develop = origin/develop ($(git -C "$directory" rev-parse --short=7 develop))"
+}
+
+# _release_steps__read_output <variable> <command>...: run <command>, set <variable> to its stdout, and return its
+# status. stdout and stderr go to separate files, so a diagnostic printed beside a successful answer does not reach
+# <variable>. On a failure <variable> is empty and _RELEASE_STEPS__ANSWER holds the diagnostics and the output on one
+# line, for the caller's refusal. `set -e` does not stop at a failed producer of a process substitution or of
+# a command substitution inside `[[ ]]` or an argument, and a failed one can print part of its answer, so a caller
+# reads the status before it reads <variable>.
+_release_steps__read_output() {
+    local captured_variable="$1" captured_status=0 captured_output
+    shift
+    _release_steps__create_temp_dir
+    "$@" >"$_RELEASE_STEPS__TEMP_DIR/read-output" 2>"$_RELEASE_STEPS__TEMP_DIR/read-diagnostics" || captured_status=$?
+    # Callers run this as `read_output … || die`, where `set -e` is off, so the read-back's own status is read here.
+    # `cat`, not `$(<file)`: bash's form returns 0 with an empty answer when the read fails after the open succeeds.
+    if ! captured_output="$(cat -- "$_RELEASE_STEPS__TEMP_DIR/read-output")"; then
+        _RELEASE_STEPS__ANSWER="the output of \`$1\` could not be read back"
+        printf -v "$captured_variable" '%s' ""
+        return 1
+    fi
+    if [[ "$captured_status" -ne 0 ]]; then
+        _RELEASE_STEPS__ANSWER="$(_release_steps__format_one_line "$(<"$_RELEASE_STEPS__TEMP_DIR/read-diagnostics")" \
+            "$captured_output")"
+        _RELEASE_STEPS__ANSWER="${_RELEASE_STEPS__ANSWER:-exit status $captured_status, no output}"
+        printf -v "$captured_variable" '%s' ""
+        return "$captured_status"
+    fi
+    printf -v "$captured_variable" '%s' "$captured_output"
 }
 
 # _release_steps__read_github <what> <ref> <definitive-pattern> <empty-ok> <command>...: run a GitHub lookup,
@@ -983,7 +1042,7 @@ _release_steps__format_joined() {
 # line unchanged, so a failed or partial awk run leaves the file as it was. The text reaches awk through the
 # environment, which does not interpret a backslash.
 _release_steps__replace_line() {
-    local file="$1" number="$2" text="$3" rewritten index before=() after=()
+    local file="$1" number="$2" text="$3" rewritten index last before=() after=()
     [[ "$number" =~ ^[1-9][0-9]*$ ]] || _release_steps__die "$file holds no single line to rewrite (\`$number\`); the file is unchanged"
     _release_steps__create_temp_dir
     rewritten="$_RELEASE_STEPS__TEMP_DIR/rewritten"
@@ -991,7 +1050,9 @@ _release_steps__replace_line() {
         'NR == number { print ENVIRON["_RELEASE_STEPS__LINE"]; next } { print }' "$file" >"$rewritten" \
         || _release_steps__die "awk did not rewrite $file:$number; the file is unchanged"
     # awk ends every line with a newline; a file whose last line has none keeps that, so the diff holds one line.
-    if [[ -n "$(tail -c 1 "$file")" ]]; then
+    _release_steps__read_output last tail -c 1 "$file" \
+        || _release_steps__die "the last byte of $file could not be read ($_RELEASE_STEPS__ANSWER); the file is unchanged"
+    if [[ -n "$last" ]]; then
         truncate -s -1 "$rewritten" || _release_steps__die "the rewrite of $file could not be trimmed; the file is unchanged"
     fi
     mapfile -t before <"$file"
@@ -1008,14 +1069,19 @@ _release_steps__replace_line() {
     cat "$rewritten" >"$file" || _release_steps__die "$file could not be written"
 }
 
-# _release_steps__read_branch_date <directory> <branch> <variable>: print the `# resolved <date>` of the <variable>
-# pin line at the tip of a local <branch>, so a re-run regenerates the change the branch committed on an earlier day;
-# returns 1 where the branch or the comment is absent.
+# _release_steps__read_branch_date <directory> <branch> <variable>: set _RELEASE_STEPS__BRANCH_DATE to the
+# `# resolved <date>` of the <variable> pin line at the tip of a local <branch>, so a re-run regenerates the change
+# the branch committed on an earlier day; returns 1 where the branch or the comment is absent, and refuses where
+# the branch exists and its script cannot be read, since today's date would then regenerate another change.
 _release_steps__read_branch_date() {
-    local line
-    line="$(git -C "$1" show "refs/heads/$2:packaging/release-steps.sh" 2>/dev/null | grep -E "^$3=")" || return 1
+    local script line
+    _RELEASE_STEPS__BRANCH_DATE=""
+    git -C "$1" rev-parse --verify --quiet "refs/heads/$2" >/dev/null || return 1
+    _release_steps__read_output script git -C "$1" show "refs/heads/$2:packaging/release-steps.sh" \
+        || _release_steps__die "branch $2 exists and its packaging/release-steps.sh could not be read in $1 ($_RELEASE_STEPS__ANSWER); nothing was written: run the same command again"
+    line="$(grep -E "^$3=" <<<"$script")" || return 1
     [[ "$line" =~ \#\ resolved\ ([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] || return 1
-    printf '%s' "${BASH_REMATCH[1]}"
+    _RELEASE_STEPS__BRANCH_DATE="${BASH_REMATCH[1]}"
 }
 
 # _release_steps__read_newest_version <changelog-text>: print the version of the newest `## [X.Y.Z]` heading.
@@ -1077,11 +1143,12 @@ _release_steps__deliver_change() {
     local repository local_tip="" remote_tip answer develop message body_file attempt wait url status=0
     _release_steps__read_github_repository "$directory"
     repository="$_RELEASE_STEPS__GITHUB_REPOSITORY"
-    remote_tip="$(git -C "$directory" ls-remote origin "refs/heads/$branch" 2>&1)" \
-        || _release_steps__die "the origin of $directory could not be read (${remote_tip//$'\n'/ }); check the network, then run again"
+    _release_steps__read_output remote_tip git -C "$directory" ls-remote origin "refs/heads/$branch" \
+        || _release_steps__die "the origin of $directory could not be read ($_RELEASE_STEPS__ANSWER); check the network, then run again"
     remote_tip="${remote_tip%%[[:space:]]*}"
     local_tip="$(git -C "$directory" rev-parse --verify --quiet "refs/heads/$branch")" || local_tip=""
-    develop="$(git -C "$directory" rev-parse develop)"
+    develop="$(git -C "$directory" rev-parse develop)" \
+        || _release_steps__die "develop could not be read in $directory; no commit was made and nothing was pushed: run the same command again"
     if [[ -n "$local_tip" ]]; then
         if [[ "$(git -C "$directory" rev-parse --verify --quiet "$local_tip^")" != "$develop" ]] \
                 || ! git -C "$worktree" diff --quiet "$local_tip" --; then
@@ -1099,12 +1166,18 @@ _release_steps__deliver_change() {
         return 0
     fi
     message="$_RELEASE_STEPS__TEMP_DIR/message"
-    printf '%s\n\n%s\n' "$title" "$body" >"$message"
+    # The body file is written before the commit, so a failure to write it refuses before a commit or a branch exists.
+    if ! body_file="$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir)/release-steps/${branch//\//-}.md" \
+            || ! mkdir -p "${body_file%/*}" || ! printf '%s\n\n%s\n' "$title" "$body" >"$message" \
+            || ! printf '%s\n' "$body" >"$body_file"; then
+        _release_steps__die "the commit message or the pull request body for $branch could not be written; no commit was made and nothing was pushed: run the same command again"
+    fi
     if [[ -z "$local_tip" ]]; then
         _release_steps__step "committing on $branch"
         answer="$(git -C "$worktree" commit --quiet -s -a -F "$message" 2>&1)" \
             || _release_steps__die "the commit on $branch failed (${answer//$'\n'/ }); no branch was created and nothing was pushed"
-        local_tip="$(git -C "$worktree" rev-parse HEAD)"
+        local_tip="$(git -C "$worktree" rev-parse HEAD)" \
+            || _release_steps__die "the commit on $branch was made in the scratch worktree and could not be read back; no branch was created and nothing was pushed: run the same command again"
         answer="$(git -C "$directory" update-ref "refs/heads/$branch" "$local_tip" "" 2>&1)" \
             || _release_steps__die "branch $branch could not be created at ${local_tip:0:7} (${answer//$'\n'/ }); nothing was pushed: run the same command again"
         _release_steps__ok "commit ${local_tip:0:7} (signed off by $(git -C "$directory" config user.name))"
@@ -1115,14 +1188,12 @@ _release_steps__deliver_change() {
         _release_steps__step "pushing $branch"
         answer="$(git -C "$directory" push --quiet origin "refs/heads/$branch:refs/heads/$branch" 2>&1)" \
             || _release_steps__die "the push of $branch was refused (${answer//$'\n'/ }); the branch is local and nothing was opened; fix the cause and run again"
-        remote_tip="$(git -C "$directory" ls-remote origin "refs/heads/$branch")"
+        _release_steps__read_output remote_tip git -C "$directory" ls-remote origin "refs/heads/$branch" \
+            || _release_steps__die "the push of $branch ran and origin could not be read after it ($_RELEASE_STEPS__ANSWER); the pull request is not open: run the same command again"
         [[ "${remote_tip%%[[:space:]]*}" == "$local_tip" ]] \
             || _release_steps__die "after the push, origin/$branch is ${remote_tip:-absent}, not ${local_tip:0:7}; run the same command again"
         _release_steps__ok "origin/$branch = ${local_tip:0:7}"
     fi
-    body_file="$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir)/release-steps/${branch//\//-}.md"
-    mkdir -p "$(dirname "$body_file")"
-    printf '%s\n' "$body" >"$body_file"
     _release_steps__read_github "the pull request lookup" "$branch" "" true \
         gh pr list --repo "$repository" --head "$branch" --base develop --state open --json url \
         --jq '.[0].url // empty' || status=$?
@@ -1136,7 +1207,8 @@ _release_steps__deliver_change() {
     for ((attempt = 1; attempt <= _RELEASE_STEPS__RETRY_ATTEMPTS; attempt++)); do
         if answer="$(gh pr create --repo "$repository" --base develop --head "$branch" --title "$title" \
                 --body-file "$body_file" 2>&1)"; then
-            url="$(grep -oE 'https://[^[:space:]]+' <<<"$answer" | tail -n 1)"
+            # The pull request exists once gh succeeds, so an answer without a URL ends in the `ok:` line, not a refusal.
+            url="$(grep -oE 'https://[^[:space:]]+' <<<"$answer" | tail -n 1)" || url=""
             _RELEASE_STEPS__PULL_REQUEST_URL="$url"
             _release_steps__ok "${url:-the pull request is open}"
             return 0
@@ -1154,7 +1226,7 @@ _release_steps__deliver_change() {
 # _release_steps__require_caller_ready <caller>: repin-tools' preconditions in a caller's checkout, run by
 # refresh-images before it writes, so a caller that is not ready refuses the refresh while the tools are unchanged.
 _release_steps__require_caller_ready() {
-    local caller="$1" branches
+    local caller="$1" branches name
     _RELEASE_STEPS__DIE_PREFIX="caller $caller: "
     _RELEASE_STEPS__DIE_SUFFIX="; fix it before the refresh, nothing in ai-tools-assets-tools was changed"
     _release_steps__require_caller_checkout "$caller"
@@ -1163,11 +1235,13 @@ _release_steps__require_caller_ready() {
     [[ "${#_RELEASE_STEPS__CALLER_REFS[@]}" -gt 0 ]] \
         || _release_steps__die "no \`uses: $_RELEASE_STEPS__TOOLS_REPOSITORY/.github/workflows/…\` line under .github/workflows/; nothing to re-pin"
     _release_steps__require_equal_caller_pins
-    branches="$(git -C "$caller" ls-remote origin "refs/heads/ci/*" 2>&1)" \
-        || _release_steps__die "the origin of $caller could not be read (${branches//$'\n'/ })"
-    branches="$(grep -oE "refs/heads/ci/$_RELEASE_STEPS__ID-tools-[^[:space:]]*" <<<"$branches" | head -n 1)" || true
-    [[ -z "$branches" ]] \
-        || _release_steps__die "branch ${branches#refs/heads/} already exists on origin; pick the next letter for \`--id\`"
+    _release_steps__read_output branches git -C "$caller" ls-remote origin "refs/heads/ci/*" \
+        || _release_steps__die "the origin of $caller could not be read ($_RELEASE_STEPS__ANSWER)"
+    while IFS=$'\t' read -r _ name; do
+        if [[ "$name" == "refs/heads/ci/$_RELEASE_STEPS__ID-tools-"* ]]; then
+            _release_steps__die "branch ${name#refs/heads/} already exists on origin; pick the next letter for \`--id\`"
+        fi
+    done <<<"$branches"
     _RELEASE_STEPS__DIE_PREFIX=""
     _RELEASE_STEPS__DIE_SUFFIX=""
     _release_steps__ok "caller $caller is ready: its \`uses:\` lines pin @${_RELEASE_STEPS__CALLER_REFS[0]}"
@@ -1219,7 +1293,11 @@ _release_steps__refresh_images() {
     branch="build/$_RELEASE_STEPS__ID-$(_release_steps__format_joined - "${dists[@]}")-digest"
     title="build(packaging): pin the $images $noun $serves serves"
     # A re-run keeps the date the branch committed, so the regenerated change equals the branch's on a later day.
-    today="$(_release_steps__read_branch_date "$PWD" "$branch" "${dists[0]^^}_IMAGE")" || today="$(date -u +%Y-%m-%d)"
+    if _release_steps__read_branch_date "$PWD" "$branch" "${dists[0]^^}_IMAGE"; then
+        today="$_RELEASE_STEPS__BRANCH_DATE"
+    else
+        today="$(date -u +%Y-%m-%d)"
+    fi
     _release_steps__open_worktree "$PWD"
     _release_steps__step "writing packaging/release-steps.sh, CHANGELOG.md in the scratch worktree"
     file="$_RELEASE_STEPS__WORKTREE/packaging/release-steps.sh"
@@ -1342,19 +1420,24 @@ _release_steps__format_headline() {
 # the checkout and fetched only where the checkout lacks it; a tag or a branch name moves, so it is read from origin now
 # and fetched into FETCH_HEAD alone, which leaves the checkout's own tags as they are.
 _release_steps__resolve_caller_pin() {
-    local tools="$1" ref="$2" commit="" remote
+    local tools="$1" ref="$2" commit="" remote object name names=()
     if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
         commit="$(git -C "$tools" rev-parse --verify --quiet "$ref^{commit}")" || commit=""
         if [[ -z "$commit" ]] && git -C "$tools" fetch --quiet --no-tags origin "$ref" 2>/dev/null; then
             commit="$(git -C "$tools" rev-parse --verify --quiet "FETCH_HEAD^{commit}")" || commit=""
         fi
     else
-        remote="$(git -C "$tools" ls-remote origin "refs/tags/$ref" "refs/heads/$ref" 2>&1)" \
-            || _release_steps__die "the origin of ai-tools-assets-tools could not be read (${remote//$'\n'/ }); check the network, then run again"
+        _release_steps__read_output remote git -C "$tools" ls-remote origin "refs/tags/$ref" "refs/heads/$ref" \
+            || _release_steps__die "the origin of ai-tools-assets-tools could not be read ($_RELEASE_STEPS__ANSWER); check the network, then run again"
+        while IFS=$'\t' read -r object name; do
+            if [[ -n "$object" && ("$name" == "refs/tags/$ref" || "$name" == "refs/heads/$ref") ]]; then
+                names+=("$name")
+            fi
+        done <<<"$remote"
         # A name both a tag and a branch carry is ambiguous (GitHub picks one), so it is refused rather than resolved.
-        [[ "$(awk -v tag="refs/tags/$ref" -v head="refs/heads/$ref" '$2 == tag || $2 == head' <<<"$remote" | wc -l)" -le 1 ]] \
+        [[ "${#names[@]}" -le 1 ]] \
             || _release_steps__die "the \`uses:\` lines pin @$ref, which names both a tag and a branch on ai-tools-assets-tools origin; pin a tag or a full commit SHA, then run again"
-        remote="$(awk 'NR == 1 { print $2 }' <<<"$remote")"
+        remote="${names[0]:-}"
         if [[ -n "$remote" ]] && git -C "$tools" fetch --quiet --no-tags origin "$remote" 2>/dev/null; then
             commit="$(git -C "$tools" rev-parse --verify --quiet "FETCH_HEAD^{commit}")" || commit=""
         fi
@@ -1372,11 +1455,19 @@ _release_steps__resolve_caller_pin() {
 # and the caller's comment and body name, so a pin line without the date is refused.
 _release_steps__require_pin_change() {
     local tools="$1" base="$2" sha="$3" framing="$4" rule="$5" file line old_line new_line variable dist changed=()
+    local names script hunks unread="nothing was written: run the same command again"
+    _release_steps__read_output names git -C "$tools" diff --name-only "$base" "$sha" \
+        || _release_steps__die "the files ${sha:0:7} changes against $base could not be listed in $tools (\`git diff\`: $_RELEASE_STEPS__ANSWER); $unread"
     while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
         [[ "$file" == packaging/release-steps.sh || "$file" == CHANGELOG.md ]] \
             || _release_steps__die "$framing $file, which is not an image pin or \`CHANGELOG.md\`; $rule"
-    done < <(git -C "$tools" diff --name-only "$base" "$sha")
-    _release_steps__parse_image_pins "$(git -C "$tools" show "$sha:packaging/release-steps.sh")"
+    done <<<"$names"
+    _release_steps__read_output script git -C "$tools" show "$sha:packaging/release-steps.sh" \
+        || _release_steps__die "packaging/release-steps.sh at ${sha:0:7} could not be read in $tools (\`git show\`: $_RELEASE_STEPS__ANSWER); $unread"
+    _release_steps__parse_image_pins "$script"
+    _release_steps__read_output hunks git -C "$tools" diff --unified=0 --no-color "$base" "$sha" -- packaging/release-steps.sh \
+        || _release_steps__die "the lines ${sha:0:7} changes in packaging/release-steps.sh against $base could not be read in $tools (\`git diff\`: $_RELEASE_STEPS__ANSWER); $unread"
     _RELEASE_STEPS__REFRESH_DATES=()
     while IFS= read -r line; do
         if [[ "$line" =~ ^@@\ -([0-9]+)(,[0-9]+)?\ \+([0-9]+) ]]; then
@@ -1401,11 +1492,11 @@ _release_steps__require_pin_change() {
         else
             old_line=$((old_line + 1))
         fi
-    done < <(git -C "$tools" diff --unified=0 --no-color "$base" "$sha" -- packaging/release-steps.sh)
+    done <<<"$hunks"
     [[ "${#changed[@]}" -gt 0 ]] || _release_steps__die "$framing no image pin; $rule"
     _RELEASE_STEPS__REFRESH_DISTS=()
     for dist in "${_RELEASE_STEPS__PIN_DISTS[@]}"; do
-        # An `if`, not `[[ ]] && …`: a false test as the function's last command would be its status under set -e.
+        # An `if`, not `[[ ]] && …`: a false test as the function's last command would be its status under `set -e`.
         if [[ " ${changed[*]} " == *" $dist "* ]]; then
             _RELEASE_STEPS__REFRESH_DISTS+=("$dist")
         fi
@@ -1424,8 +1515,8 @@ _release_steps__verify_release() {
     _RELEASE_STEPS__RELEASE_VERSION="${BASH_REMATCH[1]}"
     _release_steps__step "verifying tag $tag"
     # The tag is read from origin into FETCH_HEAD alone, so the checkout's own tag of that name is left as it is.
-    answer="$(git -C "$tools" ls-remote origin "refs/tags/$tag" 2>&1)" \
-        || _release_steps__die "the origin of ai-tools-assets-tools could not be read (${answer//$'\n'/ }); check the network, then run again"
+    _release_steps__read_output answer git -C "$tools" ls-remote origin "refs/tags/$tag" \
+        || _release_steps__die "the origin of ai-tools-assets-tools could not be read ($_RELEASE_STEPS__ANSWER); check the network, then run again"
     [[ -n "$answer" ]] || _release_steps__die "tag $tag is not on ai-tools-assets-tools origin; push the tag, or check the spelling"
     answer="$(git -C "$tools" fetch --quiet --no-tags origin "refs/tags/$tag" 2>&1)" \
         || _release_steps__die "tag $tag did not fetch from ai-tools-assets-tools origin (${answer//$'\n'/ }); check the network, then run again"
@@ -1433,9 +1524,11 @@ _release_steps__verify_release() {
     _release_steps__read_tag_signers "$tools"
     _release_steps__verify_tag_signature "$tools" "$tag" "$_RELEASE_STEPS__TAG_OBJECT" "$_RELEASE_STEPS__TAG_SIGNERS" \
         "$_RELEASE_STEPS__TAG_SIGNER_KEY_URL"
-    sha="$(git -C "$tools" rev-parse "$_RELEASE_STEPS__TAG_OBJECT^{commit}")"
+    sha="$(git -C "$tools" rev-parse "$_RELEASE_STEPS__TAG_OBJECT^{commit}")" \
+        || _release_steps__die "the commit of $tag could not be read in $tools; nothing was written: run the same command again"
     _RELEASE_STEPS__RELEASE_COMMIT="$sha"
-    changelog="$(git -C "$tools" show "$sha:CHANGELOG.md")"
+    changelog="$(git -C "$tools" show "$sha:CHANGELOG.md")" \
+        || _release_steps__die "\`CHANGELOG.md\` at $tag could not be read in $tools; nothing was written: run the same command again"
     newest="$(_release_steps__read_newest_version "$changelog")"
     [[ "$newest" == "$_RELEASE_STEPS__RELEASE_VERSION" ]] \
         || _release_steps__die "the tools' \`CHANGELOG.md\` at $tag opens its newest release with \`## [$newest]\`, not \`## [$_RELEASE_STEPS__RELEASE_VERSION]\`; the tag and the changelog disagree"
@@ -1469,9 +1562,10 @@ _release_steps__verify_release() {
 # the tools' tree.
 _release_steps__repin_tools() {
     local tools caller="$PWD" target sha mode index dist names=() quoted=() noun images serves registries=()
-    local reference comment previous workflows=() workflow_list verb branch title body file files=() count
+    local reference comment previous workflows=() workflow_list verb branch title body file files=() count script
     local pull_request status=0 date answer rule pinned old_comment pairs=() unreadable="" resolves=() changes=()
-    local -A seen=()
+    local -A seen=() dates=()
+    local parents parent_list=()
     _release_steps__parse_change_arguments repin-tools "$@"
     target="$_RELEASE_STEPS__TARGET"
     _release_steps__require_caller_checkout "$caller"
@@ -1518,8 +1612,10 @@ _release_steps__repin_tools() {
         # The commit is a refresh against its parent, and the move from the caller's pin to it brings a refresh alone:
         # a release tag and a release run attest to every other change, and a develop pin carries neither.
         rule="a develop pin is for a digest refresh alone, and any other change reaches a caller through a release"
-        [[ "$(git -C "$tools" rev-list --parents -n 1 "$sha" | wc -w)" -eq 2 ]] \
-            || _release_steps__die "${sha:0:7} is not a commit with one parent; $rule"
+        _release_steps__read_output parents git -C "$tools" rev-list --parents -n 1 "$sha" \
+            || _release_steps__die "the parents of ${sha:0:7} could not be read in $tools ($_RELEASE_STEPS__ANSWER); nothing was written: run the same command again"
+        read -ra parent_list <<<"$parents"
+        [[ "${#parent_list[@]}" -eq 2 ]] || _release_steps__die "${sha:0:7} is not a commit with one parent; $rule"
         _release_steps__require_pin_change "$tools" "$sha^" "$sha" "${sha:0:7} changes" "$rule"
         _release_steps__resolve_caller_pin "$tools" "${_RELEASE_STEPS__CALLER_REFS[0]}"
         pinned="$_RELEASE_STEPS__CALLER_PIN_COMMIT"
@@ -1550,6 +1646,7 @@ _release_steps__repin_tools() {
             [[ " ${registries[*]} " == *" ${reference%%/*} "* ]] || registries+=("${reference%%/*}")
             # The comment names the newest resolution date; the dates are ISO, so the greatest string is the newest.
             [[ "${_RELEASE_STEPS__REFRESH_DATES[$dist]}" < "$date" ]] || date="${_RELEASE_STEPS__REFRESH_DATES[$dist]}"
+            dates[${_RELEASE_STEPS__REFRESH_DATES[$dist]}]=1
         done
         noun=image images="$(_release_steps__format_list "${names[@]}")"
         [[ "${#names[@]}" -eq 1 ]] || noun=images
@@ -1560,7 +1657,9 @@ _release_steps__repin_tools() {
         _release_steps__ok "${sha:0:7} is on origin/develop and is ai-tools-assets-tools#$pull_request; from the pinned ${pinned:0:7} it changes image pins ($(_release_steps__format_joined ", " "${_RELEASE_STEPS__REFRESH_DISTS[@]}")) and CHANGELOG.md alone"
     fi
 
-    _release_steps__parse_image_pins "$(git -C "$tools" show "$sha:packaging/release-steps.sh")"
+    _release_steps__read_output script git -C "$tools" show "$sha:packaging/release-steps.sh" \
+        || _release_steps__die "packaging/release-steps.sh at ${sha:0:7} could not be read in $tools (\`git show\`: $_RELEASE_STEPS__ANSWER); nothing was written: run the same command again"
+    _release_steps__parse_image_pins "$script"
     _release_steps__step "checking ${#_RELEASE_STEPS__PIN_DISTS[@]} images at ${sha:0:7}"
     _release_steps__check_pins
     [[ "$_RELEASE_STEPS__FAILED_COUNT" -eq 0 ]] \
@@ -1628,7 +1727,7 @@ _release_steps__repin_tools() {
         if [[ "$noun" == image ]]; then
             body="whose release steps pin a $images image digest $serves no longer serves"
             resolves=("which pins the digest ${quoted[0]} resolves to on $date")
-        elif [[ "$(printf '%s\n' "${_RELEASE_STEPS__REFRESH_DATES[@]}" | sort -u | wc -l)" -eq 1 ]]; then
+        elif [[ "${#dates[@]}" -eq 1 ]]; then
             body="whose release steps pin $images image digests $serves no longer serves"
             resolves=("which pins the digests $(_release_steps__format_list "${quoted[@]}") resolve to on $date")
         else
