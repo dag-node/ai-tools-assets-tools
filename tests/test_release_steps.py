@@ -1880,6 +1880,10 @@ class WorkflowSettings(unittest.TestCase):
 
     steps = WorkflowOrder.steps
 
+    def test_the_validate_job_is_bounded(self):
+        # The head ends at the validate job's `steps:`, ahead of the tests job and its own bound.
+        self.assertRegex(self.steps("validate.yml")[0], r"\n    timeout-minutes: \d+\n")
+
     def test_every_checkout_leaves_the_token_out_of_git_config(self):
         for workflow in self.WORKFLOWS:
             checkouts = [step for step in self.steps(workflow)[1] if "actions/checkout@" in step]

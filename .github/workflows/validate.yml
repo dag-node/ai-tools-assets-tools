@@ -72,6 +72,11 @@ jobs:
   validate:
     name: validate
     runs-on: ubuntu-26.04
+    # Measured 2026-10-13: this job took 20-25 s in this repository on ubuntu-26.04 and 12-19 s in ai-tools-assets
+    # on ubuntu-24.04. Twice that would leave no room for the registry queries, the pip install and the apt-get
+    # installs that run where a runner image stops shipping skopeo or shellcheck, so the bound is the tests job's.
+    # A caller whose checks outgrow it raises it here.
+    timeout-minutes: 5
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
       # This repository's own run accepts its AGPL formatters and RPM signer; a caller passes its own pairs.
