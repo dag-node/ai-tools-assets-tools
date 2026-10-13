@@ -92,8 +92,8 @@
 # the rpm database on a tmpfs, since the step's environment on the runner holds the secrets; it mounts a directory
 # holding the public key and the signed RPMs alone, which root reads without the capability that bypasses a directory's
 # mode. The containers run through `sudo podman` with runc as the OCI runtime, which the GitHub runner needs: its
-# default crun rejects the generated OCI spec. el-repos.sh points the EL9 container's repos at one ordered host list
-# before its `dnf install`.
+# default crun rejects the generated OCI spec. ensure_podman installs runc where the runner image lacks it.
+# el-repos.sh points the EL9 container's repos at one ordered host list before its `dnf install`.
 #
 # Each container's shared memory is sized to its use. The signing container's /dev/shm, which holds the keyring,
 # the passphrase file and the rpm macros sign-rpms.sh writes, is 16 MiB, and sign-rpms.sh prints the size its scratch
@@ -578,9 +578,17 @@ _release_steps__check_images() {
     echo "release-steps: ok: every image resolves"
 }
 
+# podman and runc from PATH, or installed with apt-get where the runner image lacks them; ubuntu-26.04 ships podman
+# without runc.
 _release_steps__ensure_podman() {
-    command -v podman >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q podman; } \
-        || _release_steps__die "podman is not installed and did not install"
+    local command missing=()
+    for command in podman runc; do
+        command -v "$command" >/dev/null || missing+=("$command")
+    done
+    if [[ "${#missing[@]}" -gt 0 ]]; then
+        { sudo apt-get update -q && sudo apt-get install -y -q "${missing[@]}"; } \
+            || _release_steps__die "${missing[*]} not installed and did not install"
+    fi
     sudo mkdir -p /etc/containers/containers.conf.d
     printf '[engine]\nruntime = "runc"\n' | sudo tee /etc/containers/containers.conf.d/10-runc.conf >/dev/null
     sudo podman info --format 'podman runtime: {{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Version}}'
