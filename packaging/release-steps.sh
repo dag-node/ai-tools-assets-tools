@@ -796,8 +796,10 @@ _release_steps__require_gh() {
 # _release_steps__require_synced_develop <directory>: refuse unless the checkout is clean, on develop, and
 # develop equals origin/develop after a fetch.
 _release_steps__require_synced_develop() {
-    local directory="$1" branch answer counts behind ahead
-    if [[ -n "$(git -C "$directory" status --porcelain)" ]]; then
+    local directory="$1" branch answer counts behind ahead changes
+    _release_steps__read_output changes git -C "$directory" status --porcelain \
+        || _release_steps__die "\`git status\` could not read the tree of $directory ($_RELEASE_STEPS__ANSWER); fix the checkout, then run again"
+    if [[ -n "$changes" ]]; then
         git -C "$directory" status --short >&2
         _release_steps__die "the tree has uncommitted changes (\`git status --short\` printed above); commit or stash them, then run again"
     fi
@@ -818,6 +820,28 @@ _release_steps__require_synced_develop() {
         _release_steps__die "\`develop\` is $ahead ahead of \`origin/develop\` after a fetch; push or rebase the local commits first"
     fi
     _release_steps__ok "develop = origin/develop ($(git -C "$directory" rev-parse --short=7 develop))"
+}
+
+# _release_steps__read_output <variable> <command>...: run <command>, set <variable> to its stdout, and return its
+# status. stdout and stderr go to separate files, so a diagnostic printed beside a successful answer does not reach
+# <variable>. On a failure <variable> is empty and _RELEASE_STEPS__ANSWER holds the diagnostics and the output on one
+# line, for the caller's refusal. `set -e` does not stop at a failed producer of a process substitution or of
+# a command substitution inside `[[ ]]` or an argument, and a failed one can print part of its answer, so a caller
+# reads the status before it reads <variable>.
+_release_steps__read_output() {
+    local captured_variable="$1" captured_status=0 captured_output
+    shift
+    _release_steps__create_temp_dir
+    "$@" >"$_RELEASE_STEPS__TEMP_DIR/read-output" 2>"$_RELEASE_STEPS__TEMP_DIR/read-diagnostics" || captured_status=$?
+    captured_output="$(<"$_RELEASE_STEPS__TEMP_DIR/read-output")"
+    if [[ "$captured_status" -ne 0 ]]; then
+        _RELEASE_STEPS__ANSWER="$(_release_steps__format_one_line "$(<"$_RELEASE_STEPS__TEMP_DIR/read-diagnostics")" \
+            "$captured_output")"
+        _RELEASE_STEPS__ANSWER="${_RELEASE_STEPS__ANSWER:-exit status $captured_status, no output}"
+        printf -v "$captured_variable" '%s' ""
+        return "$captured_status"
+    fi
+    printf -v "$captured_variable" '%s' "$captured_output"
 }
 
 # _release_steps__read_github <what> <ref> <definitive-pattern> <empty-ok> <command>...: run a GitHub lookup,
@@ -1342,19 +1366,24 @@ _release_steps__format_headline() {
 # the checkout and fetched only where the checkout lacks it; a tag or a branch name moves, so it is read from origin now
 # and fetched into FETCH_HEAD alone, which leaves the checkout's own tags as they are.
 _release_steps__resolve_caller_pin() {
-    local tools="$1" ref="$2" commit="" remote
+    local tools="$1" ref="$2" commit="" remote object name names=()
     if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
         commit="$(git -C "$tools" rev-parse --verify --quiet "$ref^{commit}")" || commit=""
         if [[ -z "$commit" ]] && git -C "$tools" fetch --quiet --no-tags origin "$ref" 2>/dev/null; then
             commit="$(git -C "$tools" rev-parse --verify --quiet "FETCH_HEAD^{commit}")" || commit=""
         fi
     else
-        remote="$(git -C "$tools" ls-remote origin "refs/tags/$ref" "refs/heads/$ref" 2>&1)" \
-            || _release_steps__die "the origin of ai-tools-assets-tools could not be read (${remote//$'\n'/ }); check the network, then run again"
+        _release_steps__read_output remote git -C "$tools" ls-remote origin "refs/tags/$ref" "refs/heads/$ref" \
+            || _release_steps__die "the origin of ai-tools-assets-tools could not be read ($_RELEASE_STEPS__ANSWER); check the network, then run again"
+        while IFS=$'\t' read -r object name; do
+            if [[ -n "$object" && ("$name" == "refs/tags/$ref" || "$name" == "refs/heads/$ref") ]]; then
+                names+=("$name")
+            fi
+        done <<<"$remote"
         # A name both a tag and a branch carry is ambiguous (GitHub picks one), so it is refused rather than resolved.
-        [[ "$(awk -v tag="refs/tags/$ref" -v head="refs/heads/$ref" '$2 == tag || $2 == head' <<<"$remote" | wc -l)" -le 1 ]] \
+        [[ "${#names[@]}" -le 1 ]] \
             || _release_steps__die "the \`uses:\` lines pin @$ref, which names both a tag and a branch on ai-tools-assets-tools origin; pin a tag or a full commit SHA, then run again"
-        remote="$(awk 'NR == 1 { print $2 }' <<<"$remote")"
+        remote="${names[0]:-}"
         if [[ -n "$remote" ]] && git -C "$tools" fetch --quiet --no-tags origin "$remote" 2>/dev/null; then
             commit="$(git -C "$tools" rev-parse --verify --quiet "FETCH_HEAD^{commit}")" || commit=""
         fi
@@ -1372,11 +1401,19 @@ _release_steps__resolve_caller_pin() {
 # and the caller's comment and body name, so a pin line without the date is refused.
 _release_steps__require_pin_change() {
     local tools="$1" base="$2" sha="$3" framing="$4" rule="$5" file line old_line new_line variable dist changed=()
+    local names script hunks unread="nothing was written: run the same command again"
+    _release_steps__read_output names git -C "$tools" diff --name-only "$base" "$sha" \
+        || _release_steps__die "the files ${sha:0:7} changes against $base could not be listed in $tools (\`git diff\`: $_RELEASE_STEPS__ANSWER); $unread"
     while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
         [[ "$file" == packaging/release-steps.sh || "$file" == CHANGELOG.md ]] \
             || _release_steps__die "$framing $file, which is not an image pin or \`CHANGELOG.md\`; $rule"
-    done < <(git -C "$tools" diff --name-only "$base" "$sha")
-    _release_steps__parse_image_pins "$(git -C "$tools" show "$sha:packaging/release-steps.sh")"
+    done <<<"$names"
+    _release_steps__read_output script git -C "$tools" show "$sha:packaging/release-steps.sh" \
+        || _release_steps__die "packaging/release-steps.sh at ${sha:0:7} could not be read in $tools (\`git show\`: $_RELEASE_STEPS__ANSWER); $unread"
+    _release_steps__parse_image_pins "$script"
+    _release_steps__read_output hunks git -C "$tools" diff --unified=0 --no-color "$base" "$sha" -- packaging/release-steps.sh \
+        || _release_steps__die "the lines ${sha:0:7} changes in packaging/release-steps.sh against $base could not be read in $tools (\`git diff\`: $_RELEASE_STEPS__ANSWER); $unread"
     _RELEASE_STEPS__REFRESH_DATES=()
     while IFS= read -r line; do
         if [[ "$line" =~ ^@@\ -([0-9]+)(,[0-9]+)?\ \+([0-9]+) ]]; then
@@ -1401,7 +1438,7 @@ _release_steps__require_pin_change() {
         else
             old_line=$((old_line + 1))
         fi
-    done < <(git -C "$tools" diff --unified=0 --no-color "$base" "$sha" -- packaging/release-steps.sh)
+    done <<<"$hunks"
     [[ "${#changed[@]}" -gt 0 ]] || _release_steps__die "$framing no image pin; $rule"
     _RELEASE_STEPS__REFRESH_DISTS=()
     for dist in "${_RELEASE_STEPS__PIN_DISTS[@]}"; do
@@ -1469,7 +1506,7 @@ _release_steps__verify_release() {
 # the tools' tree.
 _release_steps__repin_tools() {
     local tools caller="$PWD" target sha mode index dist names=() quoted=() noun images serves registries=()
-    local reference comment previous workflows=() workflow_list verb branch title body file files=() count
+    local reference comment previous workflows=() workflow_list verb branch title body file files=() count script
     local pull_request status=0 date answer rule pinned old_comment pairs=() unreadable="" resolves=() changes=()
     local -A seen=()
     _release_steps__parse_change_arguments repin-tools "$@"
@@ -1560,7 +1597,9 @@ _release_steps__repin_tools() {
         _release_steps__ok "${sha:0:7} is on origin/develop and is ai-tools-assets-tools#$pull_request; from the pinned ${pinned:0:7} it changes image pins ($(_release_steps__format_joined ", " "${_RELEASE_STEPS__REFRESH_DISTS[@]}")) and CHANGELOG.md alone"
     fi
 
-    _release_steps__parse_image_pins "$(git -C "$tools" show "$sha:packaging/release-steps.sh")"
+    _release_steps__read_output script git -C "$tools" show "$sha:packaging/release-steps.sh" \
+        || _release_steps__die "packaging/release-steps.sh at ${sha:0:7} could not be read in $tools (\`git show\`: $_RELEASE_STEPS__ANSWER); nothing was written: run the same command again"
+    _release_steps__parse_image_pins "$script"
     _release_steps__step "checking ${#_RELEASE_STEPS__PIN_DISTS[@]} images at ${sha:0:7}"
     _release_steps__check_pins
     [[ "$_RELEASE_STEPS__FAILED_COUNT" -eq 0 ]] \

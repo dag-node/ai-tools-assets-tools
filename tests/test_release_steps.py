@@ -4,7 +4,8 @@ repin-tools.
 
 The registry is `command_stub.py` standing in for skopeo, exported to the script as a bash function, so a test decides
 which manifest each reference returns; gh, sleep and, where a test injects a failure, awk and date are stubbed the same
-way. Each test runs a copy of the release steps whose image pins name digests of the stub's manifests, and asserts
+way. A test that fails a real command part way (git, sha256sum) wraps it with `fault`, which runs the real command on
+every call but the one it fails. Each test runs a copy of the release steps whose image pins name digests of the stub's manifests, and asserts
 before its first run that the stub, not an installed command, answers the call. The two change commands run in scratch
 checkouts whose origin is a bare repository under the test's directory, so a push or a pull request in an assertion is
 a local push or a recorded `gh pr create` call. The release itself (the pull in preflight, the hardened verify runs)
@@ -18,6 +19,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -60,6 +62,30 @@ class ReleaseStepsCase(unittest.TestCase):
         self.answers_written = False
         self.log = self.root / "stub.log"
         self.log.write_text("", encoding="utf-8")
+        self.faults = {}
+        self.fault_log = self.root / "faults.log"
+        self.fault_log.write_text("", encoding="utf-8")
+
+    def fault(self, command: str, when: str, stdout="", lines=None, status=2, call=None):
+        """Make <command> fail with <status> in the next runs of the release steps, on each call whose arguments,
+        joined as " $* ", match the bash pattern <when>, or on the <call>-th such call alone; every other call runs
+        the real command. A failing call prints <stdout>, or the first <lines> lines of the real command's output, and
+        is recorded in the fault log, so a test asserts that the failure it names happened. The test's own git calls
+        run the real command."""
+        counter = self.root / f"fault-{len(self.faults)}.count"
+        counter.write_text("0", encoding="utf-8")
+        emit = (f"printf %s {shlex.quote(stdout)}" if lines is None
+                else f'command {command} "$@" | head -n {lines}')
+        due = "true" if call is None else f'[[ "$fault_count" -eq {call} ]]'
+        self.faults[command] = (
+            f'() {{ if [[ " $* " == {when} ]]; then local fault_count; fault_count=$(( $(<{shlex.quote(str(counter))}) + 1 ));'
+            f' printf %s "$fault_count" >{shlex.quote(str(counter))};'
+            f' if {due}; then printf "%s %s\\n" {command} "$*" >>{shlex.quote(str(self.fault_log))}; {emit};'
+            f' return {status}; fi; fi; command {command} "$@"; }}')
+
+    def faulted(self) -> list:
+        """The calls a fault failed, as "<command> <arguments>"."""
+        return self.fault_log.read_text(encoding="utf-8").splitlines()
 
     def tearDown(self):
         shutil.rmtree(self.root)
@@ -104,7 +130,8 @@ class ReleaseStepsCase(unittest.TestCase):
             (self.root / "answers.json").write_text(json.dumps(self.answers), encoding="utf-8")
             self.answers_written = True
         environment = self.environment(path, stubbed)
-        for command in self.stubbed if stubbed is None else stubbed:
+        environment.update({f"BASH_FUNC_{command}%%": body for command, body in self.faults.items()})
+        for command in (*(self.stubbed if stubbed is None else stubbed), *self.faults):
             kind = subprocess.run([BASH, "-c", f"type -t {command}"], env=environment, capture_output=True, text=True)
             self.assertEqual(kind.stdout.strip(), "function", f"{command} does not resolve to the stub")
         completed = subprocess.run([BASH, str(script), *arguments], cwd=cwd, env=environment, capture_output=True,
@@ -1192,6 +1219,91 @@ class RepinTools(RepinCase):
         status, _, stderr = self.repin(sha, "--pr", "31")
         self.assertEqual(status, 1)
         self.assertIn(f"{sha[:7]} changes README.md, which is not an image pin or `CHANGELOG.md`", stderr)
+
+    def assert_refused_with_the_caller_unchanged(self, status: int, stderr: str, *phrases: str):
+        self.assertEqual(status, 1, stderr)
+        for phrase in phrases:
+            self.assertIn(phrase, stderr)
+        self.assert_caller_unchanged()
+
+    def test_a_file_list_that_fails_is_refused(self):
+        """A failed `git diff --name-only` read as its output lists no file, or the allowed files alone, so a commit
+        that changes another file passed as a refresh."""
+        sha = self.push_refresh({"README.md": "a change\n"})
+        self.answer_caller_pull_request()
+        for stdout in ("", "CHANGELOG.md\npackaging/release-steps.sh\n"):
+            with self.subTest(stdout=stdout):
+                self.fault("git", '*" diff --name-only "*', stdout=stdout)
+                status, _, stderr = self.repin(sha, "--pr", "31")
+                self.assert_refused_with_the_caller_unchanged(
+                    status, stderr, f"::error::release-steps: the files {sha[:7]} changes against {sha}^ could not be"
+                    f" listed in {self.tools} (`git diff`: ", "); nothing was written: run the same command again")
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
+    def test_a_line_diff_that_fails_part_way_is_refused(self):
+        """A failed `git diff --unified=0` read as its output passes the hunks it printed before it failed, so a later
+        change to another line of the script passed as a refresh."""
+        sha = self.push_refresh({"packaging/release-steps.sh": self.refreshed_script() + "\n# an unrelated change\n"})
+        self.answer_caller_pull_request()
+        hunks = self.git(self.tools, "diff", "--unified=0", "--no-color", f"{sha}^", sha, "--",
+                         "packaging/release-steps.sh").splitlines()
+        second_hunk = [index for index, line in enumerate(hunks) if line.startswith("@@")][1]
+        for lines in (0, second_hunk):
+            with self.subTest(lines=lines):
+                self.fault("git", '*" diff --unified=0 "*', lines=lines)
+                status, _, stderr = self.repin(sha, "--pr", "31")
+                self.assert_refused_with_the_caller_unchanged(
+                    status, stderr, f"::error::release-steps: the lines {sha[:7]} changes in packaging/release-steps.sh"
+                    f" against {sha}^ could not be read in {self.tools} (`git diff`: ")
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
+    def test_a_script_read_that_fails_part_way_is_refused(self):
+        """Each `git show` of the target's script that fails after its pins and DIST_IMAGES printed: the parent check's,
+        the check from the caller's pin, and the read whose pins the registry is asked for."""
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        script = self.git(self.tools, "show", f"{sha}:packaging/release-steps.sh").splitlines()
+        lines = next(index for index, line in enumerate(script) if line.startswith("declare -A DIST_IMAGES=")) + 1
+        for call in (1, 2, 3):
+            with self.subTest(call=call):
+                self.fault("git", '*" show "*":packaging/release-steps.sh "', lines=lines, call=call)
+                status, _, stderr = self.repin(sha, "--pr", "31")
+                self.assert_refused_with_the_caller_unchanged(
+                    status, stderr, f"::error::release-steps: packaging/release-steps.sh at {sha[:7]} could not be read"
+                    f" in {self.tools} (`git show`: ")
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
+    def test_a_status_read_that_fails_keeps_an_uncommitted_edit_out_of_the_pin(self):
+        """A failed `git status --porcelain` read as a clean tree, and the pins are read from the working tree while
+        the change is built on committed develop, so an uncommitted edit of a `uses:` line reached the pull request."""
+        sha = self.push_refresh()
+        workflow = self.caller / ".github" / "workflows" / "release.yml"
+        edited = workflow.read_text(encoding="utf-8").replace("set-release.yml@", "validate.yml@")
+        workflow.write_text(edited, encoding="utf-8")
+        self.answer_caller_pull_request()
+        self.fault("git", '*" status --porcelain "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: `git status` could not read the tree of {self.caller} (")
+        self.assertEqual(len(self.faulted()), 1)
+        self.assertEqual(workflow.read_text(encoding="utf-8"), edited)
+
+    def test_a_pin_both_a_tag_and_a_branch_carry_is_refused_whatever_awk_answers(self):
+        """The rows of the checked `ls-remote` answer are counted in bash, so a failing awk does not count them as
+        one."""
+        self.git(self.tools, "tag", "v1.2.0", self.initial)
+        self.git(self.tools, "push", "--quiet", "origin", "v1.2.0")
+        self.git(self.tools, "push", "--quiet", "origin", "develop:refs/heads/v1.2.0")
+        self.commit_caller(self.caller_pins("v1.2.0"), "pin by a name a branch carries too")
+        sha = self.push_refresh()
+        self.fault("awk", "*")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, "the `uses:` lines pin @v1.2.0, which names both a tag and a branch on"
+            " ai-tools-assets-tools origin")
 
     def test_a_release_commit_is_not_a_refresh(self):
         sha = self.commit_tools({"CHANGELOG.md": RELEASE_CHANGELOG}, "chore: release 1.3.0")
