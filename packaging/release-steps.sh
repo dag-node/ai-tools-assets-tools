@@ -1112,8 +1112,8 @@ _release_steps__deliver_change() {
     local repository local_tip="" remote_tip answer develop message body_file attempt wait url status=0
     _release_steps__read_github_repository "$directory"
     repository="$_RELEASE_STEPS__GITHUB_REPOSITORY"
-    remote_tip="$(git -C "$directory" ls-remote origin "refs/heads/$branch" 2>&1)" \
-        || _release_steps__die "the origin of $directory could not be read (${remote_tip//$'\n'/ }); check the network, then run again"
+    _release_steps__read_output remote_tip git -C "$directory" ls-remote origin "refs/heads/$branch" \
+        || _release_steps__die "the origin of $directory could not be read ($_RELEASE_STEPS__ANSWER); check the network, then run again"
     remote_tip="${remote_tip%%[[:space:]]*}"
     local_tip="$(git -C "$directory" rev-parse --verify --quiet "refs/heads/$branch")" || local_tip=""
     develop="$(git -C "$directory" rev-parse develop)"
@@ -1189,7 +1189,7 @@ _release_steps__deliver_change() {
 # _release_steps__require_caller_ready <caller>: repin-tools' preconditions in a caller's checkout, run by
 # refresh-images before it writes, so a caller that is not ready refuses the refresh while the tools are unchanged.
 _release_steps__require_caller_ready() {
-    local caller="$1" branches
+    local caller="$1" branches name
     _RELEASE_STEPS__DIE_PREFIX="caller $caller: "
     _RELEASE_STEPS__DIE_SUFFIX="; fix it before the refresh, nothing in ai-tools-assets-tools was changed"
     _release_steps__require_caller_checkout "$caller"
@@ -1198,11 +1198,13 @@ _release_steps__require_caller_ready() {
     [[ "${#_RELEASE_STEPS__CALLER_REFS[@]}" -gt 0 ]] \
         || _release_steps__die "no \`uses: $_RELEASE_STEPS__TOOLS_REPOSITORY/.github/workflows/…\` line under .github/workflows/; nothing to re-pin"
     _release_steps__require_equal_caller_pins
-    branches="$(git -C "$caller" ls-remote origin "refs/heads/ci/*" 2>&1)" \
-        || _release_steps__die "the origin of $caller could not be read (${branches//$'\n'/ })"
-    branches="$(grep -oE "refs/heads/ci/$_RELEASE_STEPS__ID-tools-[^[:space:]]*" <<<"$branches" | head -n 1)" || true
-    [[ -z "$branches" ]] \
-        || _release_steps__die "branch ${branches#refs/heads/} already exists on origin; pick the next letter for \`--id\`"
+    _release_steps__read_output branches git -C "$caller" ls-remote origin "refs/heads/ci/*" \
+        || _release_steps__die "the origin of $caller could not be read ($_RELEASE_STEPS__ANSWER)"
+    while IFS=$'\t' read -r _ name; do
+        if [[ "$name" == "refs/heads/ci/$_RELEASE_STEPS__ID-tools-"* ]]; then
+            _release_steps__die "branch ${name#refs/heads/} already exists on origin; pick the next letter for \`--id\`"
+        fi
+    done <<<"$branches"
     _RELEASE_STEPS__DIE_PREFIX=""
     _RELEASE_STEPS__DIE_SUFFIX=""
     _release_steps__ok "caller $caller is ready: its \`uses:\` lines pin @${_RELEASE_STEPS__CALLER_REFS[0]}"
@@ -1472,8 +1474,8 @@ _release_steps__verify_release() {
     _RELEASE_STEPS__RELEASE_VERSION="${BASH_REMATCH[1]}"
     _release_steps__step "verifying tag $tag"
     # The tag is read from origin into FETCH_HEAD alone, so the checkout's own tag of that name is left as it is.
-    answer="$(git -C "$tools" ls-remote origin "refs/tags/$tag" 2>&1)" \
-        || _release_steps__die "the origin of ai-tools-assets-tools could not be read (${answer//$'\n'/ }); check the network, then run again"
+    _release_steps__read_output answer git -C "$tools" ls-remote origin "refs/tags/$tag" \
+        || _release_steps__die "the origin of ai-tools-assets-tools could not be read ($_RELEASE_STEPS__ANSWER); check the network, then run again"
     [[ -n "$answer" ]] || _release_steps__die "tag $tag is not on ai-tools-assets-tools origin; push the tag, or check the spelling"
     answer="$(git -C "$tools" fetch --quiet --no-tags origin "refs/tags/$tag" 2>&1)" \
         || _release_steps__die "tag $tag did not fetch from ai-tools-assets-tools origin (${answer//$'\n'/ }); check the network, then run again"

@@ -66,22 +66,27 @@ class ReleaseStepsCase(unittest.TestCase):
         self.fault_log = self.root / "faults.log"
         self.fault_log.write_text("", encoding="utf-8")
 
-    def fault(self, command: str, when: str, stdout="", lines=None, status=2, call=None):
+    def fault(self, command: str, when: str, stdout="", lines=None, status=2, call=None, warning=None):
         """Make <command> fail with <status> in the next runs of the release steps, on each call whose arguments,
         joined as " $* ", match the bash pattern <when>, or on the <call>-th such call alone; every other call runs
-        the real command. A failing call prints <stdout>, or the first <lines> lines of the real command's output, and
-        is recorded in the fault log, so a test asserts that the failure it names happened. The test's own git calls
-        run the real command."""
+        the real command. A failing call prints <stdout>, or the first <lines> lines of the real command's output.
+        With <warning>, the call instead prints it on stderr and runs the real command, keeping its status. Each such
+        call is recorded in the fault log, so a test asserts that the failure it names happened. The test's own git
+        calls run the real command."""
         counter = self.root / f"fault-{len(self.faults)}.count"
         counter.write_text("0", encoding="utf-8")
-        emit = (f"printf %s {shlex.quote(stdout)}" if lines is None
-                else f'command {command} "$@" | head -n {lines}')
+        if warning is not None:
+            action = f'printf %s {shlex.quote(warning)} >&2; command {command} "$@"; return $?;'
+        elif lines is None:
+            action = f"printf %s {shlex.quote(stdout)}; return {status};"
+        else:
+            action = f'command {command} "$@" | head -n {lines}; return {status};'
         due = "true" if call is None else f'[[ "$fault_count" -eq {call} ]]'
         self.faults[command] = (
             f'() {{ if [[ " $* " == {when} ]]; then local fault_count; fault_count=$(( $(<{shlex.quote(str(counter))}) + 1 ));'
             f' printf %s "$fault_count" >{shlex.quote(str(counter))};'
-            f' if {due}; then printf "%s %s\\n" {command} "$*" >>{shlex.quote(str(self.fault_log))}; {emit};'
-            f' return {status}; fi; fi; command {command} "$@"; }}')
+            f' if {due}; then printf "%s %s\\n" {command} "$*" >>{shlex.quote(str(self.fault_log))}; {action} fi; fi;'
+            f' command {command} "$@"; }}')
 
     def faulted(self) -> list:
         """The calls a fault failed, as "<command> <arguments>"."""
@@ -946,6 +951,18 @@ class RefreshImages(ChangeCase):
         self.assertIn(f"caller {self.caller}: branch ci/{REFRESH_ID}-tools-fc44-digest already exists on origin; pick"
                       " the next letter for `--id`", stderr)
 
+    def test_a_caller_branch_on_origin_is_refused_whatever_grep_answers(self):
+        """The branch names of the caller's checked `ls-remote` answer are matched in bash; a grep that failed read as
+        no match."""
+        self.git(self.caller, "push", "--quiet", "origin", f"develop:refs/heads/ci/{REFRESH_ID}-tools-fc44-digest")
+        self.answer_expired_fedora()
+        self.answer_pull_request()
+        self.fault("grep", '*" -oE "*', call=1)
+        status, _, stderr = self.refresh("--caller", str(self.caller))
+        self.assertEqual(status, 1)
+        self.assertIn(f"caller {self.caller}: branch ci/{REFRESH_ID}-tools-fc44-digest already exists on origin; pick"
+                      " the next letter for `--id`", stderr)
+
     def test_a_ready_caller_is_named_in_the_next_step(self):
         self.answer_expired_fedora()
         self.answer_pull_request()
@@ -1415,6 +1432,42 @@ class RepinTools(RepinCase):
                       stdout)
         self.assertIn(f"release-steps: ok: origin/{CALLER_BRANCH} = {tip[:7]}, pushed before", stdout)
         self.assertEqual(len(self.pull_request_creations()), 2)
+
+    REDIRECT_WARNING = "warning: redirecting to https://github.com/dag-node/ai-tools-assets.git/\n"
+
+    def test_a_warning_beside_the_branch_read_is_not_a_branch_on_origin(self):
+        """git prints a redirect warning on stderr beside a successful `ls-remote`; merged into the answer, it read as
+        the tip of a branch on origin and refused the re-pin."""
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", f'*" ls-remote origin refs/heads/{CALLER_BRANCH} "*', warning=self.REDIRECT_WARNING)
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.remote_branch(self.caller, CALLER_BRANCH), self.git(self.caller, "rev-parse", CALLER_BRANCH))
+        self.assertEqual(len(self.pull_request_creations()), 1)
+        self.assertGreaterEqual(len(self.faulted()), 1)
+
+    def test_a_warning_beside_the_branch_read_resumes_after_the_push(self):
+        sha = self.push_refresh()
+        self.answer_open_pull_requests(CALLER_SLUG)
+        self.answer("gh", ["pr", "list", "--repo", CALLER_SLUG, "--head"])
+        self.answer("gh", ["pr", "create"], stderr="HTTP 502: Bad Gateway\n", status=1, times=1)
+        self.answer("gh", ["pr", "create"], stdout=f"{CALLER_PULL_REQUEST_URL}\n")
+        self.assertEqual(self.repin(sha, "--pr", "31")[0], 1)
+        tip = self.git(self.caller, "rev-parse", CALLER_BRANCH)
+        self.fault("git", f'*" ls-remote origin refs/heads/{CALLER_BRANCH} "*', warning=self.REDIRECT_WARNING)
+        status, stdout, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"release-steps: ok: origin/{CALLER_BRANCH} = {tip[:7]}, pushed before", stdout)
+        self.assertEqual(len(self.pull_request_creations()), 2)
+        self.assertGreaterEqual(len(self.faulted()), 1)
+
+    def test_a_warning_beside_an_absent_tag_does_not_read_as_the_tag(self):
+        self.fault("git", '*" ls-remote origin refs/tags/v9.9.9 "*', warning=self.REDIRECT_WARNING)
+        status, _, stderr = self.repin("v9.9.9")
+        self.assertEqual(status, 1)
+        self.assertIn("tag v9.9.9 is not on ai-tools-assets-tools origin; push the tag, or check the spelling", stderr)
+        self.assertEqual(len(self.faulted()), 1)
 
     def test_a_dry_run_writes_nothing(self):
         sha = self.push_refresh()
