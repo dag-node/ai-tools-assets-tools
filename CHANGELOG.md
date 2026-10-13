@@ -7,6 +7,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-13
+
 ### Added
 
 - **Image check.** `release-steps.sh check-images` asks each registry for
