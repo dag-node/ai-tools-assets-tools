@@ -43,7 +43,10 @@
 # for: in one container of EL9_IMAGE, with the checkout mounted read-only, it installs git, prints `python3 --version`
 # and refuses unless the image's interpreter is Python 3.9, then runs `python3 -m unittest discover -s <directory> -v`
 # for each directory as the calling user's uid and gid (setpriv), so a test that expects a permission refusal or a git
-# check of the checkout's owner sees the runner's user and not root. It exits non-zero when any directory's suite fails.
+# check of the checkout's owner sees the runner's user and not root. setpriv sets no_new_privs, so a set-id bit or a file
+# capability on a binary a suite runs does not raise its privileges; a control run through the same setpriv prints
+# the NoNewPrivs line of /proc/self/status and refuses unless it is 1. It exits non-zero when any directory's suite
+# fails.
 # The container keeps the network for the install and does not receive a secret, and the release runs it
 # before the first step that does. find-tests prints the directories validate.yml passes to it, one per line: tests
 # and each sets/*/skills/*/tests that holds a file test*.py, since unittest discovery exits non-zero over a directory
@@ -655,10 +658,12 @@ dnf -y -q --setopt=install_weak_deps=False install git
 _release_steps__require_floor_python
 home="$(mktemp -d)"
 chown "$uid:$gid" "$home"
+drop=(setpriv --reuid="$uid" --regid="$gid" --clear-groups --no-new-privs --)
+HOME="$home" "${drop[@]}" grep -x "NoNewPrivs:[[:space:]]*1" /proc/self/status \
+    || _release_steps__die "the suites would run without no_new_privs under ${drop[*]}"
 failed=()
 for directory in "$@"; do
-    HOME="$home" setpriv --reuid="$uid" --regid="$gid" --clear-groups -- \
-        python3 -m unittest discover -s "$directory" -v || failed+=("$directory")
+    HOME="$home" "${drop[@]}" python3 -m unittest discover -s "$directory" -v || failed+=("$directory")
 done
 [[ "${#failed[@]}" -eq 0 ]] || _release_steps__die "the suite failed at the floor in ${failed[*]}"
 echo "the suite passed at the floor in $*"' _ "$(id -u)" "$(id -g)" "$@" </dev/null \
