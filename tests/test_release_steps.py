@@ -29,6 +29,7 @@ from unittest import mock
 TESTS = pathlib.Path(__file__).resolve().parent
 REPOSITORY = TESTS.parent
 RELEASE_STEPS = REPOSITORY / "packaging" / "release-steps.sh"
+SIGN_RPMS = REPOSITORY / "packaging" / "sign-rpms.sh"
 STUB = TESTS / "command_stub.py"
 BASH = shutil.which("bash")
 
@@ -1591,10 +1592,62 @@ def shell_functions(*names: str) -> str:
     text = RELEASE_STEPS.read_text(encoding="utf-8")
     functions = []
     for name in names:
-        match = re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n", text, flags=re.M | re.S)
+        match = (re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n", text, flags=re.M | re.S)
+                 or re.search(rf"^{re.escape(name)}\(\) \{{ .*\}}\n", text, flags=re.M))
         assert match, name
         functions.append(match.group(0))
     return "".join(functions)
+
+
+class Cleanup(unittest.TestCase):
+    """The exit traps of the release steps and of sign-rpms.sh, run with a cleanup command that fails, beside a control
+    where it succeeds: each removal still runs, and the failure is named in a warning."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def keyring(self, name: str) -> pathlib.Path:
+        """A scratch directory shaped as one holding an imported secret key: a public test marker, no key."""
+        directory = self.root / name
+        (directory / "gnupg" / "private-keys-v1.d").mkdir(parents=True)
+        (directory / "private-keys-v1.d").mkdir()
+        (directory / "marker").write_text("public test marker\n", encoding="utf-8")
+        return directory
+
+    def test_the_signers_trap_removes_the_tree_when_the_agent_does_not_stop(self):
+        text = SIGN_RPMS.read_text(encoding="utf-8")
+        definitions = text[:text.rindex('\nmain "$@"')]
+        trap = re.search(r"^\s*(trap .* EXIT)$", text, flags=re.M).group(1)
+        for status in (0, 2):
+            with self.subTest(status=status):
+                workdir = self.keyring(f"workdir-{status}")
+                script = f'{definitions}\nworkdir="$1"\ngpgconf() {{ return {status}; }}\n{trap}\nexit 0\n'
+                completed = subprocess.run([BASH, "-c", script, "_", str(workdir)], capture_output=True, text=True)
+                self.assertFalse(workdir.exists(), completed.stderr)
+                warning = f"::warning::sign-rpms: the gpg-agent of {workdir}/gnupg did not stop"
+                (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
+
+    def test_the_release_steps_trap_removes_every_directory_when_a_removal_before_it_fails(self):
+        functions = shell_functions("_release_steps__remove_scratch_and_container", "_release_steps__warn")
+        for status in (0, 1):
+            with self.subTest(status=status):
+                first, second = self.keyring(f"first-{status}"), self.keyring(f"second-{status}")
+                script = (f'set -euo pipefail\n{functions}container=ai-tools-assets-sign-1\n_RELEASE_STEPS__WORKTREE=""\n'
+                          f'scratch_directories=("$1" "$2")\nsudo() {{ return {status}; }}\n'
+                          f'gpgconf() {{ return {status}; }}\ntrap _release_steps__remove_scratch_and_container EXIT\n'
+                          'exit 0\n')
+                completed = subprocess.run([BASH, "-c", script, "_", str(first), str(second)], capture_output=True,
+                                           text=True)
+                self.assertFalse(first.exists(), completed.stderr)
+                self.assertFalse(second.exists(), completed.stderr)
+                warnings = [f"::warning::release-steps: the container ai-tools-assets-sign-1 was not removed",
+                            f"::warning::release-steps: the gpg-agent of {first} did not stop",
+                            f"::warning::release-steps: the gpg-agent of {second} did not stop"]
+                for warning in warnings:
+                    (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
 
 
 class ReleaseHeadlines(unittest.TestCase):
