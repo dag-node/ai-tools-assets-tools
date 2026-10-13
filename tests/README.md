@@ -1,11 +1,12 @@
 # Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
-Standard library `unittest`, Python 3.9 or later, no install step. Each file
-holds one concern:
+Standard library `unittest`, Python 3.9 or later, no install step. The
+variable keeps the bytecode cache out of the checkout; it reaches each command
+a test runs, where `python3 -B` does not. Each file holds one concern:
 
 | File | Proves |
 |---|---|

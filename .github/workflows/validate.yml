@@ -60,6 +60,11 @@ on:
 permissions:
   contents: read
 
+# Python does not write a bytecode cache, so a run adds no file to a checkout; tools/validate refuses a __pycache__
+# inside a set.
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
   validate:
     name: validate

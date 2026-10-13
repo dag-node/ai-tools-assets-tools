@@ -28,6 +28,8 @@ permissions:
   contents: read
 
 env:
+  # Python does not write a bytecode cache, so the suite adds no file to the checkout the release is built from.
+  PYTHONDONTWRITEBYTECODE: '1'
   TAG_SIGNER_PRIMARY_FINGERPRINTS: 225DFF22D0221D3DD68CCEFFFABAF500E7D90733
   TAG_SIGNER_KEY_URL: https://github.com/p4nda.gpg
   ARTIFACT_SIGNER_PRIMARY_FINGERPRINT: 67F42DC18BF764B42D82F14256D2F802CF9832E4

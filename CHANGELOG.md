@@ -30,6 +30,9 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 - **Images pulled before signing.** The preflight step pulls every image, and
   the containers run those copies alone, so an image retired after the check
   stops a release before it signs anything.
+- **No bytecode cache in a run.** The workflows run Python with
+  `PYTHONDONTWRITEBYTECODE=1`, so a run leaves the caller's checkout and the
+  tools checkout holding their committed files alone.
 
 ### Security
 
