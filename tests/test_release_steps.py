@@ -1781,6 +1781,12 @@ class RepinToolsToARelease(RepinCase):
                             if line.startswith("fpr:"))
         self.answer("curl", [], stdout=self.gpg("--armor", "--export", self.primary))
 
+    def tearDown(self):
+        # The generated keyring's gpg-agent is stopped before its home is removed under it.
+        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
+                       capture_output=True)
+        super().tearDown()
+
     def gpg(self, *arguments: str) -> str:
         return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",
                                *arguments], capture_output=True, text=True, check=True).stdout

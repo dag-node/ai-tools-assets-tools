@@ -41,7 +41,10 @@
 # of the tools whose tag verify-tag would accept and whose release run passed, and opens the caller's. Both run under
 # the operator's own git and gh credentials, so push rights are the permission and each merge stays the operator's.
 # A develop commit is pinned only when it changes image pin lines and CHANGELOG.md alone; any other change reaches
-# a caller through a release.
+# a caller through a release. A command whose output decides a check is read with its status first, through
+# _release_steps__read_output or an assignment followed by a refusal, so a failed one refuses instead of reading
+# as an empty or partial answer. A refusal names what the run left: no commit, a local branch that is not pushed,
+# or a pushed branch whose pull request is not open; the same command run again continues from it.
 #
 # verify-tag fetches the tag from origin and holds it to an annotated tag object that names itself, peels to the event's
 # commit and the checkout's HEAD, and carries a signature whose VALIDSIG primary is on the pinned list; the key is
@@ -201,11 +204,13 @@ _release_steps__format_env_hint() {
 }
 
 # _release_steps__import_signing_key: import GPG_SIGNING_KEY into a fresh scratch keyring, export GNUPGHOME,
-# set `signing_primary`.
+# set `signing_primary`. GNUPGHOME names that keyring for the rest of the process, so a subcommand that calls this does
+# not make a signed git commit or tag after it, which would look for its key there. gpg's import diagnostics name key
+# IDs and user IDs, which are public, and stay on stderr for a key that does not import.
 _release_steps__import_signing_key() {
     _release_steps__create_scratch
     export GNUPGHOME="$scratch"
-    printf '%s\n' "$GPG_SIGNING_KEY" | gpg --batch --quiet --import 2>/dev/null \
+    printf '%s\n' "$GPG_SIGNING_KEY" | gpg --batch --quiet --import \
         || _release_steps__die "GPG_SIGNING_KEY did not import: it is not an ASCII-armored key block. Export the signing subkey with gpg --armor --export-secret-subkeys '<subkey-fpr>!'"
     gpg --batch --with-colons --list-secret-keys | grep -q '^sec:' \
         || _release_steps__die "GPG_SIGNING_KEY carries no secret key: it is a public key, or an export without the secret part"
@@ -1485,7 +1490,7 @@ _release_steps__require_pin_change() {
     [[ "${#changed[@]}" -gt 0 ]] || _release_steps__die "$framing no image pin; $rule"
     _RELEASE_STEPS__REFRESH_DISTS=()
     for dist in "${_RELEASE_STEPS__PIN_DISTS[@]}"; do
-        # An `if`, not `[[ ]] && …`: a false test as the function's last command would be its status under set -e.
+        # An `if`, not `[[ ]] && …`: a false test as the function's last command would be its status under `set -e`.
         if [[ " ${changed[*]} " == *" $dist "* ]]; then
             _RELEASE_STEPS__REFRESH_DISTS+=("$dist")
         fi

@@ -13,6 +13,17 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   the caller's own key where git signs commits, and gpg asks for the
   passphrase as for any signed commit. Before, gpg looked for that key in the
   keyring that verified the tag, and the commit failed with `No secret key`.
+- **A failed command refuses.** `refresh-images` and `repin-tools` read the
+  status of each git, `sha256sum` and `tail` call whose output decides a check,
+  and a failure refuses with an `::error::` line naming what the run left: no
+  commit, a local branch, or a pushed branch without its pull request. Before,
+  a failed or cut-short answer could read as a clean tree, a commit that
+  changes pins alone, or a replacement digest, and reach a pull request, and
+  a warning git printed beside a successful `ls-remote` refused a re-pin.
+- **Cleanup that fails.** The exit traps of `release-steps.sh` and
+  `sign-rpms.sh` run every removal and print a warning naming one that fails.
+  Before, a gpg-agent that did not stop, or a container that was not removed,
+  ended the cleanup and left the scratch keyring under `/dev/shm`.
 
 ## [1.3.0] - 2026-10-13
 
