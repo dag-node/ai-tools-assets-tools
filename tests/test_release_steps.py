@@ -757,6 +757,29 @@ class RefreshImages(ChangeCase):
         self.assertIn(f"# resolved 2026-11-03\n", self.git(self.tools, "show", f"{REFRESH_BRANCH}:packaging/release-steps.sh"))
         self.assertEqual(len(self.pull_request_creations()), 1)
 
+    def test_a_branch_whose_script_cannot_be_read_is_refused_not_redated(self):
+        """The branch exists, so its date is the one to keep; a failed read of it fell back to today's."""
+        self.answer_expired_fedora()
+        self.answer_pull_request()
+        self.answer("date", ["-u", "+%Y-%m-%d"], stdout="2026-11-03\n")
+        stubbed = (*self.stubbed, "date")
+        self.set_origin_writable("tools", False)
+        try:
+            status, _, stderr = self.refresh(stubbed=stubbed)
+        finally:
+            self.set_origin_writable("tools", True)
+        self.assertEqual(status, 1, stderr)
+        tip = self.git(self.tools, "rev-parse", REFRESH_BRANCH)
+        self.answer("date", ["-u", "+%Y-%m-%d"], stdout="2026-11-04\n", first=True)
+        self.fault("git", f'*" show refs/heads/{REFRESH_BRANCH}:packaging/release-steps.sh "*')
+        status, _, stderr = self.refresh(stubbed=stubbed)
+        self.assertEqual(status, 1, stderr)
+        self.assertIn(f"::error::release-steps: branch {REFRESH_BRANCH} exists and its packaging/release-steps.sh could"
+                      f" not be read in {self.tools} (exit status 2, no output); nothing was written", stderr)
+        self.assertEqual(self.git(self.tools, "rev-parse", REFRESH_BRANCH), tip)
+        self.assertEqual(self.remote_branch(self.tools, REFRESH_BRANCH), "")
+        self.assertEqual(len(self.faulted()), 1)
+
     def test_two_expired_images_become_one_commit(self):
         self.answer_pinned("el10")
         self.answer_registry({
@@ -1469,6 +1492,64 @@ class RepinTools(RepinCase):
         self.assertEqual(status, 1)
         self.assertIn("tag v9.9.9 is not on ai-tools-assets-tools origin; push the tag, or check the spelling", stderr)
         self.assertEqual(len(self.faulted()), 1)
+
+    def test_the_tools_checkout_is_refused_as_a_caller_whatever_git_answers(self):
+        """The caller check compares paths with the script's directory; it read the tools' toplevel with git, and
+        a failed read passed the tools' own checkout as a caller."""
+        self.fault("git", f'*" -C {self.tools}/packaging rev-parse --show-toplevel "*')
+        status, _, stderr = self.run_steps(self.script, "repin-tools", "--id", REFRESH_ID, "abc1234", cwd=self.tools)
+        self.assertEqual(status, 1)
+        self.assertIn(f"{self.tools} is not a checkout of a caller with a `.github/workflows/`; run from the"
+                      " repository root", stderr)
+
+    def test_a_parent_read_that_fails_is_refused(self):
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("git", '*" rev-list --parents "*', stdout=f"{sha} {self.git(self.tools, 'rev-parse', f'{sha}^')}\n")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, f"::error::release-steps: the parents of {sha[:7]} could not be read in {self.tools} (")
+        self.assertEqual(len(self.faulted()), 1)
+
+    def test_two_refreshes_on_one_date_name_it_once_whatever_sort_answers(self):
+        """The distinct dates are counted in bash; a sort that failed counted none and named each date apart."""
+        repository = IMAGES["el9"].rsplit(":", 1)[0]
+        self.answer_registry({f"{repository}@{CURRENT['el9']}": manifest("el9 current")})
+        self.commit_tools({"packaging/release-steps.sh": self.refreshed_script("el9", REFRESH_DATE)},
+                          "build(packaging): pin the Rocky 9 image quay.io serves")
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("sort", "*")
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        message = unwrap(self.git(self.caller, "log", "-1", "--format=%B", f"ci/{REFRESH_ID}-tools-el9-fc44-digest"))
+        self.assertIn(f"which pins the digests `{IMAGES['el9']}` and `{IMAGES['fc44']}` resolve to on {REFRESH_DATE}.",
+                      message)
+
+    def test_a_last_line_without_a_newline_keeps_its_bytes(self):
+        """The `uses:` line is the file's last and has no final newline. A failed read of the last byte read as
+        a newline, and the rewrite added one where numstat still saw one line changed."""
+        files = self.caller_pins()
+        lines = files[".github/workflows/release.yml"].splitlines()
+        uses = next(line for line in lines if "uses:" in line)
+        original = "\n".join([line for line in lines if line != uses] + [uses])
+        files[".github/workflows/release.yml"] = original
+        self.commit_caller(files, "the pin last, without a final newline")
+        sha = self.push_refresh()
+        self.answer_caller_pull_request()
+        self.fault("tail", '*" -c 1 "*')
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assert_refused_with_the_caller_unchanged(
+            status, stderr, "::error::release-steps: the last byte of ", "; the file is unchanged")
+        self.assertEqual(len(self.faulted()), 1)
+        self.faults.clear()
+        status, _, stderr = self.repin(sha, "--pr", "31")
+        self.assertEqual(status, 0, stderr)
+        written = subprocess.run(["git", "-C", str(self.caller), "show", f"{CALLER_BRANCH}:.github/workflows/release.yml"],
+                                 env=self.environment(stubbed=()), capture_output=True, check=True).stdout
+        pinned = uses.replace(f"@{self.initial} # v1.2.0",
+                              f"@{sha} # develop {REFRESH_DATE}, fc44 digest, ai-tools-assets-tools#31")
+        self.assertEqual(written, original.replace(uses, pinned).encode("utf-8"))
 
     def test_a_count_read_that_fails_is_refused_with_a_message(self):
         """`set -e` ended the run on a failed `git rev-list --count` with its own status and no `::error::` line."""
