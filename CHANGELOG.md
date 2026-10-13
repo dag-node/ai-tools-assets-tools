@@ -34,9 +34,13 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 - **Ubuntu 26.04.** Every job runs on `ubuntu-26.04`, and the release steps
   install `runc` where the runner image lacks it. Before, the jobs ran
   on `ubuntu-24.04`.
-- **The validate job is bounded.** A caller's `validate` job stops after
-  5 minutes, about twelve times its longest measured run. Before, a hung
-  step held the runner until GitHub's 6-hour job limit.
+- **The validate and tests jobs are bounded.** A caller's `validate` job stops
+  after 5 minutes, about twelve times its longest measured run. Each leg
+  of the `tests` job stops after 5 minutes, about twice its slowest measured
+  leg. Before, a hung `validate` step held the runner until GitHub's 6-hour job
+  limit.
+- **setup-python 7.** The `validate` job, the 3.12 leg of the `tests` job
+  and the set release run `actions/setup-python` 7.0.0. Before, they ran 6.3.0.
 
 ### Security
 
