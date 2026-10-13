@@ -53,12 +53,15 @@
 # create-release compares the remote's refs/tags/<tag> with RELEASE_TAG_OBJECT immediately before `gh release create
 # --verify-tag`, which checks that the name exists, not which object it names.
 #
-# The signing key is imported into a keyring under /dev/shm, which must be tmpfs; a /dev/shm that is absent or
-# not tmpfs refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it.
-# preflight refuses an imported key whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files
-# and sign-rpm verify against that primary's public key alone, so a signature by another key fails the step that made
-# it. Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails
-# the step.
+# The signing key is imported into a keyring under /dev/shm, which must be tmpfs; a /dev/shm that is absent or not tmpfs
+# refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it. preflight runs
+# `sudo swapoff -a` and logs the memory and swap lines of /proc/meminfo, and preflight, sign-files and sign-rpm each
+# refuse before the key enters a process while /proc/swaps lists a device, so a page holding the key or the passphrase
+# is not written to disk by this job's steps. The runner process holds the job's secrets from before the first step,
+# so a page of it written to swap before preflight is outside this check. preflight refuses an imported key
+# whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files and sign-rpm verify against that primary's
+# public key alone, so a signature by another key fails the step that made it. Every download is HTTPS alone and bounded
+# in time, so a redirect to another scheme or a stalled server fails the step.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds one
 # RPM without a signature per distribution DIST_IMAGES lists, each from the configuration render-nfpm.py writes for
@@ -189,6 +192,16 @@ _release_steps__create_temp_dir() {
     scratch_directories+=("$_RELEASE_STEPS__TEMP_DIR")
 }
 
+# Refuse unless /proc/swaps holds its header line alone; a file that cannot be read refuses too.
+_RELEASE_STEPS__PROC_SWAPS=/proc/swaps
+_release_steps__require_swap_off() {
+    local swaps
+    swaps="$(cat -- "$_RELEASE_STEPS__PROC_SWAPS" 2>&1)" \
+        || _release_steps__die "$_RELEASE_STEPS__PROC_SWAPS could not be read ($(_release_steps__format_one_line "$swaps")), so swap is not shown to be off; the signing key is not imported"
+    [[ "$swaps" =~ ^Filename[[:space:]] && "$swaps" != *$'\n'* ]] \
+        || _release_steps__die "$_RELEASE_STEPS__PROC_SWAPS does not hold its header line alone ($(_release_steps__format_one_line "$swaps")), so swap is not shown to be off; the signing key is imported only while it lists no device, which preflight sets with \`sudo swapoff -a\`"
+}
+
 _release_steps__require_env() {
     local name
     for name in "$@"; do
@@ -275,6 +288,11 @@ _release_steps__run_preflight() {
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
     # sign-rpms.sh reads the passphrase as the first stdin line, so a second line would corrupt the key read after it.
     [[ "$GPG_SIGNING_PASSPHRASE" != *$'\n'* ]] || _release_steps__die "GPG_SIGNING_PASSPHRASE spans more than one line"
+    sudo swapoff -a || _release_steps__die "\`sudo swapoff -a\` failed; the signing key is not imported while swap may be on"
+    _release_steps__require_swap_off
+    echo "swap is off: $_RELEASE_STEPS__PROC_SWAPS lists no device"
+    awk '/^(MemTotal|MemAvailable|Shmem|SwapTotal|SwapFree):/ { print "memory: " $1 " " $2 " " $3 }' /proc/meminfo \
+        || _release_steps__warn "/proc/meminfo could not be read; the memory lines are not logged"
     _release_steps__import_signing_key
     echo "imported signing key: primary $signing_primary"
     [[ "$signing_primary" == "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" ]] \
@@ -305,6 +323,7 @@ _release_steps__sign_files() {
     [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-files <file>..."
     local file status primary
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
+    _release_steps__require_swap_off
     _release_steps__import_signing_key
     for file in "$@"; do
         [[ -f "$file" ]] || _release_steps__die "$file is not a file"
@@ -558,6 +577,7 @@ _release_steps__sign_rpm() {
     [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-rpm <rpm>..."
     local rpm name names=() work verify out image
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
+    _release_steps__require_swap_off
     for rpm in "$@"; do
         [[ -f "$rpm" ]] || _release_steps__die "$rpm is not a file"
         _release_steps__resolve_dist_image "$(basename "$rpm")"
