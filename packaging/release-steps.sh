@@ -134,8 +134,10 @@ _release_steps__die() {
 }
 
 # Every scratch directory and the signing container are removed on exit, a gpg-agent started in a scratch directory is
-# stopped first, and INT and TERM exit through the same trap. The helpers set globals rather than print, since state
-# set inside a command substitution's subshell does not reach this shell's trap.
+# stopped first, and INT and TERM exit through the same trap. Each removal runs whatever the one before it answered,
+# and one that fails prints a warning naming what it left, so a container that is not removed does not keep a keyring
+# directory under /dev/shm from removal. The helpers set globals rather than print, since state set inside a command
+# substitution's subshell does not reach this shell's trap.
 scratch_directories=()
 container=""
 _RELEASE_STEPS__TEMP_DIR=""
@@ -143,14 +145,19 @@ _RELEASE_STEPS__WORKTREE=""
 _RELEASE_STEPS__WORKTREE_REPOSITORY=""
 _release_steps__remove_scratch_and_container() {
     local directory
-    [[ -n "$container" ]] && sudo podman rm -f "$container" >/dev/null 2>&1
+    if [[ -n "$container" ]] && ! sudo podman rm -f "$container" >/dev/null 2>&1; then
+        _release_steps__warn "the container $container was not removed; remove it with \`sudo podman rm -f $container\`"
+    fi
     if [[ -n "$_RELEASE_STEPS__WORKTREE" ]]; then
         git -C "$_RELEASE_STEPS__WORKTREE_REPOSITORY" worktree remove --force \
             "$_RELEASE_STEPS__WORKTREE" >/dev/null 2>&1 || true
     fi
     for directory in "${scratch_directories[@]}"; do
-        GNUPGHOME="$directory" gpgconf --kill gpg-agent 2>/dev/null || true
-        rm -rf "$directory"
+        # Only the agent of a directory holding a secret keyring can hold a key, so a failed stop is warned of there.
+        if ! GNUPGHOME="$directory" gpgconf --kill gpg-agent >/dev/null 2>&1 && [[ -d "$directory/private-keys-v1.d" ]]; then
+            _release_steps__warn "the gpg-agent of $directory did not stop; stop it with \`GNUPGHOME=$directory gpgconf --kill gpg-agent\`"
+        fi
+        rm -rf "$directory" || _release_steps__warn "$directory was not removed; remove it with \`rm -rf $directory\`"
     done
 }
 trap _release_steps__remove_scratch_and_container EXIT
