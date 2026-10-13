@@ -1873,6 +1873,22 @@ class WorkflowOrder(unittest.TestCase):
                 self.assertLess(swap_off[0], first_secret)
 
 
+class WorkflowSettings(unittest.TestCase):
+    """The keys the workflows set on their jobs and steps, read as text with WorkflowOrder's helper."""
+
+    WORKFLOWS = ("release.yml", "set-release.yml", "validate.yml")
+
+    steps = WorkflowOrder.steps
+
+    def test_every_checkout_leaves_the_token_out_of_git_config(self):
+        for workflow in self.WORKFLOWS:
+            checkouts = [step for step in self.steps(workflow)[1] if "actions/checkout@" in step]
+            self.assertTrue(checkouts, f"{workflow} has no checkout step")
+            for step in checkouts:
+                with self.subTest(workflow=workflow, step=step.splitlines()[0].strip()):
+                    self.assertRegex(step, r"\n +persist-credentials: false\n")
+
+
 class FindTests(unittest.TestCase):
     """find-tests over a fixture tree, run from its root as validate.yml runs it from the caller's checkout."""
 
