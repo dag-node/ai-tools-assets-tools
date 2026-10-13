@@ -10,6 +10,7 @@
 # bash <tools>/packaging/release-steps.sh test-floor <directory>...
 # bash packaging/release-steps.sh refresh-images --id <ID> [--caller <path>]... [--dry-run]
 # bash <tools>/packaging/release-steps.sh repin-tools --id <ID> <sha>|<vX.Y.Z> [--pr <number>] [--dry-run]
+# bash packaging/release-steps.sh swap-off
 # bash packaging/release-steps.sh verify-tag <tag> <event-commit>
 # bash packaging/release-steps.sh preflight
 # bash packaging/release-steps.sh sign-files <file>...
@@ -19,8 +20,8 @@
 # bash packaging/release-steps.sh dispatch <tag>
 # ```
 #
-# Environment, by subcommand (check-images, test-floor, refresh-images and repin-tools read none; the last two use
-# the operator's own git and gh credentials, and `--help` prints their usage):
+# Environment, by subcommand (check-images, test-floor, refresh-images, repin-tools and swap-off read none;
+# refresh-images and repin-tools use the operator's own git and gh credentials, and `--help` prints their usage):
 #   verify-tag      TAG_SIGNER_PRIMARY_FINGERPRINTS (space-separated), TAG_SIGNER_KEY_URL
 #   preflight       GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; DISPATCH_RPM=true adds
 #                   RPM_REPO_DISPATCH_TOKEN
@@ -63,14 +64,15 @@
 # --verify-tag`, which checks that the name exists, not which object it names.
 #
 # The signing key is imported into a keyring under /dev/shm, which must be tmpfs; a /dev/shm that is absent or not tmpfs
-# refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it. preflight runs
-# `sudo swapoff -a` and logs the memory and swap lines of /proc/meminfo, and preflight, sign-files and sign-rpm each
-# refuse before the key enters a process while /proc/swaps lists a device, so a page holding the key or the passphrase
-# is not written to disk by this job's steps. The runner process holds the job's secrets from before the first step,
-# so a page of it written to swap before preflight is outside this check. preflight refuses an imported key
-# whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files and sign-rpm verify against that primary's
-# public key alone, so a signature by another key fails the step that made it. Every download is HTTPS alone and bounded
-# in time, so a redirect to another scheme or a stalled server fails the step.
+# refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it. swap-off runs
+# `sudo swapoff -a`, refuses while /proc/swaps then lists a device, and logs the memory and swap lines of /proc/meminfo;
+# a release workflow runs it in a step that does not receive a secret, before the first step that does.
+# preflight, sign-files and sign-rpm each refuse before the key enters a process while /proc/swaps lists a device, so
+# a page holding the key or the passphrase is not written to disk by this job's steps. The runner process holds
+# the job's secrets from before its first step, so a page of it written to swap before swap-off is outside this check.
+# preflight refuses an imported key whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files and
+# sign-rpm verify against that primary's public key alone, so a signature by another key fails the step that made it.
+# Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails the step.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds one
 # RPM without a signature per distribution DIST_IMAGES lists, each from the configuration render-nfpm.py writes for
@@ -212,7 +214,16 @@ _release_steps__require_swap_off() {
     swaps="$(cat -- "$_RELEASE_STEPS__PROC_SWAPS" 2>&1)" \
         || _release_steps__die "$_RELEASE_STEPS__PROC_SWAPS could not be read ($(_release_steps__format_one_line "$swaps")), so swap is not shown to be off; the signing key is not imported"
     [[ "$swaps" =~ ^Filename[[:space:]] && "$swaps" != *$'\n'* ]] \
-        || _release_steps__die "$_RELEASE_STEPS__PROC_SWAPS does not hold its header line alone ($(_release_steps__format_one_line "$swaps")), so swap is not shown to be off; the signing key is imported only while it lists no device, which preflight sets with \`sudo swapoff -a\`"
+        || _release_steps__die "$_RELEASE_STEPS__PROC_SWAPS does not hold its header line alone ($(_release_steps__format_one_line "$swaps")), so swap is not shown to be off; the signing key is imported only while it lists no device, which \`release-steps.sh swap-off\` sets with \`sudo swapoff -a\`"
+}
+
+_release_steps__swap_off() {
+    [[ "$#" -eq 0 ]] || _release_steps__die "usage: swap-off"
+    sudo swapoff -a || _release_steps__die "\`sudo swapoff -a\` failed; the signing steps refuse to import the key while swap may be on"
+    _release_steps__require_swap_off
+    echo "swap is off: $_RELEASE_STEPS__PROC_SWAPS lists no device"
+    awk '/^(MemTotal|MemAvailable|Shmem|SwapTotal|SwapFree):/ { print "memory: " $1 " " $2 " " $3 }' /proc/meminfo \
+        || _release_steps__warn "/proc/meminfo could not be read; the memory lines are not logged"
 }
 
 _release_steps__require_env() {
@@ -301,11 +312,7 @@ _release_steps__run_preflight() {
     _release_steps__require_env GPG_SIGNING_KEY GPG_SIGNING_PASSPHRASE ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
     # sign-rpms.sh reads the passphrase as the first stdin line, so a second line would corrupt the key read after it.
     [[ "$GPG_SIGNING_PASSPHRASE" != *$'\n'* ]] || _release_steps__die "GPG_SIGNING_PASSPHRASE spans more than one line"
-    sudo swapoff -a || _release_steps__die "\`sudo swapoff -a\` failed; the signing key is not imported while swap may be on"
     _release_steps__require_swap_off
-    echo "swap is off: $_RELEASE_STEPS__PROC_SWAPS lists no device"
-    awk '/^(MemTotal|MemAvailable|Shmem|SwapTotal|SwapFree):/ { print "memory: " $1 " " $2 " " $3 }' /proc/meminfo \
-        || _release_steps__warn "/proc/meminfo could not be read; the memory lines are not logged"
     _release_steps__import_signing_key
     echo "imported signing key: primary $signing_primary"
     [[ "$signing_primary" == "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" ]] \
@@ -1839,7 +1846,7 @@ _release_steps__repin_tools() {
     _release_steps__next "after the merge: git ls-remote https://github.com/$_RELEASE_STEPS__GITHUB_REPOSITORY.git refs/heads/develop"
 }
 
-[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|test-floor|refresh-images|repin-tools|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|test-floor|refresh-images|repin-tools|swap-off|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
@@ -1847,6 +1854,7 @@ case "$step" in
     test-floor) _release_steps__test_floor "$@" ;;
     refresh-images) _release_steps__refresh_images "$@" ;;
     repin-tools) _release_steps__repin_tools "$@" ;;
+    swap-off) _release_steps__swap_off "$@" ;;
     verify-tag) _release_steps__verify_tag "$@" ;;
     preflight) _release_steps__run_preflight ;;
     sign-files) _release_steps__sign_files "$@" ;;

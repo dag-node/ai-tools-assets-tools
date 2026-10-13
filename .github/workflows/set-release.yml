@@ -153,6 +153,11 @@ jobs:
       - name: Keep the tools checkout out of the tree being released
         run: echo '/.ai-tools-assets-tools/' >> .git/info/exclude
 
+      # This step does not receive a secret. preflight, sign-files and sign-rpm, the steps that import the signing
+      # key, each check /proc/swaps again first.
+      - name: Swap is off before the first step that receives a secret
+        run: bash "$TOOLS/packaging/release-steps.sh" swap-off
+
       - name: The tag is annotated, names itself, points at this commit, and is signed by a pinned maintainer key
         env:
           EVENT_SHA: ${{ github.sha }}
