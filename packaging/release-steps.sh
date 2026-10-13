@@ -219,16 +219,16 @@ _release_steps__resolve_tag_object() {
 # _release_steps__verify_tag_signature <repository-dir> <tag> <tag-object> <fingerprints> <key-url>: refuse
 # a tag object without a PGP signature, then import the signers' keys from <key-url> into a scratch keyring and require
 # `git verify-tag` to report a VALIDSIG primary on the space-separated <fingerprints>. Sets
-# _RELEASE_STEPS__TAG_PRIMARY.
+# _RELEASE_STEPS__TAG_PRIMARY. GNUPGHOME names the scratch keyring for the import and the check alone, so a signed
+# `git commit` later in the same run reaches the caller's own keyring and agent.
 _release_steps__verify_tag_signature() {
     local directory="$1" tag="$2" tag_object="$3" fingerprints="$4" key_url="$5" status primary
     git -C "$directory" cat-file -p "$tag_object" | grep -qx -- '-----BEGIN PGP SIGNATURE-----' \
         || _release_steps__die "$tag carries no PGP signature; a release tag is created with git tag -s"
     _release_steps__create_scratch
-    export GNUPGHOME="$scratch"
-    "${CURL[@]}" "$key_url" | gpg --batch --quiet --import \
+    "${CURL[@]}" "$key_url" | GNUPGHOME="$scratch" gpg --batch --quiet --import \
         || _release_steps__die "the tag signers' key did not import from $key_url"
-    status="$(git -C "$directory" verify-tag --raw "$tag_object" 2>&1)" \
+    status="$(GNUPGHOME="$scratch" git -C "$directory" verify-tag --raw "$tag_object" 2>&1)" \
         || _release_steps__die "$tag does not verify: $status"
     primary="$(printf '%s\n' "$status" | awk '/^\[GNUPG:\] VALIDSIG/ { print $NF; exit }')"
     [[ -n "$primary" && " $fingerprints " == *" $primary "* ]] \
