@@ -112,6 +112,7 @@ _RELEASE_STEPS__EXPIRED_DISTS=()
 declare -A _RELEASE_STEPS__CURRENT_DIGESTS=()
 _RELEASE_STEPS__FAILED_COUNT=0
 _RELEASE_STEPS__SERVED_DIGEST=""
+_RELEASE_STEPS__BRANCH_DATE=""
 _RELEASE_STEPS__ANSWER=""
 # The repository whose workflows a caller pins, and each `uses:` line of a caller that names one, by position.
 _RELEASE_STEPS__TOOLS_REPOSITORY=dag-node/ai-tools-assets-tools
@@ -781,10 +782,12 @@ _release_steps__require_tools_checkout() {
 # _release_steps__require_caller_checkout <directory>: refuse unless <directory> is the root of a checkout
 # of a repository other than the tools that holds a .github/workflows/ directory.
 _release_steps__require_caller_checkout() {
-    local directory="$1" here
+    local directory="$1" here packaging
+    # The tools' own checkout is the one whose packaging/ holds this script, a path comparison with no read to fail.
+    packaging="$(realpath "$PACKAGING")" || _release_steps__die "the directory of this script, $PACKAGING, could not be resolved"
     here="$(realpath "$directory" 2>/dev/null)" || here=""
     [[ -n "$here" && "$(_release_steps__read_toplevel "$directory")" == "$here" \
-        && -d "$here/.github/workflows" && "$here" != "$(_release_steps__read_toplevel "$PACKAGING")" ]] \
+        && -d "$here/.github/workflows" && "$here/packaging" != "$packaging" ]] \
         || _release_steps__die "$directory is not a checkout of a caller with a \`.github/workflows/\`; run from the repository root"
 }
 
@@ -1028,7 +1031,7 @@ _release_steps__format_joined() {
 # line unchanged, so a failed or partial awk run leaves the file as it was. The text reaches awk through the
 # environment, which does not interpret a backslash.
 _release_steps__replace_line() {
-    local file="$1" number="$2" text="$3" rewritten index before=() after=()
+    local file="$1" number="$2" text="$3" rewritten index last before=() after=()
     [[ "$number" =~ ^[1-9][0-9]*$ ]] || _release_steps__die "$file holds no single line to rewrite (\`$number\`); the file is unchanged"
     _release_steps__create_temp_dir
     rewritten="$_RELEASE_STEPS__TEMP_DIR/rewritten"
@@ -1036,7 +1039,9 @@ _release_steps__replace_line() {
         'NR == number { print ENVIRON["_RELEASE_STEPS__LINE"]; next } { print }' "$file" >"$rewritten" \
         || _release_steps__die "awk did not rewrite $file:$number; the file is unchanged"
     # awk ends every line with a newline; a file whose last line has none keeps that, so the diff holds one line.
-    if [[ -n "$(tail -c 1 "$file")" ]]; then
+    _release_steps__read_output last tail -c 1 "$file" \
+        || _release_steps__die "the last byte of $file could not be read ($_RELEASE_STEPS__ANSWER); the file is unchanged"
+    if [[ -n "$last" ]]; then
         truncate -s -1 "$rewritten" || _release_steps__die "the rewrite of $file could not be trimmed; the file is unchanged"
     fi
     mapfile -t before <"$file"
@@ -1053,14 +1058,19 @@ _release_steps__replace_line() {
     cat "$rewritten" >"$file" || _release_steps__die "$file could not be written"
 }
 
-# _release_steps__read_branch_date <directory> <branch> <variable>: print the `# resolved <date>` of the <variable>
-# pin line at the tip of a local <branch>, so a re-run regenerates the change the branch committed on an earlier day;
-# returns 1 where the branch or the comment is absent.
+# _release_steps__read_branch_date <directory> <branch> <variable>: set _RELEASE_STEPS__BRANCH_DATE to the
+# `# resolved <date>` of the <variable> pin line at the tip of a local <branch>, so a re-run regenerates the change
+# the branch committed on an earlier day; returns 1 where the branch or the comment is absent, and refuses where
+# the branch exists and its script cannot be read, since today's date would then regenerate another change.
 _release_steps__read_branch_date() {
-    local line
-    line="$(git -C "$1" show "refs/heads/$2:packaging/release-steps.sh" 2>/dev/null | grep -E "^$3=")" || return 1
+    local script line
+    _RELEASE_STEPS__BRANCH_DATE=""
+    git -C "$1" rev-parse --verify --quiet "refs/heads/$2" >/dev/null || return 1
+    _release_steps__read_output script git -C "$1" show "refs/heads/$2:packaging/release-steps.sh" \
+        || _release_steps__die "branch $2 exists and its packaging/release-steps.sh could not be read in $1 ($_RELEASE_STEPS__ANSWER); nothing was written: run the same command again"
+    line="$(grep -E "^$3=" <<<"$script")" || return 1
     [[ "$line" =~ \#\ resolved\ ([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] || return 1
-    printf '%s' "${BASH_REMATCH[1]}"
+    _RELEASE_STEPS__BRANCH_DATE="${BASH_REMATCH[1]}"
 }
 
 # _release_steps__read_newest_version <changelog-text>: print the version of the newest `## [X.Y.Z]` heading.
@@ -1272,7 +1282,11 @@ _release_steps__refresh_images() {
     branch="build/$_RELEASE_STEPS__ID-$(_release_steps__format_joined - "${dists[@]}")-digest"
     title="build(packaging): pin the $images $noun $serves serves"
     # A re-run keeps the date the branch committed, so the regenerated change equals the branch's on a later day.
-    today="$(_release_steps__read_branch_date "$PWD" "$branch" "${dists[0]^^}_IMAGE")" || today="$(date -u +%Y-%m-%d)"
+    if _release_steps__read_branch_date "$PWD" "$branch" "${dists[0]^^}_IMAGE"; then
+        today="$_RELEASE_STEPS__BRANCH_DATE"
+    else
+        today="$(date -u +%Y-%m-%d)"
+    fi
     _release_steps__open_worktree "$PWD"
     _release_steps__step "writing packaging/release-steps.sh, CHANGELOG.md in the scratch worktree"
     file="$_RELEASE_STEPS__WORKTREE/packaging/release-steps.sh"
@@ -1539,7 +1553,8 @@ _release_steps__repin_tools() {
     local tools caller="$PWD" target sha mode index dist names=() quoted=() noun images serves registries=()
     local reference comment previous workflows=() workflow_list verb branch title body file files=() count script
     local pull_request status=0 date answer rule pinned old_comment pairs=() unreadable="" resolves=() changes=()
-    local -A seen=()
+    local -A seen=() dates=()
+    local parents parent_list=()
     _release_steps__parse_change_arguments repin-tools "$@"
     target="$_RELEASE_STEPS__TARGET"
     _release_steps__require_caller_checkout "$caller"
@@ -1586,8 +1601,10 @@ _release_steps__repin_tools() {
         # The commit is a refresh against its parent, and the move from the caller's pin to it brings a refresh alone:
         # a release tag and a release run attest to every other change, and a develop pin carries neither.
         rule="a develop pin is for a digest refresh alone, and any other change reaches a caller through a release"
-        [[ "$(git -C "$tools" rev-list --parents -n 1 "$sha" | wc -w)" -eq 2 ]] \
-            || _release_steps__die "${sha:0:7} is not a commit with one parent; $rule"
+        _release_steps__read_output parents git -C "$tools" rev-list --parents -n 1 "$sha" \
+            || _release_steps__die "the parents of ${sha:0:7} could not be read in $tools ($_RELEASE_STEPS__ANSWER); nothing was written: run the same command again"
+        read -ra parent_list <<<"$parents"
+        [[ "${#parent_list[@]}" -eq 2 ]] || _release_steps__die "${sha:0:7} is not a commit with one parent; $rule"
         _release_steps__require_pin_change "$tools" "$sha^" "$sha" "${sha:0:7} changes" "$rule"
         _release_steps__resolve_caller_pin "$tools" "${_RELEASE_STEPS__CALLER_REFS[0]}"
         pinned="$_RELEASE_STEPS__CALLER_PIN_COMMIT"
@@ -1618,6 +1635,7 @@ _release_steps__repin_tools() {
             [[ " ${registries[*]} " == *" ${reference%%/*} "* ]] || registries+=("${reference%%/*}")
             # The comment names the newest resolution date; the dates are ISO, so the greatest string is the newest.
             [[ "${_RELEASE_STEPS__REFRESH_DATES[$dist]}" < "$date" ]] || date="${_RELEASE_STEPS__REFRESH_DATES[$dist]}"
+            dates[${_RELEASE_STEPS__REFRESH_DATES[$dist]}]=1
         done
         noun=image images="$(_release_steps__format_list "${names[@]}")"
         [[ "${#names[@]}" -eq 1 ]] || noun=images
@@ -1698,7 +1716,7 @@ _release_steps__repin_tools() {
         if [[ "$noun" == image ]]; then
             body="whose release steps pin a $images image digest $serves no longer serves"
             resolves=("which pins the digest ${quoted[0]} resolves to on $date")
-        elif [[ "$(printf '%s\n' "${_RELEASE_STEPS__REFRESH_DATES[@]}" | sort -u | wc -l)" -eq 1 ]]; then
+        elif [[ "${#dates[@]}" -eq 1 ]]; then
             body="whose release steps pin $images image digests $serves no longer serves"
             resolves=("which pins the digests $(_release_steps__format_list "${quoted[@]}") resolve to on $date")
         else
