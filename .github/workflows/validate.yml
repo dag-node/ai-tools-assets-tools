@@ -71,7 +71,7 @@ env:
 jobs:
   validate:
     name: validate
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
       # This repository's own run accepts its AGPL formatters and RPM signer; a caller passes its own pairs.
@@ -163,7 +163,7 @@ jobs:
 
   tests:
     name: tests (python ${{ matrix.python }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
     strategy:
