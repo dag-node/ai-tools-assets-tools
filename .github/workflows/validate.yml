@@ -164,6 +164,8 @@ jobs:
   tests:
     name: tests (python ${{ matrix.python }})
     runs-on: ubuntu-26.04
+    # The release job's bound, not a contract: re-measured against a caller's suites as they grow.
+    timeout-minutes: 15
     env:
       TOOLS: ${{ github.workspace }}/.ai-tools-assets-tools
     strategy:
