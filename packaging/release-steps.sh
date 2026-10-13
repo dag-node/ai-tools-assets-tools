@@ -383,12 +383,23 @@ _release_steps__ensure_skopeo() {
 
 # _release_steps__read_manifest_digest <reference>: set _RELEASE_STEPS__SERVED_DIGEST to the SHA-256
 # digest of the manifest the registry returns for <reference>, hashed from the raw bytes, which are the bytes a digest
-# names. On a failure it returns 1 with skopeo's message, on one line, in _RELEASE_STEPS__ANSWER.
+# names. On a failure it returns 1 with skopeo's or sha256sum's message, on one line, in _RELEASE_STEPS__ANSWER. It is
+# called as an `if` condition, where `set -e` is off, so each command's status is read here, and a hash that is not
+# 64 hex digits is a failure: a pin and the refresh's replacement take the digest this function sets.
 _release_steps__read_manifest_digest() {
-    local manifest="$_RELEASE_STEPS__TEMP_DIR/manifest" answer
+    local manifest="$_RELEASE_STEPS__TEMP_DIR/manifest" answer hash
     _RELEASE_STEPS__SERVED_DIGEST=""
     if answer="$(skopeo inspect --raw "docker://$1" 2>&1 >"$manifest")"; then
-        _RELEASE_STEPS__SERVED_DIGEST="sha256:$(sha256sum <"$manifest" | cut -d' ' -f1)"
+        if ! hash="$(sha256sum <"$manifest" 2>&1)"; then
+            _RELEASE_STEPS__ANSWER="sha256sum did not hash the manifest of $1 ($(_release_steps__format_one_line "$hash"))"
+            return 1
+        fi
+        hash="${hash%% *}"
+        if [[ ! "$hash" =~ ^[0-9a-f]{64}$ ]]; then
+            _RELEASE_STEPS__ANSWER="sha256sum answered \`$(_release_steps__format_one_line "$hash")\` for the manifest of $1, not a SHA-256 digest"
+            return 1
+        fi
+        _RELEASE_STEPS__SERVED_DIGEST="sha256:$hash"
         return 0
     fi
     answer="${answer//$'\n'/ }"

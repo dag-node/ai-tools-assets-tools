@@ -268,6 +268,19 @@ class CheckImages(RegistryCase):
         self.assertEqual(status, 1)
         self.assertIn(f"the registry returned a manifest whose digest is {CURRENT['fc44']}", stderr)
 
+    def test_a_hash_that_fails_or_is_cut_short_fails_the_check(self):
+        """The third sha256sum is the Fedora pin's; a failed one that prints the pinned digest does not pass it."""
+        self.answer_pinned(*IMAGES)
+        for stdout, status in (("", 2), ("e01fa6", 2), (f"{PINNED['fc44'][7:]}  -\n", 2), ("e01fa6  -\n", 0)):
+            with self.subTest(stdout=stdout, status=status):
+                self.fault("sha256sum", "*", stdout=stdout, status=status, call=3)
+                exit_status, _, stderr = self.check()
+                self.assertEqual(exit_status, 1, stderr)
+                self.assertIn(f"fc44: the registry could not be read for {IMAGES['fc44']} (sha256sum ", stderr)
+                self.assertNotIn("the tag names", stderr)
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
+
     def test_an_absent_skopeo_is_named(self):
         farm = self.root / "bin"
         farm.mkdir()
@@ -680,6 +693,24 @@ class RefreshImages(ChangeCase):
             self.assertIn(phrase, stderr)
             self.assertIn("; the file is unchanged", stderr)
             self.assert_tools_unchanged(develop)
+
+    def test_a_hash_that_fails_or_is_cut_short_is_not_pinned(self):
+        """The third sha256sum is the hash of the manifest the Fedora tag names now, which the refresh pins."""
+        develop = self.git(self.tools, "rev-parse", "develop")
+        self.answer_expired_fedora()
+        self.answer_pull_request()
+        for stdout, status in (("", 2), ("e01fa6", 2), (f"{CURRENT['fc44'][7:]}  -\n", 2), ("e01fa6  -\n", 0)):
+            with self.subTest(stdout=stdout, status=status):
+                self.fault("sha256sum", "*", stdout=stdout, status=status, call=3)
+                exit_status, _, stderr = self.refresh()
+                self.assertEqual(exit_status, 1, stderr)
+                self.assertIn(f"fc44: the registry could not be read for {IMAGES['fc44']} (sha256sum ", stderr)
+                self.assertNotIn("the tag names", stderr)
+                self.assertIn("check-images could not read every image (the lines above), so an expiry cannot be told"
+                              " from an outage", stderr)
+                self.assert_tools_unchanged(develop)
+                self.assertEqual(len(self.faulted()), 1)
+                self.fault_log.write_text("", encoding="utf-8")
 
     def test_a_commit_that_fails_creates_no_branch_and_a_rerun_finishes(self):
         develop = self.git(self.tools, "rev-parse", "develop")
