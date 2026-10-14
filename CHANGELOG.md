@@ -7,6 +7,13 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Changed
+
+- **The release log records the keyring removal.** At exit,
+  `release-steps.sh` prints `removed the tmpfs scratch directory <name>` on
+  stderr for each `/dev/shm` scratch directory it removed. Before, a removal
+  printed nothing, and only a failed one printed a warning.
+
 ## [1.4.0] - 2026-10-13
 
 ### Added

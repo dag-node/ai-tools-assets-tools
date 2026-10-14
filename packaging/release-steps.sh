@@ -166,8 +166,11 @@ _release_steps__die() {
 # Every scratch directory and the signing container are removed on exit, a gpg-agent started in a scratch directory is
 # stopped first, and INT and TERM exit through the same trap. Each removal runs whatever the one before it answered,
 # and one that fails prints a warning naming what it left, so a container that is not removed does not keep a keyring
-# directory under /dev/shm from removal. The helpers set globals rather than print, since state set inside a command
-# substitution's subshell does not reach this shell's trap.
+# directory under /dev/shm from removal. Each tmpfs scratch directory removed is named by its basename, so the log
+# records a keyring's removal; the temporary directory, which holds public data, is removed without a line. The line
+# goes to stderr, since the trap prints after the subcommand and a subcommand's stdout can be its caller's data.
+# The helpers set globals rather than print, since state set inside a command substitution's subshell does not reach
+# this shell's trap.
 scratch_directories=()
 container=""
 _RELEASE_STEPS__TEMP_DIR=""
@@ -187,7 +190,13 @@ _release_steps__remove_scratch_and_container() {
         if ! GNUPGHOME="$directory" gpgconf --kill gpg-agent >/dev/null 2>&1 && [[ -d "$directory/private-keys-v1.d" ]]; then
             _release_steps__warn "the gpg-agent of $directory did not stop; stop it with \`GNUPGHOME=$directory gpgconf --kill gpg-agent\`"
         fi
-        rm -rf "$directory" || _release_steps__warn "$directory was not removed; remove it with \`rm -rf $directory\`"
+        if rm -rf "$directory"; then
+            # An unbound read under `set -u` would end the trap before the removals after it.
+            [[ "$directory" == "${_RELEASE_STEPS__TEMP_DIR:-}" ]] \
+                || echo "release-steps: removed the tmpfs scratch directory ${directory##*/}" >&2
+        else
+            _release_steps__warn "$directory was not removed; remove it with \`rm -rf $directory\`"
+        fi
     done
 }
 trap _release_steps__remove_scratch_and_container EXIT

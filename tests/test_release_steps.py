@@ -1751,6 +1751,30 @@ class Cleanup(unittest.TestCase):
                 for warning in warnings:
                     (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
 
+    def test_the_release_steps_trap_names_each_scratch_directory_it_removed_and_warns_where_rm_fails(self):
+        functions = shell_functions("_release_steps__remove_scratch_and_container", "_release_steps__warn")
+        for rm_status in (0, 1):
+            with self.subTest(rm_status=rm_status):
+                scratch, temp = self.keyring(f"scratch-{rm_status}"), self.root / f"temp-{rm_status}"
+                temp.mkdir()
+                stub = "rm() { return 1; }\n" if rm_status else ""
+                script = (f'set -euo pipefail\n{functions}container=""\n_RELEASE_STEPS__WORKTREE=""\n'
+                          f'_RELEASE_STEPS__TEMP_DIR="$2"\nscratch_directories=("$1" "$2")\ngpgconf() {{ return 0; }}\n'
+                          f'{stub}trap _release_steps__remove_scratch_and_container EXIT\nexit 0\n')
+                completed = subprocess.run([BASH, "-c", script, "_", str(scratch), str(temp)], capture_output=True,
+                                           text=True)
+                # stdout stays empty: a subcommand's stdout can be its caller's data.
+                self.assertEqual(completed.stdout, "")
+                removed = [line for line in completed.stderr.splitlines() if "removed the" in line]
+                # The temporary directory holds public data and is removed without a line.
+                self.assertEqual(removed, [] if rm_status else
+                                 [f"release-steps: removed the tmpfs scratch directory {scratch.name}"])
+                warnings = [f"::warning::release-steps: {scratch} was not removed",
+                            f"::warning::release-steps: {temp} was not removed"]
+                for warning in warnings:
+                    (self.assertIn if rm_status else self.assertNotIn)(warning, completed.stderr)
+                self.assertEqual((scratch.exists(), temp.exists()), (bool(rm_status),) * 2, completed.stderr)
+
 
 class SwapCheck(unittest.TestCase):
     """The check preflight, sign-files and sign-rpm run before the key enters a process, on /proc/swaps fixtures."""
