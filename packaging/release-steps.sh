@@ -678,6 +678,21 @@ echo "the suite passed at the floor in $*"' _ "$(id -u)" "$(id -g)" "$@" </dev/n
         || _release_steps__die "the floor suite did not pass in $EL9_IMAGE"
 }
 
+# _release_steps__print_mounts: one line per mount of a /proc/self/mounts listing on stdin, with its first option
+# (`ro` or `rw`) and its type. The verify job's own mounts (`/`, `/in`, `/rpmdb`) are labelled `job`, and the ones
+# podman adds (`/etc/hosts`, `/run/.containerenv`, the masked paths) `podman`, so the log states each one's access.
+# The verify containers run it, written into their script.
+_release_steps__print_mounts() {
+    local mountpoint type options origin
+    while read -r _ mountpoint type options _; do
+        case "$mountpoint" in
+            / | /in | /rpmdb) origin=job ;;
+            *) origin=podman ;;
+        esac
+        echo "$origin mount: ${options%%,*} $mountpoint ($type)"
+    done
+}
+
 _release_steps__sign_rpm() {
     [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-rpm <rpm>..."
     local rpm name names=() work verify out image
@@ -740,10 +755,8 @@ _release_steps__sign_rpm() {
         out="$(sudo podman run --rm --pull=never --network=none --ipc=none --cap-drop=all \
                 --security-opt=no-new-privileges --read-only --read-only-tmpfs=false --pids-limit=64 \
                 --tmpfs /rpmdb:rw,nosuid,nodev,noexec,size=32m,mode=0700 --entrypoint /usr/bin/bash -v "$verify:/in:ro" \
-                "$image" -c '
-                while read -r _ mountpoint type _; do
-                    [[ "$type" != tmpfs ]] || echo "tmpfs: $mountpoint"
-                done </proc/self/mounts
+                "$image" -c "$(declare -f _release_steps__print_mounts)"'
+                _release_steps__print_mounts </proc/self/mounts
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
                 rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
