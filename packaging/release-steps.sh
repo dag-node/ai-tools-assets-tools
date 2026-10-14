@@ -600,8 +600,7 @@ _release_steps__check_images() {
     echo "release-steps: ok: every image resolves"
 }
 
-# podman and runc from PATH, or installed with apt-get where the runner image lacks them; ubuntu-26.04 ships podman
-# without runc.
+# podman and runc from PATH, installed with apt-get on a runner image that lacks either.
 _release_steps__ensure_podman() {
     local command missing=()
     for command in podman runc; do
