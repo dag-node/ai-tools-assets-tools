@@ -13,6 +13,11 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   `release-steps.sh` prints `removed the tmpfs scratch directory <name>` on
   stderr for each `/dev/shm` scratch directory it removed. Before, a removal
   printed nothing, and only a failed one printed a warning.
+- **The verify containers print each mount's access.** `sign-rpm`'s verify
+  containers print every mount with `ro` or `rw` and its type, as
+  `job mount:` for `/`, `/in` and `/rpmdb` and `podman mount:` for the
+  mounts podman adds. Before, they printed `tmpfs: <mountpoint>` for the tmpfs
+  mounts alone.
 
 ## [1.4.0] - 2026-10-13
 

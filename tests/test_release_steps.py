@@ -1776,6 +1776,30 @@ class Cleanup(unittest.TestCase):
                 self.assertEqual((scratch.exists(), temp.exists()), (bool(rm_status),) * 2, completed.stderr)
 
 
+class PrintMounts(unittest.TestCase):
+    """The verify containers' mount lines, on a /proc/self/mounts fixture: each mount's access and type, the job's own
+    labelled apart from podman's."""
+
+    def test_each_mount_is_printed_with_its_access_and_its_origin(self):
+        mounts = ("overlay / overlay ro,relatime,lowerdir=/l 0 0\n"
+                  "/dev/sda1 /in xfs ro,nosuid,nodev,relatime 0 0\n"
+                  "tmpfs /rpmdb tmpfs rw,nosuid,nodev,noexec,size=32768k,mode=700 0 0\n"
+                  "shm /etc/hosts tmpfs ro,nosuid,nodev,noexec 0 0\n"
+                  "tmpfs /run/.containerenv tmpfs rw,nosuid,nodev 0 0\n"
+                  "devtmpfs /proc/kcore devtmpfs ro,nosuid 0 0\n")
+        script = f'set -euo pipefail\n{shell_functions("_release_steps__print_mounts")}_release_steps__print_mounts\n'
+        completed = subprocess.run([BASH, "-c", script], input=mounts, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.splitlines(), [
+            "job mount: ro / (overlay)",
+            "job mount: ro /in (xfs)",
+            "job mount: rw /rpmdb (tmpfs)",
+            "podman mount: ro /etc/hosts (tmpfs)",
+            "podman mount: rw /run/.containerenv (tmpfs)",
+            "podman mount: ro /proc/kcore (devtmpfs)",
+        ])
+
+
 class SwapCheck(unittest.TestCase):
     """The check preflight, sign-files and sign-rpm run before the key enters a process, on /proc/swaps fixtures."""
 
