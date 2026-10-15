@@ -88,7 +88,8 @@
 # rpm the RPMs install with) that does not receive the secrets, so no package scriptlet runs while the key is present,
 # signs every RPM with sign-rpms.sh beside this file in one container of that image, copies the signed files out with
 # `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK for each RPM inside the image of the
-# distribution its dist tag names; the exit status alone passes an unsigned package. The secrets reach a container
+# distribution its dist tag names; the exit status alone passes an unsigned package. The same container prints
+# the RPM's Provides and Obsoletes as that distribution's rpm reads them. The secrets reach a container
 # on stdin, since podman records an `-e` value in the container's configuration on disk. The container that holds
 # the key and those that verify run with no network, so the key does not leave them over a network; the signed RPMs
 # do leave the signing container and are published, so the digest pins are what fix the code that runs with the key.
@@ -758,8 +759,9 @@ _release_steps__sign_rpm() {
                 _release_steps__print_mounts </proc/self/mounts
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
+                rpm --dbpath /rpmdb -qp --qf "[provides: %{PROVIDENEVRS}\n][obsoletes: %{OBSOLETENEVRS}\n]" "/in/$1" || exit 1
                 rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
-            || _release_steps__die "rpmkeys -Kv refused $name in $image: $out"
+            || _release_steps__die "the verify container refused $name in $image: $out"
         printf '%s:\n%s\n' "$image" "$out"
         grep -Eqi "$SIGNATURE_OK_PATTERN" <<<"$out" \
             || _release_steps__die "$name carries no signature that verifies in $image against $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
