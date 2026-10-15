@@ -77,6 +77,8 @@
 # the job's secrets from before its first step, so a page of it written to swap before swap-off is outside this check.
 # preflight refuses an imported key whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files and
 # sign-rpm verify against that primary's public key alone, so a signature by another key fails the step that made it.
+# sign-rpm reads that public key from the export sign-rpms.sh writes in the signing container, so the secret key is
+# imported into a keyring on the runner by preflight and sign-files alone.
 # Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails the step.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds one
@@ -272,6 +274,14 @@ _release_steps__import_signing_key() {
     signing_primary="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
 }
 
+# _release_steps__import_public_key <file>: import the public keys in <file> into a fresh scratch keyring and export
+# GNUPGHOME; the keyring does not hold a secret key.
+_release_steps__import_public_key() {
+    _release_steps__create_scratch
+    export GNUPGHOME="$scratch"
+    gpg --batch --quiet --import "$1" || _release_steps__die "$1 did not import as a public key"
+}
+
 # _release_steps__resolve_tag_object <repository-dir> <tag> [<revision>]: set _RELEASE_STEPS__TAG_OBJECT to
 # the annotated tag object <revision> (refs/tags/<tag> where not given) names, once that object names itself <tag>.
 _release_steps__resolve_tag_object() {
@@ -348,8 +358,8 @@ _release_steps__run_preflight() {
     done
 }
 
-# _release_steps__export_artifact_signer <file>: write the pinned primary's public key, from the imported
-# secret, to <file>.
+# _release_steps__export_artifact_signer <file>: write the pinned primary's public key, from the keyring GNUPGHOME
+# names, to <file>.
 _release_steps__export_artifact_signer() {
     gpg --batch --armor --export "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" > "$1"
     [[ -s "$1" ]] || _release_steps__die "the imported key does not hold the primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
@@ -734,14 +744,14 @@ _release_steps__sign_rpm() {
         || _release_steps__die "sign-rpms.sh failed in $SIGN_IMAGE: $out"
     printf '%s\n' "$out"
     grep -q 'signed and verified' <<<"$out" || _release_steps__die "sign-rpms.sh did not run in $SIGN_IMAGE"
-    for name in "${names[@]}"; do
+    for name in "${names[@]}" sign-rpms.pub; do
         sudo podman cp "$container:/out/$name" "$work/$name"
         sudo chown "$(id -u):$(id -g)" "$work/$name"
     done
     sudo podman rm "$container" >/dev/null
     container=""
 
-    _release_steps__import_signing_key
+    _release_steps__import_public_key "$work/sign-rpms.pub"
     _release_steps__create_scratch
     verify="$scratch"
     _release_steps__export_artifact_signer "$verify/artifact-signer.asc"

@@ -1850,6 +1850,78 @@ class SwapCheck(unittest.TestCase):
                 self.assertIn("so swap is not shown to be off; the signing key is not imported", stderr)
 
 
+@unittest.skipUnless(gpg_runs(), "a keyring needs gpg and a tmpfs /dev/shm")
+class ArtifactSignerFromPublicExport(unittest.TestCase):
+    """sign-rpm's verify key: the pinned primary's public key, read from the signing container's export into a keyring
+    that holds no secret key, with a key generated for the test as the signer and a second one beside it."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.gnupg = self.root / "gnupg"
+        self.gnupg.mkdir(mode=0o700)
+        self.signer = self.generate("Signer <signer@example.org>")
+        self.other = self.generate("Other <other@example.org>")
+
+    def tearDown(self):
+        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
+                       capture_output=True)
+        shutil.rmtree(self.root)
+
+    def gpg(self, *arguments: str) -> str:
+        return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",
+                               *arguments], capture_output=True, text=True, check=True).stdout
+
+    def generate(self, user: str) -> str:
+        """A primary key that signs, without a subkey; returns its fingerprint."""
+        self.gpg("--quick-generate-key", "--passphrase", "", user, "ed25519", "sign", "never")
+        listing = self.gpg("--with-colons", "--list-keys", user)
+        return next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+
+    def export(self, *primaries: str) -> pathlib.Path:
+        path = self.root / "sign-rpms.pub"
+        path.write_text(self.gpg("--armor", "--export", *primaries), encoding="utf-8")
+        return path
+
+    def read_signer(self, export: pathlib.Path):
+        """Run import_public_key and export_artifact_signer; stdout carries the keyring's secret-key count."""
+        functions = shell_functions("_release_steps__die", "_release_steps__create_scratch",
+                                    "_release_steps__import_public_key", "_release_steps__export_artifact_signer")
+        script = ('set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n'
+                  f'scratch_directories=()\n{functions}'
+                  'trap \'for d in "${scratch_directories[@]}"; do GNUPGHOME="$d" gpgconf --kill gpg-agent || true;'
+                  ' rm -rf "$d"; done\' EXIT\n'
+                  'ARTIFACT_SIGNER_PRIMARY_FINGERPRINT="$2"\n_release_steps__import_public_key "$1"\n'
+                  'echo "secret keys: $(gpg --batch --with-colons --list-secret-keys | grep -c "^sec:" || true)"\n'
+                  '_release_steps__export_artifact_signer "$3"\n')
+        output = self.root / "artifact-signer.asc"
+        completed = subprocess.run([BASH, "-c", script, "_", str(export), self.signer, str(output)],
+                                   capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr, output
+
+    def shown_primaries(self, path: pathlib.Path) -> list:
+        listing = self.gpg("--with-colons", "--show-keys", str(path))
+        lines = listing.splitlines()
+        return [lines[index + 1].split(":")[9] for index, line in enumerate(lines) if line.startswith("pub:")]
+
+    def test_the_pinned_primary_alone_is_written_from_a_keyring_without_a_secret(self):
+        status, stdout, stderr, output = self.read_signer(self.export(self.signer, self.other))
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(stdout, "secret keys: 0\n")
+        self.assertEqual(self.shown_primaries(output), [self.signer])
+
+    def test_an_export_without_the_pinned_primary_refuses(self):
+        status, _, stderr, _ = self.read_signer(self.export(self.other))
+        self.assertEqual(status, 1)
+        self.assertIn(f"::error::release-steps: the imported key does not hold the primary {self.signer}", stderr)
+
+    def test_an_export_that_is_not_a_key_refuses(self):
+        export = self.root / "sign-rpms.pub"
+        export.write_text("not a key\n", encoding="utf-8")
+        status, _, stderr, _ = self.read_signer(export)
+        self.assertEqual(status, 1)
+        self.assertIn(f"::error::release-steps: {export} did not import as a public key", stderr)
+
+
 class SwapOff(unittest.TestCase):
     """swap-off with a `sudo` function standing for `sudo swapoff -a`, over /proc/swaps fixtures."""
 
