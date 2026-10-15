@@ -7,6 +7,18 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Fixed
+
+- **`new-set` names the set's dnf package and its plugin apart.**
+  The `README.md` and `CHANGELOG.md` it writes name the dnf package
+  `ai-tools-assets-sets-<set>` and the agent marketplace plugin
+  `ai-tools-assets-<set>`, and the `README.md` holds the summary as given.
+  Before, both names were the same, `ai-tools-assets-<set>`,
+  and the `README.md` held the summary in the quotes `set.conf` needs. The dnf
+  package name carries the `-sets-` infix, so it does not clash
+  with the tooling package `ai-tools-assets-tools` and sorts beside the other
+  `ai-tools` packages.
+
 ## [1.5.0] - 2026-10-15
 
 ### Changed
