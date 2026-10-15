@@ -18,7 +18,8 @@ commands, and the GitHub workflows that run them.
 **Status.** Format 1, the commands, the fixtures, the workflows and the signed
 set release are released as `v1.5.0`, which `v1` names. A publisher calls
 the workflows at `v1` or at a commit, and runs the tools from the RPM
-`ai-tools-assets-tools` or from a checkout.
+`ai-tools-assets-tools` or from a checkout. A host holds that RPM
+at an installed version with dnf's `versionlock` plugin.
 
 ## Layout
 

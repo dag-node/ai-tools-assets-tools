@@ -99,35 +99,10 @@ on `check-images` fails every pull request in this repository and in each
 caller. Fedora's quay.io organization deletes a superseded digest within hours
 of its daily rebuild, so the Fedora 44 pin names
 `registry.fedoraproject.org/fedora:44`, which serves the same digests and keeps
-them. A refresh is a commit on this repository's `develop`, not a release: it
-changes the expired pin lines and `CHANGELOG.md` alone. Each caller pins
-that commit by its full SHA in every `uses:` line, and the next release
-of the tools carries the new digest.
-
-Two commands carry a refresh, each opening its pull request under your own git
-and `gh` credentials. In a clean checkout of the tools on `develop`:
-
-```bash
-bash packaging/release-steps.sh refresh-images --id ATR-261103a
-```
-
-Once that pull request is merged, in each caller's checkout, with the full
-SHA the tools' `develop` now names:
-
-```bash
-steps=../ai-tools-assets-tools/packaging/release-steps.sh
-bash "$steps" repin-tools --id ATR-261103a <sha>
-```
-
-`repin-tools` refuses the commit when the tools changed in more than pin
-lines and `CHANGELOG.md` since the caller's current pin: that caller re-pins
-through the next release of the tools instead, since a release tag and
-a release run attest to the other changes and a `develop` pin carries neither.
-
-The same `repin-tools` line with a tag (`v1.3.0`) re-pins a caller to
-a release. `--dry-run` prints the change and the pull-request body and does
-not commit, push or open a pull request; `--help` prints the usage; and the
-same line run again continues after an interruption.
+them. A refresh is a commit on this repository's `develop`, not a release,
+carried by `release-steps.sh refresh-images` here and `repin-tools` in each
+caller; [docs/development/release.md](../docs/development/release.md) states
+the procedure.
 
 ## The release environment
 
