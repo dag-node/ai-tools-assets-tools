@@ -9,6 +9,16 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ### Changed
 
+- **A set's RPM and zip are named `ai-tools-assets-sets-<set>`.** A set
+  release attaches `ai-tools-assets-sets-<set>-<version>.zip` and
+  `ai-tools-assets-sets-<set>-<version>-1.<dist>.noarch.rpm`, and `build-set`
+  writes the zip under that name. The RPM provides `ai-tools-assets-<set>` at
+  its own version and obsoletes every lower version of it, so `dnf upgrade`
+  replaces an installed `ai-tools-assets-<set>` in one transaction and
+  `dnf install ai-tools-assets-<set>` installs the new package. The plugin
+  keeps the name `ai-tools-assets-<set>`. Before, the RPM and the zip were
+  named `ai-tools-assets-<set>`, which for a set named `tools` is the name of
+  this repository's RPM; the set `tools` does not carry the two relations.
 - **The release log records the keyring removal.** At exit,
   `release-steps.sh` prints `removed the tmpfs scratch directory <name>` on
   stderr for each `/dev/shm` scratch directory it removed. Before, a removal

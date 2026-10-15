@@ -94,7 +94,7 @@ class RenderSetConfiguration(TemplateRules, unittest.TestCase):
         text = self.output.read_text(encoding="utf-8")
         self.assertNotRegex(text, r"@[A-Z_]+@")
         self.assertEqual(self.rendered(), {
-            "name": "ai-tools-assets-acme",
+            "name": "ai-tools-assets-sets-acme",
             "version": "0.1.0",
             "release": "1.el9",
             "maintainer": "acme <tools@acme.example>",
@@ -107,6 +107,28 @@ class RenderSetConfiguration(TemplateRules, unittest.TestCase):
         self.assertIn('dst: "/usr/share/ai-tools-assets/acme"', text)
         self.assert_no_entry_at_a_tree_destination(text)
         self.assertIn(("/usr/share/ai-tools-assets", "dir"), contents(text))
+
+    def flow_sequence(self, key: str) -> list:
+        """The rendered top-level `key: [...]` line's value, which JSON reads as YAML does."""
+        for line in self.output.read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{key}: "):
+                return json.loads(line.split(": ", 1)[1])
+        self.fail(f"the configuration has no `{key}:` line")
+
+    def test_the_package_provides_and_obsoletes_its_former_name_below_its_version(self):
+        status, _, stderr = self.render()
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.flow_sequence("provides"), ["ai-tools-assets-acme = 0.1.0"])
+        self.assertEqual(self.flow_sequence("replaces"), ["ai-tools-assets-acme < 0.1.0"])
+
+    def test_the_set_tools_does_not_name_the_tools_rpm(self):
+        set_conf = self.staged / "set.conf"
+        set_conf.write_text(set_conf.read_text(encoding="utf-8").replace("name=acme\n", "name=tools\n"), encoding="utf-8")
+        status, _, stderr = self.render(set_name="tools")
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.rendered()["name"], "ai-tools-assets-sets-tools")
+        self.assertEqual(self.flow_sequence("provides"), [])
+        self.assertEqual(self.flow_sequence("replaces"), [])
 
     def test_a_version_other_than_the_tags_is_refused(self):
         status, _, stderr = self.render(version="0.2.0")
@@ -163,6 +185,7 @@ class RenderToolsConfiguration(TemplateRules, unittest.TestCase):
                                 "--output", str(self.output))
         self.assertEqual(status, 0, stderr)
         text = self.output.read_text(encoding="utf-8")
+        self.assertIn('name: "ai-tools-assets-tools"', text)
         self.assertIn('version: "1.0.0-rc.1"', text)
         self.assertIn('release: "1.fc44"', text)
         self.assertNotRegex(text, r"@[A-Z_]+@")

@@ -151,13 +151,20 @@ The status check is `ai-tools-assets / release`, from the calling job's name.
 
 | Asset | What it is |
 |---|---|
-| `ai-tools-assets-<set>-<version>.zip` | the staged set, plugin root at the top, as `tools/build-set` wrote it |
+| `ai-tools-assets-sets-<set>-<version>.zip` | the staged set, plugin root at the top, as `tools/build-set` wrote it |
 | `….zip.sha256`, `….zip.asc` | its SHA-256 and its detached signature |
 | `SHA256SUMS`, `SHA256SUMS.asc` | the staged set's inventory and its detached signature |
-| `ai-tools-assets-<set>-<version>-1.<dist>.noarch.rpm` | the staged set under `/usr/share/ai-tools-assets/<set>/`, `SHA256SUMS.asc` included, with an RPM header signature; one per `<dist>` of `el9`, `el10` and `fc44`, which `dag-node/rpm` places in the tree of that distribution |
+| `ai-tools-assets-sets-<set>-<version>-1.<dist>.noarch.rpm` | the staged set under `/usr/share/ai-tools-assets/<set>/`, `SHA256SUMS.asc` included, with an RPM header signature; one per `<dist>` of `el9`, `el10` and `fc44`, which `dag-node/rpm` places in the tree of that distribution |
 
 The zip does not carry `SHA256SUMS.asc`, since `build-set` writes the zip
 before the release signs `SHA256SUMS`; the zip's own `.asc` covers it whole.
+
+A set's RPM was named `ai-tools-assets-<set>` up to tools 1.4.0. The RPM
+provides that name at its own version and obsoletes every lower version of it,
+so `dnf upgrade` replaces an installed package of the old name in one
+transaction and `dnf install ai-tools-assets-<set>` installs the new one.
+The set `tools` carries neither relation, since `ai-tools-assets-tools` is
+the tools RPM.
 
 ## Files
 
