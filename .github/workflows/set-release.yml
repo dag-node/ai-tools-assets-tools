@@ -18,7 +18,7 @@
 #         tools-repository: ''            # a fork of this repository the tools are checked out from, as <owner>/<repo>
 #
 # The job verifies the tag, validates and builds the set with tools/build-set, signs SHA256SUMS and the zip with the
-# org package-signing key, packages the staged set as the RPM ai-tools-assets-<set> with nFPM once for each
+# org package-signing key, packages the staged set as the RPM ai-tools-assets-sets-<set> with nFPM once for each
 # distribution rpm.dagnode.com serves, signs the RPMs inside an EL9 container and verifies each in its own distribution,
 # and creates the release with the zip, its .sha256 and .asc, SHA256SUMS, SHA256SUMS.asc and the RPMs; the zip holds
 # the set build-set staged, and SHA256SUMS.asc is a release asset beside it and a file in each RPM. Each step runs

@@ -165,6 +165,12 @@ class PublisherRepository(unittest.TestCase):
         status, stdout, stderr = run("new-set", "acme-dotnet", "--root", str(self.root), "--summary", "ASP.NET Core skills")
         self.assertEqual(status, 0, stderr)
         self.assertIn("sets/acme-dotnet/set.conf", stdout)
+        readme = (self.root / "sets" / "acme-dotnet" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("\n\nASP.NET Core skills\n\n", readme, "the README holds the summary as given, not set.conf's quoting")
+        self.assertIn("dnf package `ai-tools-assets-sets-acme-dotnet`", readme)
+        self.assertIn("plugin\n`ai-tools-assets-acme-dotnet`", readme)
+        self.assertIn("dnf package `ai-tools-assets-sets-acme-dotnet`",
+                      (self.root / "sets" / "acme-dotnet" / "CHANGELOG.md").read_text(encoding="utf-8"))
         status, _, stderr = run("new-asset", "acme-dotnet", "skill", "acme-dotnet-ef-migrations", "--root", str(self.root))
         self.assertEqual(status, 0, stderr)
         status, _, stderr = run("new-asset", "acme-dotnet", "subagent", "acme-dotnet-reviewer", "--root", str(self.root))
