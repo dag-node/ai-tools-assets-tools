@@ -246,7 +246,7 @@ class PublisherRepository(unittest.TestCase):
         status, _, stderr = run("build-set", "acme", cwd=self.root)
         self.assertEqual(status, 0, stderr)
         marker = self.root / "build" / ".acme.ai-tools-assets-build"
-        archive = self.root / "dist" / "ai-tools-assets-acme-0.1.0.zip"
+        archive = self.root / "dist" / "ai-tools-assets-sets-acme-0.1.0.zip"
         for generated, content in ((marker, marker.read_bytes()), (archive, b"OUTSIDE ZIP")):
             other_name = self.root.parent / ("outside-" + generated.name)
             other_name.write_bytes(content)
@@ -289,13 +289,13 @@ class PublisherRepository(unittest.TestCase):
         for line in inventory:
             digest, relative = line.split("  ", 1)
             self.assertEqual(hashlib.sha256((staged / relative).read_bytes()).hexdigest(), digest)
-        archive = self.root / "dist" / "ai-tools-assets-acme-0.1.0.zip"
+        archive = self.root / "dist" / "ai-tools-assets-sets-acme-0.1.0.zip"
         self.assertTrue(archive.is_file())
         with zipfile.ZipFile(archive) as opened:
             names = set(opened.namelist())
         self.assertIn("plugin.json", names, "the plugin root is at the top of the archive")
         self.assertIn("SHA256SUMS", names)
-        self.assertEqual((self.root / "dist" / "ai-tools-assets-acme-0.1.0.zip.sha256").read_text(encoding="utf-8").split()[0],
+        self.assertEqual((self.root / "dist" / "ai-tools-assets-sets-acme-0.1.0.zip.sha256").read_text(encoding="utf-8").split()[0],
                          hashlib.sha256(archive.read_bytes()).hexdigest())
         status, _, stderr = run("validate", "--set-directory", str(staged), "--publisher", "acme", "--profile", "release")
         self.assertEqual((status, stderr), (0, ""))

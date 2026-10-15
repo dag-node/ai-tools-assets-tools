@@ -15,10 +15,12 @@
 # The release workflow runs it after tools/build-set has validated and staged the set, so the values come from the
 # set.conf that ships. It refuses a set.conf the KEY=value reader reports a problem in, a `name` other than `--set` and
 # a `version` other than `--version`, which the workflow takes from the tag, so the package version is the tag's. Each
-# `@KEY@` in the template is replaced in one pass by its value as a JSON string, which YAML reads as a double-quoted
-# scalar: a quote, a colon or a `@KEY@` inside a value stays text and does not reach nFPM as configuration. A template
-# naming a key this script does not supply is refused. The tools RPM takes the version alone, which the workflow
-# takes from the tag `v<version>`; it is held to semantic versioning here. Standard library only.
+# `@KEY@` in the template is replaced in one pass by its value as JSON: a string, which YAML reads as a double-quoted
+# scalar, or a list of strings, which YAML reads as a flow sequence of them. A quote, a colon or a `@KEY@` inside
+# a value stays text and does not reach nFPM as configuration. A template naming a key this script does not supply is
+# refused. A set's package provides and obsoletes its former name, `ai-tools-assets-<set>`, except the set `tools`,
+# whose former name is the tools RPM's. The tools RPM takes the version alone, which the workflow takes from the tag
+# `v<version>`; it is held to semantic versioning here. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -26,17 +28,19 @@ import json
 import pathlib
 import re
 import sys
-from typing import Dict
+from typing import Dict, List, Union
 
 PACKAGING = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(PACKAGING.parent / "tools" / "lib"))
 
-from asset_format import SEMVER_PATTERN  # noqa: E402
+from asset_format import PACKAGE_NAME_PREFIX, SEMVER_PATTERN  # noqa: E402
 from key_value_config import KeyValueDocument, parse_key_value_text  # noqa: E402
 
 PLACEHOLDER = re.compile(r"@([A-Z_]+)@")
 DIST_TAG = re.compile(r"(el|fc)[1-9][0-9]*")
-PACKAGE_PREFIX = "ai-tools-assets-"
+TOOLS_PACKAGE_NAME = "ai-tools-assets-tools"
+# The name a set's RPM carried up to tools 1.4.0.
+FORMER_PACKAGE_PREFIX = "ai-tools-assets-"
 INSTALL_ROOT = "/usr/share/ai-tools-assets"
 
 
@@ -56,8 +60,11 @@ def read_config(path: pathlib.Path) -> KeyValueDocument:
     return document
 
 
-def render(template: str, values: Dict[str, str]) -> str:
-    """The template with every `@KEY@` replaced by its value as a JSON string, in one pass."""
+Values = Dict[str, Union[str, List[str]]]
+
+
+def render(template: str, values: Values) -> str:
+    """The template with every `@KEY@` replaced by its value as JSON, in one pass."""
     missing = sorted(set(PLACEHOLDER.findall(template)) - set(values))
     if missing:
         raise RenderError(f"the template names {', '.join(missing)}, which this script does not supply")
@@ -70,7 +77,7 @@ def format_rpm_release(dist: str) -> str:
     return f"1.{dist}"
 
 
-def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.Path, dist: str) -> Dict[str, str]:
+def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.Path, dist: str) -> Values:
     set_conf = read_config(staged / "set.conf")
     publisher_conf = read_config(root / "publisher.conf")
     if set_conf.get("name") != set_name:
@@ -78,8 +85,13 @@ def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.
     if set_conf.get("version") != version:
         raise RenderError(f"{staged / 'set.conf'}: version is `{set_conf.get('version')}`, not the tag's `{version}`")
     publisher = publisher_conf.get("publisher")
+    former_name = FORMER_PACKAGE_PREFIX + set_name
+    if former_name == TOOLS_PACKAGE_NAME:
+        provides, replaces = [], []
+    else:
+        provides, replaces = [f"{former_name} = {version}"], [f"{former_name} < {version}"]
     return {
-        "NAME": PACKAGE_PREFIX + set_name,
+        "NAME": PACKAGE_NAME_PREFIX + set_name,
         "VERSION": version,
         "RELEASE": format_rpm_release(dist),
         "SUMMARY": set_conf.get("summary"),
@@ -90,13 +102,15 @@ def set_values(root: pathlib.Path, set_name: str, version: str, staged: pathlib.
         "STAGED": str(staged.resolve()),
         "INSTALL_ROOT": INSTALL_ROOT,
         "DESTINATION": f"{INSTALL_ROOT}/{set_name}",
+        "PROVIDES": provides,
+        "REPLACES": replaces,
     }
 
 
-def tools_values(version: str, dist: str) -> Dict[str, str]:
+def tools_values(version: str, dist: str) -> Values:
     if not SEMVER_PATTERN.match(version):
         raise RenderError(f"`{version}` is not a semantic version")
-    return {"VERSION": version, "RELEASE": format_rpm_release(dist)}
+    return {"NAME": TOOLS_PACKAGE_NAME, "VERSION": version, "RELEASE": format_rpm_release(dist)}
 
 
 def main() -> int:

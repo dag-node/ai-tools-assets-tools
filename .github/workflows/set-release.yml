@@ -179,7 +179,7 @@ jobs:
           # build-set creates files 0644 and directories 0755 under this umask, the modes the RPM and the zip carry.
           umask 022
           python3 "$TOOLS/tools/build-set" "$SET"
-          zip="dist/ai-tools-assets-$SET-$VERSION.zip"
+          zip="dist/ai-tools-assets-sets-$SET-$VERSION.zip"
           for file in "$zip" "$zip.sha256" "build/$SET/SHA256SUMS"; do
             test -f "$file" || { echo "::error::build-set did not write $file; set.conf's version is not the tag's $VERSION" >&2; exit 1; }
           done

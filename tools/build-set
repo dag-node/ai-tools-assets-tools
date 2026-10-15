@@ -11,7 +11,7 @@
 # vendored assets declare (from the set's own `LICENSES/` or the repository's) and the repository's `LICENSE` where the
 # set has none, so every payload carries its notices. `SHA256SUMS` at the staged root lists every file in `sha256sum`
 # format, paths relative to the set root, itself and its signature excluded. The staged set is validated again under
-# the release profile, so what ships is what passed, and the zip, `dist/ai-tools-assets-<set>-<version>.zip`, holds
+# the release profile, so what ships is what passed, and the zip, `dist/ai-tools-assets-sets-<set>-<version>.zip`, holds
 # it with the plugin root at the top of the archive (Claude Code's `archive` source reads it so), with fixed timestamps
 # and sorted entries so the same tree gives the same bytes; its SHA-256 is written beside it.
 #
@@ -225,7 +225,7 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
         shutil.rmtree(staging_root, ignore_errors=True)
 
     dist_root.mkdir(parents=True, exist_ok=True)
-    archive_path = dist_root / f"{fmt.PLUGIN_NAME_PREFIX}{set_name}-{summary.set_conf.get('version')}.zip"
+    archive_path = dist_root / f"{fmt.PACKAGE_NAME_PREFIX}{set_name}-{summary.set_conf.get('version')}.zip"
     checksum_path = archive_path.with_suffix(".zip.sha256")
     archive = build_zip_archive(staged)
     try:

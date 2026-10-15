@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # The nFPM configuration of a set's RPM; packaging/render-nfpm.py replaces each placeholder, an upper-case key between
-# two at signs, with a quoted value. The package installs the staged set, SHA256SUMS and SHA256SUMS.asc included, under
+# two at signs, with a quoted value or a list of them. The package installs the staged set, SHA256SUMS and SHA256SUMS.asc included, under
 # /usr/share/ai-tools-assets/<set>/ and owns that directory, so `rpm -e` removes it; it co-owns
 # /usr/share/ai-tools-assets with every other set's package, so the last removal removes that too. The tree entry
 # writes the set's directory itself, with the staged directory's mode, and nFPM refuses a second entry at a tree's
@@ -9,6 +9,12 @@
 # and SOURCE_DATE_EPOCH (from the environment) fix the header fields that would differ between two builds of one tag.
 # nFPM gives a file under a tree entry its staged mtime and does not apply a tree entry's `file_info.mtime` to it,
 # so the workflow sets every staged mtime to SOURCE_DATE_EPOCH before nFPM runs.
+# The package was named ai-tools-assets-<set> up to tools 1.4.0. It provides that name at its own version and replaces
+# (an RPM Obsoletes) every version of it below its own, so `dnf upgrade` swaps an installed package of the former name
+# for this one in one transaction and `dnf install ai-tools-assets-<set>` installs this one. The Provides alone would
+# not move a host: dnf matches a package's name ahead of a Provides, and installs a build of the former name that
+# a repository still serves. render-nfpm.py renders both lists empty for the set `tools`, whose former name is
+# the tools RPM's.
 name: @NAME@
 arch: all
 platform: linux
@@ -20,6 +26,8 @@ vendor: @VENDOR@
 homepage: @HOMEPAGE@
 license: @LICENSE@
 description: @SUMMARY@
+provides: @PROVIDES@
+replaces: @REPLACES@
 umask: 0o022
 contents:
   - dst: @INSTALL_ROOT@
