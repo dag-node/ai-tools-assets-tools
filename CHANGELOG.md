@@ -7,6 +7,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-15
+
 ### Changed
 
 - **A set's RPM and zip are named `ai-tools-assets-sets-<set>`.** A set
@@ -22,11 +24,12 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 - **The verify containers print each RPM's relations.** `sign-rpm` prints
   a `provides:` and an `obsoletes:` line for each relation of an RPM, as
   the rpm of the distribution its dist tag names reads it.
-- **The signing key is imported into a keyring on the runner twice.**
-  `sign-rpm` reads the public key its verify containers trust from the export
-  the signing container writes, and keeps the pinned primary's key alone.
-  Before, it imported the secret key on the runner a third time, after
-  `preflight` and `sign-files`, to export that public key.
+- **`sign-rpm` does not import the secret key on the runner.** It reads
+  the public key its verify containers trust from the export the signing
+  container writes, and keeps the pinned primary's key alone, so a release
+  imports the secret key into a runner keyring in `preflight` and
+  `sign-files` alone. Before, `sign-rpm` imported it a third time to export
+  that public key.
 - **The release log records the keyring removal.** At exit,
   `release-steps.sh` prints `removed the tmpfs scratch directory <name>` on
   stderr for each `/dev/shm` scratch directory it removed. Before, a removal
