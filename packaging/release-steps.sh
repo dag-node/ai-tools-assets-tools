@@ -77,6 +77,8 @@
 # the job's secrets from before its first step, so a page of it written to swap before swap-off is outside this check.
 # preflight refuses an imported key whose primary is not ARTIFACT_SIGNER_PRIMARY_FINGERPRINT, and sign-files and
 # sign-rpm verify against that primary's public key alone, so a signature by another key fails the step that made it.
+# sign-rpm reads that public key from the export sign-rpms.sh writes in the signing container, so the secret key is
+# imported into a keyring on the runner by preflight and sign-files alone.
 # Every download is HTTPS alone and bounded in time, so a redirect to another scheme or a stalled server fails the step.
 #
 # build-rpm runs nFPM at NFPM_VERSION and NFPM_TARBALL_SHA256, downloaded and checked before it runs, and builds one
@@ -88,7 +90,8 @@
 # rpm the RPMs install with) that does not receive the secrets, so no package scriptlet runs while the key is present,
 # signs every RPM with sign-rpms.sh beside this file in one container of that image, copies the signed files out with
 # `podman cp`, and requires `rpmkeys -Kv` to print a signature line ending in OK for each RPM inside the image of the
-# distribution its dist tag names; the exit status alone passes an unsigned package. The secrets reach a container
+# distribution its dist tag names; the exit status alone passes an unsigned package. The same container prints
+# the RPM's Provides and Obsoletes as that distribution's rpm reads them. The secrets reach a container
 # on stdin, since podman records an `-e` value in the container's configuration on disk. The container that holds
 # the key and those that verify run with no network, so the key does not leave them over a network; the signed RPMs
 # do leave the signing container and are published, so the digest pins are what fix the code that runs with the key.
@@ -166,8 +169,11 @@ _release_steps__die() {
 # Every scratch directory and the signing container are removed on exit, a gpg-agent started in a scratch directory is
 # stopped first, and INT and TERM exit through the same trap. Each removal runs whatever the one before it answered,
 # and one that fails prints a warning naming what it left, so a container that is not removed does not keep a keyring
-# directory under /dev/shm from removal. The helpers set globals rather than print, since state set inside a command
-# substitution's subshell does not reach this shell's trap.
+# directory under /dev/shm from removal. Each tmpfs scratch directory removed is named by its basename, so the log
+# records a keyring's removal; the temporary directory, which holds public data, is removed without a line. The line
+# goes to stderr, since the trap prints after the subcommand and a subcommand's stdout can be its caller's data.
+# The helpers set globals rather than print, since state set inside a command substitution's subshell does not reach
+# this shell's trap.
 scratch_directories=()
 container=""
 _RELEASE_STEPS__TEMP_DIR=""
@@ -187,7 +193,13 @@ _release_steps__remove_scratch_and_container() {
         if ! GNUPGHOME="$directory" gpgconf --kill gpg-agent >/dev/null 2>&1 && [[ -d "$directory/private-keys-v1.d" ]]; then
             _release_steps__warn "the gpg-agent of $directory did not stop; stop it with \`GNUPGHOME=$directory gpgconf --kill gpg-agent\`"
         fi
-        rm -rf "$directory" || _release_steps__warn "$directory was not removed; remove it with \`rm -rf $directory\`"
+        if rm -rf "$directory"; then
+            # An unbound read under `set -u` would end the trap before the removals after it.
+            [[ "$directory" == "${_RELEASE_STEPS__TEMP_DIR:-}" ]] \
+                || echo "release-steps: removed the tmpfs scratch directory ${directory##*/}" >&2
+        else
+            _release_steps__warn "$directory was not removed; remove it with \`rm -rf $directory\`"
+        fi
     done
 }
 trap _release_steps__remove_scratch_and_container EXIT
@@ -260,6 +272,14 @@ _release_steps__import_signing_key() {
     gpg --batch --with-colons --list-secret-keys | grep -q '^sec:' \
         || _release_steps__die "GPG_SIGNING_KEY carries no secret key: it is a public key, or an export without the secret part"
     signing_primary="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+}
+
+# _release_steps__import_public_key <file>: import the public keys in <file> into a fresh scratch keyring and export
+# GNUPGHOME; the keyring does not hold a secret key.
+_release_steps__import_public_key() {
+    _release_steps__create_scratch
+    export GNUPGHOME="$scratch"
+    gpg --batch --quiet --import "$1" || _release_steps__die "$1 did not import as a public key"
 }
 
 # _release_steps__resolve_tag_object <repository-dir> <tag> [<revision>]: set _RELEASE_STEPS__TAG_OBJECT to
@@ -338,8 +358,8 @@ _release_steps__run_preflight() {
     done
 }
 
-# _release_steps__export_artifact_signer <file>: write the pinned primary's public key, from the imported
-# secret, to <file>.
+# _release_steps__export_artifact_signer <file>: write the pinned primary's public key, from the keyring GNUPGHOME
+# names, to <file>.
 _release_steps__export_artifact_signer() {
     gpg --batch --armor --export "$ARTIFACT_SIGNER_PRIMARY_FINGERPRINT" > "$1"
     [[ -s "$1" ]] || _release_steps__die "the imported key does not hold the primary $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"
@@ -591,8 +611,7 @@ _release_steps__check_images() {
     echo "release-steps: ok: every image resolves"
 }
 
-# podman and runc from PATH, or installed with apt-get where the runner image lacks them; ubuntu-26.04 ships podman
-# without runc.
+# podman and runc from PATH, installed with apt-get on a runner image that lacks either.
 _release_steps__ensure_podman() {
     local command missing=()
     for command in podman runc; do
@@ -669,6 +688,21 @@ echo "the suite passed at the floor in $*"' _ "$(id -u)" "$(id -g)" "$@" </dev/n
         || _release_steps__die "the floor suite did not pass in $EL9_IMAGE"
 }
 
+# _release_steps__print_mounts: one line per mount of a /proc/self/mounts listing on stdin, with its first option
+# (`ro` or `rw`) and its type. The verify job's own mounts (`/`, `/in`, `/rpmdb`) are labelled `job`, and the ones
+# podman adds (`/etc/hosts`, `/run/.containerenv`, the masked paths) `podman`, so the log states each one's access.
+# The verify containers run it, written into their script.
+_release_steps__print_mounts() {
+    local mountpoint type options origin
+    while read -r _ mountpoint type options _; do
+        case "$mountpoint" in
+            / | /in | /rpmdb) origin=job ;;
+            *) origin=podman ;;
+        esac
+        echo "$origin mount: ${options%%,*} $mountpoint ($type)"
+    done
+}
+
 _release_steps__sign_rpm() {
     [[ "$#" -ge 1 ]] || _release_steps__die "usage: sign-rpm <rpm>..."
     local rpm name names=() work verify out image
@@ -710,14 +744,14 @@ _release_steps__sign_rpm() {
         || _release_steps__die "sign-rpms.sh failed in $SIGN_IMAGE: $out"
     printf '%s\n' "$out"
     grep -q 'signed and verified' <<<"$out" || _release_steps__die "sign-rpms.sh did not run in $SIGN_IMAGE"
-    for name in "${names[@]}"; do
+    for name in "${names[@]}" sign-rpms.pub; do
         sudo podman cp "$container:/out/$name" "$work/$name"
         sudo chown "$(id -u):$(id -g)" "$work/$name"
     done
     sudo podman rm "$container" >/dev/null
     container=""
 
-    _release_steps__import_signing_key
+    _release_steps__import_public_key "$work/sign-rpms.pub"
     _release_steps__create_scratch
     verify="$scratch"
     _release_steps__export_artifact_signer "$verify/artifact-signer.asc"
@@ -731,14 +765,13 @@ _release_steps__sign_rpm() {
         out="$(sudo podman run --rm --pull=never --network=none --ipc=none --cap-drop=all \
                 --security-opt=no-new-privileges --read-only --read-only-tmpfs=false --pids-limit=64 \
                 --tmpfs /rpmdb:rw,nosuid,nodev,noexec,size=32m,mode=0700 --entrypoint /usr/bin/bash -v "$verify:/in:ro" \
-                "$image" -c '
-                while read -r _ mountpoint type _; do
-                    [[ "$type" != tmpfs ]] || echo "tmpfs: $mountpoint"
-                done </proc/self/mounts
+                "$image" -c "$(declare -f _release_steps__print_mounts)"'
+                _release_steps__print_mounts </proc/self/mounts
                 rpmkeys --dbpath /rpmdb --import /in/artifact-signer.asc || exit 1
                 rpm --version
+                rpm --dbpath /rpmdb -qp --qf "[provides: %{PROVIDENEVRS}\n][obsoletes: %{OBSOLETENEVRS}\n]" "/in/$1" || exit 1
                 rpmkeys --dbpath /rpmdb -Kv "/in/$1" 2>&1' _ "$name" 2>&1)" \
-            || _release_steps__die "rpmkeys -Kv refused $name in $image: $out"
+            || _release_steps__die "the verify container refused $name in $image: $out"
         printf '%s:\n%s\n' "$image" "$out"
         grep -Eqi "$SIGNATURE_OK_PATTERN" <<<"$out" \
             || _release_steps__die "$name carries no signature that verifies in $image against $ARTIFACT_SIGNER_PRIMARY_FINGERPRINT"

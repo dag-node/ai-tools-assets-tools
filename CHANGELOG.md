@@ -7,6 +7,39 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-15
+
+### Changed
+
+- **A set's RPM and zip are named `ai-tools-assets-sets-<set>`.** A set
+  release attaches `ai-tools-assets-sets-<set>-<version>.zip` and
+  `ai-tools-assets-sets-<set>-<version>-1.<dist>.noarch.rpm`, and `build-set`
+  writes the zip under that name. The RPM provides `ai-tools-assets-<set>` at
+  its own version and obsoletes every lower version of it, so `dnf upgrade`
+  replaces an installed `ai-tools-assets-<set>` in one transaction and
+  `dnf install ai-tools-assets-<set>` installs the new package. The plugin
+  keeps the name `ai-tools-assets-<set>`. Before, the RPM and the zip were
+  named `ai-tools-assets-<set>`, which for a set named `tools` is the name of
+  this repository's RPM; the set `tools` does not carry the two relations.
+- **The verify containers print each RPM's relations.** `sign-rpm` prints
+  a `provides:` and an `obsoletes:` line for each relation of an RPM, as
+  the rpm of the distribution its dist tag names reads it.
+- **`sign-rpm` does not import the secret key on the runner.** It reads
+  the public key its verify containers trust from the export the signing
+  container writes, and keeps the pinned primary's key alone, so a release
+  imports the secret key into a runner keyring in `preflight` and
+  `sign-files` alone. Before, `sign-rpm` imported it a third time to export
+  that public key.
+- **The release log records the keyring removal.** At exit,
+  `release-steps.sh` prints `removed the tmpfs scratch directory <name>` on
+  stderr for each `/dev/shm` scratch directory it removed. Before, a removal
+  printed nothing, and only a failed one printed a warning.
+- **The verify containers print each mount's access.** `sign-rpm`'s verify
+  containers print every mount with `ro` or `rw` and its type, as
+  `job mount:` for `/`, `/in` and `/rpmdb` and `podman mount:` for the
+  mounts podman adds. Before, they printed `tmpfs: <mountpoint>` for the tmpfs
+  mounts alone.
+
 ## [1.4.0] - 2026-10-13
 
 ### Added

@@ -32,6 +32,10 @@ UPSTREAM_SET = "core"
 BASE_SET = "ai-tools"
 UPSTREAM_ASSET_PREFIX = "ai-tools-"
 PLUGIN_NAME_PREFIX = "ai-tools-assets-"
+# A set's RPM and release zip are `ai-tools-assets-sets-<set>`, so neither shares a name with the tools RPM
+# `ai-tools-assets-tools` or its release assets; the plugin keeps PLUGIN_NAME_PREFIX, since a marketplace lists sets
+# alone.
+PACKAGE_NAME_PREFIX = "ai-tools-assets-sets-"
 MARKETPLACE_NAME_SUFFIX = "-ai-tools-assets"
 # OpenAI's plugin submission limits `<plugin>:<skill>` to 64 characters; the tools warn, since it binds one route.
 COMPOSED_NAME_MAX_LENGTH = 64

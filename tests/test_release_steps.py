@@ -1751,6 +1751,54 @@ class Cleanup(unittest.TestCase):
                 for warning in warnings:
                     (self.assertIn if status else self.assertNotIn)(warning, completed.stderr)
 
+    def test_the_release_steps_trap_names_each_scratch_directory_it_removed_and_warns_where_rm_fails(self):
+        functions = shell_functions("_release_steps__remove_scratch_and_container", "_release_steps__warn")
+        for rm_status in (0, 1):
+            with self.subTest(rm_status=rm_status):
+                scratch, temp = self.keyring(f"scratch-{rm_status}"), self.root / f"temp-{rm_status}"
+                temp.mkdir()
+                stub = "rm() { return 1; }\n" if rm_status else ""
+                script = (f'set -euo pipefail\n{functions}container=""\n_RELEASE_STEPS__WORKTREE=""\n'
+                          f'_RELEASE_STEPS__TEMP_DIR="$2"\nscratch_directories=("$1" "$2")\ngpgconf() {{ return 0; }}\n'
+                          f'{stub}trap _release_steps__remove_scratch_and_container EXIT\nexit 0\n')
+                completed = subprocess.run([BASH, "-c", script, "_", str(scratch), str(temp)], capture_output=True,
+                                           text=True)
+                # stdout stays empty: a subcommand's stdout can be its caller's data.
+                self.assertEqual(completed.stdout, "")
+                removed = [line for line in completed.stderr.splitlines() if "removed the" in line]
+                # The temporary directory holds public data and is removed without a line.
+                self.assertEqual(removed, [] if rm_status else
+                                 [f"release-steps: removed the tmpfs scratch directory {scratch.name}"])
+                warnings = [f"::warning::release-steps: {scratch} was not removed",
+                            f"::warning::release-steps: {temp} was not removed"]
+                for warning in warnings:
+                    (self.assertIn if rm_status else self.assertNotIn)(warning, completed.stderr)
+                self.assertEqual((scratch.exists(), temp.exists()), (bool(rm_status),) * 2, completed.stderr)
+
+
+class PrintMounts(unittest.TestCase):
+    """The verify containers' mount lines, on a /proc/self/mounts fixture: each mount's access and type, the job's own
+    labelled apart from podman's."""
+
+    def test_each_mount_is_printed_with_its_access_and_its_origin(self):
+        mounts = ("overlay / overlay ro,relatime,lowerdir=/l 0 0\n"
+                  "/dev/sda1 /in xfs ro,nosuid,nodev,relatime 0 0\n"
+                  "tmpfs /rpmdb tmpfs rw,nosuid,nodev,noexec,size=32768k,mode=700 0 0\n"
+                  "shm /etc/hosts tmpfs ro,nosuid,nodev,noexec 0 0\n"
+                  "tmpfs /run/.containerenv tmpfs rw,nosuid,nodev 0 0\n"
+                  "devtmpfs /proc/kcore devtmpfs ro,nosuid 0 0\n")
+        script = f'set -euo pipefail\n{shell_functions("_release_steps__print_mounts")}_release_steps__print_mounts\n'
+        completed = subprocess.run([BASH, "-c", script], input=mounts, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.splitlines(), [
+            "job mount: ro / (overlay)",
+            "job mount: ro /in (xfs)",
+            "job mount: rw /rpmdb (tmpfs)",
+            "podman mount: ro /etc/hosts (tmpfs)",
+            "podman mount: rw /run/.containerenv (tmpfs)",
+            "podman mount: ro /proc/kcore (devtmpfs)",
+        ])
+
 
 class SwapCheck(unittest.TestCase):
     """The check preflight, sign-files and sign-rpm run before the key enters a process, on /proc/swaps fixtures."""
@@ -1800,6 +1848,78 @@ class SwapCheck(unittest.TestCase):
                 self.assertEqual((status, stdout), (1, ""))
                 self.assertIn(f"::error::release-steps: {swaps} could not be read (", stderr)
                 self.assertIn("so swap is not shown to be off; the signing key is not imported", stderr)
+
+
+@unittest.skipUnless(gpg_runs(), "a keyring needs gpg and a tmpfs /dev/shm")
+class ArtifactSignerFromPublicExport(unittest.TestCase):
+    """sign-rpm's verify key: the pinned primary's public key, read from the signing container's export into a keyring
+    that holds no secret key, with a key generated for the test as the signer and a second one beside it."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.gnupg = self.root / "gnupg"
+        self.gnupg.mkdir(mode=0o700)
+        self.signer = self.generate("Signer <signer@example.org>")
+        self.other = self.generate("Other <other@example.org>")
+
+    def tearDown(self):
+        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
+                       capture_output=True)
+        shutil.rmtree(self.root)
+
+    def gpg(self, *arguments: str) -> str:
+        return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",
+                               *arguments], capture_output=True, text=True, check=True).stdout
+
+    def generate(self, user: str) -> str:
+        """A primary key that signs, without a subkey; returns its fingerprint."""
+        self.gpg("--quick-generate-key", "--passphrase", "", user, "ed25519", "sign", "never")
+        listing = self.gpg("--with-colons", "--list-keys", user)
+        return next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+
+    def export(self, *primaries: str) -> pathlib.Path:
+        path = self.root / "sign-rpms.pub"
+        path.write_text(self.gpg("--armor", "--export", *primaries), encoding="utf-8")
+        return path
+
+    def read_signer(self, export: pathlib.Path):
+        """Run import_public_key and export_artifact_signer; stdout carries the keyring's secret-key count."""
+        functions = shell_functions("_release_steps__die", "_release_steps__create_scratch",
+                                    "_release_steps__import_public_key", "_release_steps__export_artifact_signer")
+        script = ('set -euo pipefail\n_RELEASE_STEPS__DIE_PREFIX=""\n_RELEASE_STEPS__DIE_SUFFIX=""\n'
+                  f'scratch_directories=()\n{functions}'
+                  'trap \'for d in "${scratch_directories[@]}"; do GNUPGHOME="$d" gpgconf --kill gpg-agent || true;'
+                  ' rm -rf "$d"; done\' EXIT\n'
+                  'ARTIFACT_SIGNER_PRIMARY_FINGERPRINT="$2"\n_release_steps__import_public_key "$1"\n'
+                  'echo "secret keys: $(gpg --batch --with-colons --list-secret-keys | grep -c "^sec:" || true)"\n'
+                  '_release_steps__export_artifact_signer "$3"\n')
+        output = self.root / "artifact-signer.asc"
+        completed = subprocess.run([BASH, "-c", script, "_", str(export), self.signer, str(output)],
+                                   capture_output=True, text=True)
+        return completed.returncode, completed.stdout, completed.stderr, output
+
+    def shown_primaries(self, path: pathlib.Path) -> list:
+        listing = self.gpg("--with-colons", "--show-keys", str(path))
+        lines = listing.splitlines()
+        return [lines[index + 1].split(":")[9] for index, line in enumerate(lines) if line.startswith("pub:")]
+
+    def test_the_pinned_primary_alone_is_written_from_a_keyring_without_a_secret(self):
+        status, stdout, stderr, output = self.read_signer(self.export(self.signer, self.other))
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(stdout, "secret keys: 0\n")
+        self.assertEqual(self.shown_primaries(output), [self.signer])
+
+    def test_an_export_without_the_pinned_primary_refuses(self):
+        status, _, stderr, _ = self.read_signer(self.export(self.other))
+        self.assertEqual(status, 1)
+        self.assertIn(f"::error::release-steps: the imported key does not hold the primary {self.signer}", stderr)
+
+    def test_an_export_that_is_not_a_key_refuses(self):
+        export = self.root / "sign-rpms.pub"
+        export.write_text("not a key\n", encoding="utf-8")
+        status, _, stderr, _ = self.read_signer(export)
+        self.assertEqual(status, 1)
+        self.assertIn(f"::error::release-steps: {export} did not import as a public key", stderr)
 
 
 class SwapOff(unittest.TestCase):

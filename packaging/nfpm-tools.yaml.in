@@ -6,7 +6,7 @@
 # `python3 /usr/share/ai-tools-assets-tools/tools/<name>`. The conformance fixtures ship in the release archive alone:
 # another project's validator reads them from there, and an installed tool does not read them. umask, buildhost and
 # SOURCE_DATE_EPOCH serve as in nfpm-set.yaml.in.
-name: ai-tools-assets-tools
+name: @NAME@
 arch: all
 platform: linux
 version: @VERSION@
