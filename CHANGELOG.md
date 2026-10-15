@@ -19,6 +19,9 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   keeps the name `ai-tools-assets-<set>`. Before, the RPM and the zip were
   named `ai-tools-assets-<set>`, which for a set named `tools` is the name of
   this repository's RPM; the set `tools` does not carry the two relations.
+- **The verify containers print each RPM's relations.** `sign-rpm` prints
+  a `provides:` and an `obsoletes:` line for each relation of an RPM, as
+  the rpm of the distribution its dist tag names reads it.
 - **The release log records the keyring removal.** At exit,
   `release-steps.sh` prints `removed the tmpfs scratch directory <name>` on
   stderr for each `/dev/shm` scratch directory it removed. Before, a removal
