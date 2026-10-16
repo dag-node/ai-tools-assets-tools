@@ -7,6 +7,14 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Changed
+
+- **The tools are MIT throughout.** The formatters under `formatters/` and
+  `packaging/sign-rpms.sh` are under MIT, as the rest of the repository is,
+  and the tools RPM's licence tag is `MIT`. A publisher who copied
+  a formatter into its own repository may keep the copy under MIT. Before,
+  those files were `AGPL-3.0-only` and the tag was `MIT AND AGPL-3.0-only`.
+
 ## [1.5.2] - 2026-10-16
 
 ### Fixed

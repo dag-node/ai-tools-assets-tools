@@ -14,8 +14,8 @@
 # open is refused, not judged on an annotation as though it declared no licence. Every identifier is on the list in
 # force -- `publisher.conf` `licenses=`, or the GPLv3-compatible permissive default, plus each `--allow` -- and has its
 # text under `LICENSES/`. An `--exception` accepts one identifier for the files its glob (REUSE's grammar: `**` crosses
-# `/`, `*` does not) matches alone, which is how this repository carries its `AGPL-3.0-only` `formatters/` beside an
-# MIT tree. `LICENSE`, `LICENSES/`, `REUSE.toml` and a `.license` sidecar are not judged: they are the texts and the
+# `/`, `*` does not) matches alone, so `vendor/**=GPL-3.0-only` lets a tree carry one directory under another
+# licence. `LICENSE`, `LICENSES/`, `REUSE.toml` and a `.license` sidecar are not judged: they are the texts and the
 # declarations themselves. A symbolic link is not judged either, as `reuse lint` does not judge one: it holds a path,
 # not content, and its target is judged where it is tracked. A `REUSE.toml` inside a subdirectory is not read, and
 # every file under it is reported. Standard library only.

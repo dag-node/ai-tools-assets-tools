@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 """Read and write the files a formatter rewrites, refusing what is not plain text.
 
 ```bash

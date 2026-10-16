@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 # Reflow the comment paragraphs of each file in place, with the hanging paragraphs, column tables and decorated
 # headers `formatters/emacs/ai-tools-fill.el` fills by rules of their own.
 #
