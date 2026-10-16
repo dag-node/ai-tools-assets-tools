@@ -12,7 +12,7 @@ this file is about changing the tools that apply it.
 | a command | `tools/<command>`, with its tests under `tests/` |
 | a shared Python module | `tools/lib/`, named with underscores, imported by the commands |
 | a workflow a publisher calls | `.github/workflows/`, with its inputs documented in the workflow's header |
-| a formatter | `formatters/`, under `AGPL-3.0-only` |
+| a formatter | `formatters/` |
 | a release step | `packaging/release-steps.sh`, which both release workflows run |
 
 A tool is Python 3.9 and the standard library alone, or bash, so it runs
@@ -63,8 +63,6 @@ the rulesets and the release checklist.
 ## License
 
 Contributions are made under the MIT license (see `LICENSE`) unless the file
-states another licence in its SPDX header. The files under `formatters/` and
-`packaging/sign-rpms.sh` are `AGPL-3.0-only`, and a contribution to one of them
-is under that licence.
+states another licence in its SPDX header.
 `REUSE.toml` covers a file that does not state one, and `LICENSES/` holds
 the text of every identifier the repository uses.

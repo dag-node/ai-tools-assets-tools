@@ -1,5 +1,5 @@
 ;;; ai-tools-fill.el --- fill comment prose without ending a line on a tie word  -*- lexical-binding: t -*-
-;; SPDX-License-Identifier: AGPL-3.0-only
+;; SPDX-License-Identifier: MIT
 ;;
 ;; The formatter for the wrap rule the writing standard states: a comment is read as written, so
 ;; each file kind wraps at its own column, and no comment line ends on an article, a conjunction,

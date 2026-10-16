@@ -477,19 +477,9 @@ class PublisherRepository(unittest.TestCase):
 
 
 class LicenseCheck(unittest.TestCase):
-    def test_this_repository_passes_with_the_formatters_and_signer_exceptions(self):
-        status, _, stderr = run("check-licenses", "--root", str(REPOSITORY), "--exception", "formatters/**=AGPL-3.0-only",
-                                "--exception", "packaging/sign-rpms.sh=AGPL-3.0-only")
-        self.assertEqual((status, stderr), (0, ""))
-
-    def test_the_exception_is_needed_and_a_single_star_does_not_reach_a_subdirectory(self):
+    def test_this_repository_passes_under_mit_alone(self):
         status, _, stderr = run("check-licenses", "--root", str(REPOSITORY))
-        self.assertEqual(status, 1)
-        self.assertIn("license.allowlist", stderr)
-        status, _, stderr = run("check-licenses", "--root", str(REPOSITORY), "--exception", "formatters/*=AGPL-3.0-only")
-        self.assertEqual(status, 1)
-        self.assertIn("formatters/emacs/ai-tools-fill.el: license.allowlist", stderr)
-        self.assertNotIn("formatters/format.sh", stderr)
+        self.assertEqual((status, stderr), (0, ""))
 
 
 # The scratch trees carry SPDX headers and annotations as string literals; `reuse lint` reads each as an expression
@@ -654,6 +644,28 @@ class LicenseCheckOverATree(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertIn("REUSE.toml: license.file: annotations table 1: path `", stderr, "a glob outside the grammar refuses the file whole")
             self.assertNotIn("check-licenses: src/x.py", stderr)
+
+    def test_an_exception_accepts_its_identifier_for_the_files_its_glob_matches_alone(self):
+        self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')
+        self.write("vendor/a.sh", "# SPDX-License-Identifier: GPL-3.0-only\n")
+        self.write("vendor/deep/b.el", ";; SPDX-License-Identifier: GPL-3.0-only\n")
+        self.write("tool.py", "# SPDX-License-Identifier: GPL-3.0-only\n")
+
+        def check_with(*exceptions: str) -> str:
+            arguments = [argument for exception in exceptions for argument in ("--exception", exception)]
+            status, _, stderr = run("check-licenses", "--root", str(self.scratch), *arguments)
+            self.assertEqual(status, 1, exceptions)
+            return stderr
+
+        stderr = check_with()
+        for path in ("vendor/a.sh", "vendor/deep/b.el", "tool.py"):
+            self.assertIn(f"{path}: license.allowlist", stderr, path)
+        stderr = check_with("vendor/*=GPL-3.0-only")
+        self.assertNotIn("vendor/a.sh", stderr)
+        self.assertIn("vendor/deep/b.el: license.allowlist", stderr, "a single star does not reach a subdirectory")
+        stderr = check_with("vendor/**=GPL-3.0-only")
+        self.assertNotIn("vendor/", stderr)
+        self.assertIn("tool.py: license.allowlist", stderr, "a file outside the glob is judged on the list in force")
 
     def test_a_file_the_reader_refuses_or_cannot_open_is_refused_not_judged_on_an_annotation(self):
         self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')
