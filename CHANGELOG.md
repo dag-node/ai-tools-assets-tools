@@ -7,6 +7,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-16
+
 ### Fixed
 
 - **A tools release refuses a tag that repeats or precedes a release.**
@@ -17,11 +19,6 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   release candidate. A release is a tag with a GitHub release, so a tag
   whose run stopped earlier does not count. Before, `v1.5.1`, pushed on `main`
   before the merge, released the 1.5.0 tools.
-
-## [1.5.1] - 2026-10-16
-
-### Fixed
-
 - **`new-set` names the set's dnf package and its plugin apart.**
   The `README.md` and `CHANGELOG.md` it writes name the dnf package
   `ai-tools-assets-sets-<set>` and the agent marketplace plugin
@@ -31,6 +28,11 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   package name carries the `-sets-` infix, so it does not clash
   with the tooling package `ai-tools-assets-tools` and sorts beside the other
   `ai-tools` packages.
+
+## [1.5.1] - 2026-10-16 [YANKED]
+
+The tag `v1.5.1` names the commit `v1.5.0` names, so its archive and its RPMs
+hold the 1.5.0 tools under the version 1.5.1. Upgrade to 1.5.2.
 
 ## [1.5.0] - 2026-10-15
 
