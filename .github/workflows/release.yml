@@ -73,6 +73,11 @@ jobs:
           EVENT_SHA: ${{ github.sha }}
         run: bash packaging/release-steps.sh verify-tag "$TAG" "$EVENT_SHA"
 
+      - name: The commit states the tag's release, and the tag is newer than every release and repeats none
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash packaging/release-steps.sh check-version "$TAG"
+
       # The container runs before the first step that receives a secret.
       - name: The suite passes at the verified commit, at the Python floor inside the pinned EL9 image
         run: |

@@ -7,6 +7,17 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Fixed
+
+- **A tools release refuses a tag that repeats or precedes a release.**
+  The release run's `check-version` step stops before the first signature
+  when the tagged commit's `CHANGELOG.md` opens with another version,
+  when the tag is not newer than every release, or when another final release
+  already names the commit. A final tag may name the commit of the newest
+  release candidate. A release is a tag with a GitHub release, so a tag
+  whose run stopped earlier does not count. Before, `v1.5.1`, pushed on `main`
+  before the merge, released the 1.5.0 tools.
+
 ## [1.5.1] - 2026-10-16
 
 ### Fixed

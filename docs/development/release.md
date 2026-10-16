@@ -26,8 +26,8 @@ and an RPM on `rpm.dagnode.com`, and how an expired image digest is refreshed.
       |
       | git tag -s vX.Y.Z on the same commit
       v
-   release.yml: verify-tag, test-floor, the archive, sign-files, build-rpm,
-   sign-rpm, create-release, dispatch
+   release.yml: verify-tag, check-version, test-floor, the archive, sign-files,
+   build-rpm, sign-rpm, create-release, dispatch
       |
       v
    GitHub release + rpm.dagnode.com
@@ -50,7 +50,16 @@ row is read from `gh api repos/dag-node/ai-tools-assets-tools/rulesets`:
 | `v1` | `major-tag-move`, `major-tag-no-delete` | restricts creation and update to the bypass actors, and refuses a deletion |
 
 A release tag is immutable, so a release whose run failed is not re-tagged:
-the fix lands on `develop` and the next patch version carries it.
+the fix lands on `develop` and the next patch version carries it. The release
+run's `check-version` stops a tag before the first signature when the tagged
+commit's `CHANGELOG.md` opens with another version, when the tag is not newer
+than every release, or when another final release already names the commit.
+A tag pushed on `main` before the `Merge develop` pull request is merged
+therefore stops there. A final tag may name its release candidate's commit
+when that candidate is the newest one. A release is a tag with a GitHub
+release, so a tag whose run stopped before `create-release` does not hold back
+a later tag; its own version is reused only after the tag is deleted
+through the ruleset's bypass.
 
 ## Cutting a release
 
