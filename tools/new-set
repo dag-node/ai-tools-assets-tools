@@ -9,9 +9,10 @@
 # The set takes its maintainers and source from `publisher.conf`, version `0.1.0`, and the licence named (`MIT` by
 # default); the name is held to the name rules before a file is written -- the grammar, the reserved words, and the
 # publisher prefix (`<publisher>` or `<publisher>-<topic>`; `core` is dag-node's) -- so a set that would fail validation
-# is not created. The summary is written quoted in whichever quote character it does not carry, since the `KEY=value`
-# grammar has no escape; one carrying both, or empty, is refused. `sync-manifests` then writes the two plugin
-# manifests and the marketplace entry. Standard library only.
+# is not created. set.conf holds the summary quoted in whichever quote character it does not carry, since the
+# `KEY=value` grammar has no escape, and the README holds it as given; one carrying both, or empty, is refused. The
+# CHANGELOG and README name the set's package and plugin from the prefixes `asset_format` declares. `sync-manifests`
+# then writes the two plugin manifests and the marketplace entry. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -35,7 +36,7 @@ SET_CONF_TEMPLATE = """# ai-tools-assets set: {name}. Read by ai-tools-base as K
 format={format}
 name={name}
 version=0.1.0
-summary={summary}
+summary={quoted_summary}
 license={license}
 maintainers=[{maintainers}]
 source={source}
@@ -43,7 +44,7 @@ source={source}
 
 CHANGELOG_TEMPLATE = """# Changelog: {name}
 
-Changes to the `{name}` set, released as the package `ai-tools-assets-{name}`
+Changes to the `{name}` set, released as the dnf package `{package}`
 and tagged `{name}/v<version>`. The format follows [Keep a
 Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
@@ -59,9 +60,9 @@ README_TEMPLATE = """# {name}
 
 {summary}
 
-Released as the package `ai-tools-assets-{name}` and the Claude Code and Codex
-plugin of the same name. A skill or subagent in this set follows the asset
-format, and its name starts with `{prefix}`.
+Released as the dnf package `{package}` and as the agent marketplace plugin
+`{plugin}` for Claude Code and Codex. A skill or subagent in this set follows
+the asset format, and its name starts with `{prefix}`.
 """
 
 
@@ -135,9 +136,11 @@ def main() -> int:
     if reason is not None:
         collector.refuse("publisher.conf", "repo.publisher-conf", f"`maintainers` does not read as a list ({reason})")
         return collector.report()
-    values = {"name": args.name, "format": fmt.FORMAT_VERSION, "summary": quote + args.summary + quote, "license": args.license,
+    values = {"name": args.name, "format": fmt.FORMAT_VERSION, "summary": args.summary,
+              "quoted_summary": quote + args.summary + quote, "license": args.license,
               "maintainers": ", ".join(maintainers), "source": publisher.get("source"),
-              "prefix": fmt.authored_asset_prefix(args.name)}
+              "prefix": fmt.authored_asset_prefix(args.name), "package": fmt.PACKAGE_NAME_PREFIX + args.name,
+              "plugin": fmt.PLUGIN_NAME_PREFIX + args.name}
     # `sets/` is checked not to be a link and each file is created exclusively, so the set is not written through a
     # link at `sets/` or at its own name.
     try:

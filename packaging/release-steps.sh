@@ -13,6 +13,7 @@
 # bash <tools>/packaging/release-steps.sh repin-tools --id <ID> <sha>|<vX.Y.Z> [--pr <number>] [--dry-run]
 # bash packaging/release-steps.sh swap-off
 # bash packaging/release-steps.sh verify-tag <tag> <event-commit>
+# bash packaging/release-steps.sh check-version <tag>
 # bash packaging/release-steps.sh preflight
 # bash packaging/release-steps.sh sign-files <file>...
 # bash packaging/release-steps.sh build-rpm <output-directory> <render-nfpm.py arguments>...
@@ -24,6 +25,7 @@
 # Environment, by subcommand (check-images, find-tests, test-floor, refresh-images, repin-tools and swap-off read
 # none; refresh-images and repin-tools use the operator's own git and gh credentials, and `--help` prints their usage):
 #   verify-tag      TAG_SIGNER_PRIMARY_FINGERPRINTS (space-separated), TAG_SIGNER_KEY_URL
+#   check-version   GH_TOKEN
 #   preflight       GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT; DISPATCH_RPM=true adds
 #                   RPM_REPO_DISPATCH_TOKEN
 #   sign-files      GPG_SIGNING_KEY, GPG_SIGNING_PASSPHRASE, ARTIFACT_SIGNER_PRIMARY_FINGERPRINT
@@ -65,8 +67,10 @@
 # commit and the checkout's HEAD, and carries a signature whose VALIDSIG primary is on the pinned list; the key is
 # fetched from TAG_SIGNER_KEY_URL for that one check, so a leaked CI secret cannot mint a release by itself. It appends
 # RELEASE_COMMIT and RELEASE_TAG_OBJECT to $GITHUB_ENV, and every later step names that object or that commit.
-# create-release compares the remote's refs/tags/<tag> with RELEASE_TAG_OBJECT immediately before `gh release create
-# --verify-tag`, which checks that the name exists, not which object it names.
+# check-version, run by the tools' release.yml after it, holds the tag to the release the commit states
+# and to the GitHub releases before it, as its function states; a set's tag is held to set.conf's version by build-set.
+# create-release compares the remote's refs/tags/<tag> with RELEASE_TAG_OBJECT immediately
+# before `gh release create --verify-tag`, which checks that the name exists, not which object it names.
 #
 # The signing key is imported into a keyring under /dev/shm, which must be tmpfs; a /dev/shm that is absent or not tmpfs
 # refuses before a directory is created, and the EXIT trap stops the keyring's gpg-agent and removes it. swap-off runs
@@ -331,6 +335,100 @@ _release_steps__verify_tag() {
     if [[ -n "${GITHUB_ENV:-}" ]]; then
         printf 'RELEASE_COMMIT=%s\nRELEASE_TAG_OBJECT=%s\n' "$commit" "$tag_object" >> "$GITHUB_ENV"
     fi
+}
+
+# _release_steps__compare_versions <a> <b>: print -1, 0 or 1 as the version <a> orders before, with or after <b>
+# under SemVer 2.0.0 precedence; each is X.Y.Z[-<prerelease>] without the leading v. A version without a prerelease
+# orders after the same X.Y.Z with one, so 1.5.2 is newer than 1.5.2-rc.1.
+_release_steps__compare_versions() {
+    local LC_ALL=C a_prerelease="" b_prerelease="" i x y
+    local -a a_parts b_parts
+    [[ "$1" != *-* ]] || a_prerelease="${1#*-}"
+    [[ "$2" != *-* ]] || b_prerelease="${2#*-}"
+    IFS=. read -r -a a_parts <<<"${1%%-*}"
+    IFS=. read -r -a b_parts <<<"${2%%-*}"
+    for i in 0 1 2; do
+        if (( a_parts[i] != b_parts[i] )); then
+            if (( a_parts[i] > b_parts[i] )); then echo 1; else echo -1; fi
+            return 0
+        fi
+    done
+    if [[ -z "$a_prerelease" || -z "$b_prerelease" ]]; then
+        if [[ "$a_prerelease" == "$b_prerelease" ]]; then echo 0
+        elif [[ -z "$a_prerelease" ]]; then echo 1
+        else echo -1
+        fi
+        return 0
+    fi
+    IFS=. read -r -a a_parts <<<"$a_prerelease"
+    IFS=. read -r -a b_parts <<<"$b_prerelease"
+    for (( i = 0; i < ${#a_parts[@]} && i < ${#b_parts[@]}; i++ )); do
+        x="${a_parts[i]}" y="${b_parts[i]}"
+        [[ "$x" != "$y" ]] || continue
+        if [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]]; then
+            if (( 10#$x > 10#$y )); then echo 1; else echo -1; fi
+        elif [[ "$x" =~ ^[0-9]+$ ]]; then echo -1
+        elif [[ "$y" =~ ^[0-9]+$ ]]; then echo 1
+        elif [[ "$x" > "$y" ]]; then echo 1
+        else echo -1
+        fi
+        return 0
+    done
+    if (( ${#a_parts[@]} == ${#b_parts[@]} )); then echo 0
+    elif (( ${#a_parts[@]} > ${#b_parts[@]} )); then echo 1
+    else echo -1
+    fi
+}
+
+# _release_steps__check_version <tag>: refuse a tag that the commit it names does not state, or that repeats or precedes
+# a release. Run on the verified checkout after verify-tag, with GH_TOKEN. A release is a v<semver> tag with a GitHub
+# release that is not a draft, which create-release makes: a tag whose run stopped before it is not one, so it holds
+# back neither its own version, once deleted, nor a later tag. CHANGELOG.md at HEAD opens its newest release
+# with the tag's X.Y.Z; the tag's version is newer than every release's; no final release names HEAD, so a commit is
+# released once; and a release candidate on HEAD is allowed only where HEAD is the newest candidate's commit, so a final
+# names the commit its last candidate tested.
+_release_steps__check_version() {
+    [[ "$#" -eq 1 ]] || _release_steps__die "usage: check-version <tag>"
+    local tag="$1" pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+    local version core changelog newest answer head other other_version other_commit
+    local newest_candidate="" newest_candidate_commit="" candidate_on_head=""
+    [[ "$tag" =~ $pattern ]] || _release_steps__die "$tag is not v<semver> without build metadata"
+    version="${tag#v}"
+    core="${version%%-*}"
+    head="$(git rev-parse HEAD)" || _release_steps__die "HEAD could not be read in $PWD"
+    changelog="$(git show HEAD:CHANGELOG.md)" || _release_steps__die "\`CHANGELOG.md\` could not be read at ${head:0:7}"
+    # The reader's own refusal names the changelog entry refresh-images writes; this one names the tag.
+    newest="$(_release_steps__read_newest_version "$changelog" 2>/dev/null)" \
+        || _release_steps__die "\`CHANGELOG.md\` at ${head:0:7} has no \`## [X.Y.Z]\` heading, so it does not state the release $tag names"
+    [[ "$newest" == "$core" ]] \
+        || _release_steps__die "\`CHANGELOG.md\` at ${head:0:7} opens its newest release with \`## [$newest]\`, not \`## [$core]\`; $tag names a commit that does not carry its release heading"
+    answer="$(git fetch --quiet --no-tags --force origin '+refs/tags/v*:refs/tags/v*' 2>&1)" \
+        || _release_steps__die "the tags did not fetch from origin (${answer//$'\n'/ })"
+    answer="$(gh release list --limit 1000 --json tagName,isDraft --jq '.[] | select(.isDraft | not) | .tagName' 2>&1)" \
+        || _release_steps__die "the GitHub releases could not be listed (${answer//$'\n'/ }); run the job again"
+    while IFS= read -r other; do
+        [[ "$other" != "$tag" && "$other" =~ $pattern ]] || continue
+        other_version="${other#v}"
+        [[ "$(_release_steps__compare_versions "$version" "$other_version")" == 1 ]] \
+            || _release_steps__die "$tag is not newer than the release $other; a release is newer than every release before it"
+        other_commit="$(git rev-parse --verify --quiet "$other^{commit}")" \
+            || _release_steps__die "the release $other has no tag $other on origin to read its commit from"
+        if [[ "$other_version" != *-* ]]; then
+            [[ "$other_commit" != "$head" ]] \
+                || _release_steps__die "the release $other already names commit ${head:0:7}, so $tag would release it again; tag the commit that carries \`## [$core]\`"
+            continue
+        fi
+        if [[ "$other_commit" == "$head" ]]; then
+            candidate_on_head="$other"
+        fi
+        if [[ -z "$newest_candidate" || "$(_release_steps__compare_versions "$other_version" "${newest_candidate#v}")" == 1 ]]; then
+            newest_candidate="$other" newest_candidate_commit="$other_commit"
+        fi
+    done <<<"$answer"
+    if [[ -n "$candidate_on_head" && "$head" != "$newest_candidate_commit" ]]; then
+        _release_steps__die "the release candidate $candidate_on_head names commit ${head:0:7}, but the newest one is $newest_candidate at ${newest_candidate_commit:0:7}; tag the commit the newest candidate tested"
+    fi
+    echo "$tag is newer than every release, and ${head:0:7} carries \`## [$core]\` and no other final release"
 }
 
 _release_steps__run_preflight() {
@@ -1908,7 +2006,7 @@ _release_steps__repin_tools() {
     _release_steps__next "after the merge: git ls-remote https://github.com/$_RELEASE_STEPS__GITHUB_REPOSITORY.git refs/heads/develop"
 }
 
-[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|find-tests|test-floor|refresh-images|repin-tools|swap-off|verify-tag|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
+[[ "$#" -ge 1 ]] || _release_steps__die "usage: release-steps.sh <check-images|find-tests|test-floor|refresh-images|repin-tools|swap-off|verify-tag|check-version|preflight|sign-files|build-rpm|sign-rpm|create-release|dispatch> ..."
 step="$1"
 shift
 case "$step" in
@@ -1919,6 +2017,7 @@ case "$step" in
     repin-tools) _release_steps__repin_tools "$@" ;;
     swap-off) _release_steps__swap_off "$@" ;;
     verify-tag) _release_steps__verify_tag "$@" ;;
+    check-version) _release_steps__check_version "$@" ;;
     preflight) _release_steps__run_preflight ;;
     sign-files) _release_steps__sign_files "$@" ;;
     build-rpm) _release_steps__build_rpm "$@" ;;

@@ -53,8 +53,12 @@ the DCO.
 
 Use a branch off `develop` named `<type>/<id>-<name>` and give the pull request
 an explicit title in the same `type(scope): summary` form as a commit subject.
-`main` receives releases: a release is tagged `v<semver>` on `main`,
-and the `v1` tag moves to it.
+The pull request targets `develop` and is rebase-merged once `validate` is
+green: `develop`'s ruleset requires a linear history. `main` receives releases,
+through a `Merge develop` pull request merged with a merge commit: a release is
+tagged `v<semver>` on `main`, and the `v1` tag moves to it.
+[docs/development/release.md](docs/development/release.md) states the flow,
+the rulesets and the release checklist.
 
 ## License
 

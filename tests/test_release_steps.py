@@ -2250,5 +2250,124 @@ class RepinToolsToARelease(RepinCase):
         self.assertIn("v1.3.0 has no GitHub release; a caller pins a final release", stderr)
 
 
+
+def release_changelog(version: str, note: str = "A change.") -> str:
+    return f"# Changelog\n\n## [Unreleased]\n\n## [{version}] - 2026-10-16\n\n### Fixed\n\n- **{note}**\n"
+
+
+class CheckVersion(ReleaseStepsCase):
+    """check-version on a checkout at the tagged commit, whose origin holds the tags, with `gh release list` answered
+    by the stub as the names of the tags that have a GitHub release."""
+
+    stubbed = ("gh",)
+
+    def setUp(self):
+        super().setUp()
+        self.checkout = self.make_repository("tools", "https://github.com/dag-node/ai-tools-assets-tools.git",
+                                             {"CHANGELOG.md": release_changelog("1.5.0")})
+        self.first = self.git(self.checkout, "rev-parse", "HEAD")
+        self.tag("v1.5.0", self.first)
+
+    def release_commit(self, version: str, note: str = "A change.") -> str:
+        return self.commit_files(self.checkout, {"CHANGELOG.md": release_changelog(version, note)},
+                                 f"chore: release {version}")
+
+    def tag(self, name: str, commit: str):
+        self.git(self.checkout, "tag", "-a", "-m", name, name, commit)
+        self.git(self.checkout, "push", "--quiet", "origin", f"refs/tags/{name}")
+
+    def released(self, *tags: str):
+        self.answer("gh", ["release", "list"], stdout="".join(f"{tag}\n" for tag in tags))
+
+    def check(self, tag: str):
+        self.git(self.checkout, "checkout", "--quiet", "--detach", f"{tag}^{{commit}}")
+        return self.run_steps(RELEASE_STEPS, "check-version", tag, cwd=self.checkout)
+
+    def test_a_tag_on_the_commit_carrying_its_heading_passes(self):
+        self.released("v1.5.0")
+        self.tag("v1.5.2", self.release_commit("1.5.2"))
+        status, stdout, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("v1.5.2 is newer than every release", stdout)
+
+    def test_a_tag_on_the_previous_release_commit_is_refused(self):
+        # The tag pushed on main before the Merge develop pull request was merged.
+        self.released("v1.5.0")
+        self.tag("v1.5.1", self.first)
+        status, _, stderr = self.check("v1.5.1")
+        self.assertEqual(status, 1)
+        self.assertIn("opens its newest release with `## [1.5.0]`, not `## [1.5.1]`", stderr)
+
+    def test_a_commit_a_final_release_names_is_refused(self):
+        commit = self.release_commit("1.5.2")
+        self.tag("v1.5.1", commit)
+        self.released("v1.5.0", "v1.5.1")
+        self.tag("v1.5.2", commit)
+        status, _, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 1)
+        self.assertIn("the release v1.5.1 already names commit", stderr)
+
+    def test_a_tag_not_newer_than_a_release_is_refused(self):
+        self.tag("v1.6.0", self.first)
+        self.released("v1.5.0", "v1.6.0")
+        self.tag("v1.5.2", self.release_commit("1.5.2"))
+        status, _, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 1)
+        self.assertIn("v1.5.2 is not newer than the release v1.6.0", stderr)
+
+    def test_a_tag_whose_run_stopped_holds_nothing_back(self):
+        self.tag("v1.5.1", self.first)
+        self.tag("v1.6.0", self.first)
+        self.released("v1.5.0")
+        self.tag("v1.5.2", self.release_commit("1.5.2"))
+        status, _, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 0, stderr)
+
+    def test_a_final_on_the_newest_candidate_passes(self):
+        commit = self.release_commit("1.5.2")
+        self.tag("v1.5.2-rc.1", commit)
+        self.released("v1.5.0", "v1.5.2-rc.1")
+        self.tag("v1.5.2", commit)
+        status, _, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 0, stderr)
+
+    def test_a_final_on_an_older_candidate_is_refused(self):
+        older = self.release_commit("1.5.2")
+        self.tag("v1.5.2-rc.1", older)
+        self.tag("v1.5.2-rc.2", self.release_commit("1.5.2", "Another change."))
+        self.released("v1.5.0", "v1.5.2-rc.1", "v1.5.2-rc.2")
+        self.tag("v1.5.2", older)
+        status, _, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 1)
+        self.assertIn("the release candidate v1.5.2-rc.1 names commit", stderr)
+        self.assertIn("the newest one is v1.5.2-rc.2", stderr)
+
+    def test_candidates_order_by_their_numbers(self):
+        self.tag("v1.5.2-rc.2", self.release_commit("1.5.2"))
+        self.released("v1.5.0", "v1.5.2-rc.2")
+        self.tag("v1.5.2-rc.10", self.release_commit("1.5.2", "Another change."))
+        status, _, stderr = self.check("v1.5.2-rc.10")
+        self.assertEqual(status, 0, stderr)
+        self.tag("v1.5.2-rc.1", self.release_commit("1.5.2", "A third change."))
+        status, _, stderr = self.check("v1.5.2-rc.1")
+        self.assertEqual(status, 1)
+        self.assertIn("v1.5.2-rc.1 is not newer than the release v1.5.2-rc.2", stderr)
+
+    def test_a_changelog_without_a_release_heading_is_refused(self):
+        self.released("v1.5.0")
+        self.tag("v1.5.2", self.commit_files(self.checkout, {"CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n"},
+                                             "docs: drop the headings"))
+        status, _, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 1)
+        self.assertIn("has no `## [X.Y.Z]` heading, so it does not state the release v1.5.2 names", stderr)
+
+    def test_an_unreadable_release_list_is_refused(self):
+        self.answer("gh", ["release", "list"], stderr="HTTP 502\n", status=1)
+        self.tag("v1.5.2", self.release_commit("1.5.2"))
+        status, _, stderr = self.check("v1.5.2")
+        self.assertEqual(status, 1)
+        self.assertIn("the GitHub releases could not be listed", stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
