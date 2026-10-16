@@ -7,6 +7,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-16
+
 ### Fixed
 
 - **`new-set` names the set's dnf package and its plugin apart.**
