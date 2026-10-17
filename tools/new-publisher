@@ -77,9 +77,11 @@ KEY_URL_PATTERN = re.compile(r"^https://[^\s\"'<>]+$")
 # A `KEY=value` value and a TOML basic string: a scheme, then no whitespace, quote, bracket, comma or `#`.
 SOURCE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>#\[\],\\]+$")
 LICENSE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]*$")
-# The holder line of a published licence text that carries one: `Copyright (c) <year> <copyright holders>` (MIT),
-# `Copyright <YEAR> <COPYRIGHT HOLDER>` (MIT-0). It is read within the text's opening lines.
-HOLDER_LINE = re.compile(r"^(?P<prefix>Copyright (?:\(c\) )?)<[^>]+> <[^>]+>\s*$")
+# The holder line of a published licence text that carries one, read within the text's opening lines: two angle-bracket
+# placeholders (`Copyright (c) <year> <copyright holders>` in MIT, `Copyright <YEAR> <COPYRIGHT HOLDER>` in MIT-0,
+# `Copyright (c) <year> <owner>. ` in BSD-3-Clause) or 0BSD's `Copyright (C) YEAR by AUTHOR EMAIL`. The prefix and
+# a closing period are kept, and trailing blanks dropped.
+HOLDER_LINE = re.compile(r"^(?P<prefix>Copyright (?:\([cC]\) )?)(?:<[^>]+> <[^>]+>|YEAR by AUTHOR EMAIL)(?P<suffix>\.?)\s*$")
 HOLDER_LINE_SEARCH_LINES = 5
 TEMPLATE_HOLDER_LINE = re.compile(r"^Copyright \S.*$")
 SKILL_DESCRIPTION = "Prints a greeting. Replace it with your first skill."
@@ -382,7 +384,7 @@ class Initialization:
         for index, line in enumerate(lines[:HOLDER_LINE_SEARCH_LINES]):
             match = HOLDER_LINE.match(line)
             if match:
-                lines[index] = f"{match.group('prefix')}{self.year} {self.holder}"
+                lines[index] = f"{match.group('prefix')}{self.year} {self.holder}{match.group('suffix')}"
                 break
         return "\n".join(lines)
 
