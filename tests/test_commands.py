@@ -904,18 +904,62 @@ class VerifySet(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.scratch)
 
+    def inventory(self, set_directory: pathlib.Path):
+        import signed_inventory
+        directory_fd = os.open(set_directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            return signed_inventory.verify_inventory(directory_fd, (set_directory / "SHA256SUMS").read_text(encoding="utf-8"))
+        finally:
+            os.close(directory_fd)
+
     def test_the_inventory_half_holds_the_release_fixtures_and_a_fresh_build(self):
         import signed_inventory
-        check = signed_inventory.verify_inventory(self.stage, (self.stage / "SHA256SUMS").read_text(encoding="utf-8"))
+        check = self.inventory(self.stage)
         self.assertEqual((check.outcome, check.problems), (signed_inventory.VERIFIED, []), "control: the stage build-set wrote")
         for name in ("release.inventory", "release.inventory.duplicate"):
-            set_directory = FIXTURES / "fail" / name / "acme"
-            check = signed_inventory.verify_inventory(set_directory, (set_directory / "SHA256SUMS").read_text(encoding="utf-8"))
+            check = self.inventory(FIXTURES / "fail" / name / "acme")
             self.assertEqual(check.outcome, signed_inventory.MISMATCH, name)
         (self.stage / "attestations").mkdir()
         (self.stage / "attestations" / "timestamp.tsr").write_text("a statement\n", encoding="utf-8")
-        check = signed_inventory.verify_inventory(self.stage, (self.stage / "SHA256SUMS").read_text(encoding="utf-8"))
+        check = self.inventory(self.stage)
         self.assertEqual(check.outcome, signed_inventory.VERIFIED, "attestations/ lies outside the inventory")
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_an_unreadable_file_leaves_the_inventory_unable_naming_it(self):
+        import signed_inventory
+        readme = self.stage / "README.md"
+        readme.chmod(0)
+        try:
+            check = self.inventory(self.stage)
+        finally:
+            readme.chmod(0o644)
+        self.assertEqual((check.outcome, check.problems), (signed_inventory.UNABLE, [("README.md", "cannot be read: Permission denied")]))
+        self.assertEqual(self.inventory(self.stage).outcome, signed_inventory.VERIFIED, "control: the same file readable")
+
+    def test_an_entry_the_reader_refuses_leaves_the_inventory_unable_naming_it(self):
+        import signed_inventory
+        readme = self.stage / "README.md"
+        outside = self.scratch / "outside"
+        outside.mkdir()
+        os.link(readme, outside / "README.md")
+        check = self.inventory(self.stage)
+        self.assertEqual((check.outcome, check.problems[0][0]), (signed_inventory.UNABLE, "README.md"), check.problems)
+        self.assertIn("has 2 links", check.problems[0][1])
+        (outside / "README.md").unlink()
+        readme.rename(outside / "README.md")
+        readme.symlink_to(outside / "README.md")
+        check = self.inventory(self.stage)
+        self.assertEqual((check.outcome, check.problems), (signed_inventory.UNABLE, [("README.md", check.problems[0][1])]))
+        self.assertIn("is a symbolic link", check.problems[0][1])
+        readme.unlink()
+        (outside / "README.md").rename(readme)
+        self.assertEqual(self.inventory(self.stage).outcome, signed_inventory.VERIFIED, "control: the file restored")
+        (self.stage / "agents").rename(outside / "agents")
+        (self.stage / "agents").symlink_to(outside / "agents")
+        check = self.inventory(self.stage)
+        self.assertEqual((check.outcome, check.problems), (signed_inventory.UNABLE, [("agents", check.problems[0][1])]),
+                         "a link at a directory name, and no listed-and-absent finding for the files under it")
+        self.assertIn("is a symbolic link", check.problems[0][1])
 
     def test_an_input_it_cannot_read_exits_2(self):
         status, stdout, stderr = run("verify-set", str(self.stage), "--key", str(self.key))
@@ -985,6 +1029,24 @@ class VerifySetWithAKey(SignedSetCase):
         status, _, stderr = self.verify()
         self.assertEqual(status, 1, "an edited inventory fails the signature")
         self.assertIn("SHA256SUMS.asc: release.signature: the signature does not match SHA256SUMS", stderr)
+
+    def test_a_file_the_reader_refuses_or_cannot_read_exits_2_naming_it(self):
+        readme = self.stage / "README.md"
+        os.link(readme, self.scratch / "README.md")
+        status, stdout, stderr = self.verify()
+        self.assertEqual((status, stdout), (2, ""))
+        self.assertIn("verify-set: README.md: release.inventory: has 2 links", stderr)
+        (self.scratch / "README.md").unlink()
+        if os.geteuid() != 0:
+            readme.chmod(0)
+            try:
+                status, _, stderr = self.verify()
+            finally:
+                readme.chmod(0o644)
+            self.assertEqual(status, 2)
+            self.assertIn("verify-set: README.md: release.inventory: cannot be read: Permission denied", stderr)
+            self.assertNotIn("Traceback", stderr)
+        self.assertEqual(self.verify()[0], 0, "control: the same set readable")
 
     def test_the_source_it_was_built_from_reproduces_it(self):
         status, stdout, stderr = self.verify("--source", str(self.root))
