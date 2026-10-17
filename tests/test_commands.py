@@ -1653,7 +1653,10 @@ class VerifySetWithAKey(SignedSetCase):
             child.wait(timeout=30)
             self.fail("verify-set ran 30 s without starting its source build; the case measured no signal")
         child.send_signal(signal.SIGTERM)
-        self.assertEqual(child.wait(timeout=30), 128 + signal.SIGTERM)
+        # `build` exists from inside the context until its removal, and a signal held during the removal reaches
+        # the restored default action, so either exit is scratch_directory's; ScratchDirectory pins each window
+        # by injection.
+        self.assertIn(child.wait(timeout=30), (128 + signal.SIGTERM, -signal.SIGTERM))
         self.assertEqual(list(temporary.iterdir()), [])
 
 
