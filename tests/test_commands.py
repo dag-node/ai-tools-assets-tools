@@ -186,6 +186,45 @@ class PublisherRepository(unittest.TestCase):
         self.assertIn("plugin.json: is a symbolic link", stderr)
         self.assertNotIn("other", stderr, "the link's target is not read")
 
+    def check_publisher_in_process(self, after_set_conf_read=None):
+        """check-publisher's `check` run in this process; its status, its findings and how often it read set.conf."""
+        import safe_read
+        command = load_command("check-publisher")
+        command.ROOT = self.root
+        command.ROOT_FD = safe_read.open_root(self.root)
+        reads = []
+        read_text = command.read_text
+
+        def counted(relative_path):
+            text = read_text(relative_path)
+            if pathlib.PurePath(relative_path) == pathlib.PurePath("sets/acme/set.conf"):
+                reads.append(relative_path)
+                if after_set_conf_read is not None:
+                    after_set_conf_read()
+            return text
+
+        try:
+            with mock.patch.object(command, "read_text", side_effect=counted), contextlib.redirect_stderr(io.StringIO()):
+                status = command.check(command.reserved_words(), None)
+        finally:
+            os.close(command.ROOT_FD)
+        return status, command.findings, len(reads)
+
+    def test_the_publisher_check_holds_the_set_conf_it_discovered(self):
+        self.assertEqual(self.check_publisher_in_process(), (0, [], 1), "control: the unchanged set, its set.conf read once")
+        set_conf = self.root / "sets" / "acme" / "set.conf"
+        set_conf.write_text(set_conf.read_text(encoding="utf-8").replace("source=https://github.com/acme/ai-tools-assets",
+                                                                         "source=https://example.org/other"), encoding="utf-8")
+        status, findings, reads = self.check_publisher_in_process(after_set_conf_read=set_conf.unlink)
+        self.assertEqual((status, reads), (1, 1), "a set.conf removed after discovery is checked from the text discovered")
+        self.assertIn("check-publisher: sets/acme/set.conf: `source` is `https://example.org/other`, expected "
+                      "`https://github.com/acme/ai-tools-assets` from publisher.conf", findings)
+        (self.root.parent / "set.conf").write_text("name=acme\n", encoding="utf-8")
+        set_conf.symlink_to(self.root.parent / "set.conf")
+        status, _, stderr = run("check-publisher", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("check-publisher: sets/acme/set.conf: is a symbolic link", stderr, "a link at discovery keeps its refusal")
+
     def test_a_symlinked_sets_directory_and_set_are_refused(self):
         real = self.root.parent / "elsewhere"
         shutil.move(str(self.root / "sets"), str(real))
