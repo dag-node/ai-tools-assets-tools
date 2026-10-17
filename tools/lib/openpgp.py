@@ -5,18 +5,24 @@
 key the caller passed and nothing in the user's own GnuPG home, and with `--status-fd 1`, whose machine-readable lines
 decide the outcome; its exit status and its human-readable output do not. A good signature is a `VALIDSIG` line: its
 fields name the signing key and, where it differs, the primary, which is the fingerprint a host's binding pins. An
-armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone.
+armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone. `scratch_directory` is the one
+scratch directory the commands write the key, the inventory and its signature into: a `tempfile.TemporaryDirectory`
+removed on exit, on an exception and on SIGTERM or SIGHUP, whose default action would end the interpreter without
+removing it.
 """
 from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
+import tempfile
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 FINGERPRINT_PATTERN = re.compile(r"^[0-9A-F]{40}$")
 ARMOR_BEGIN = re.compile(r"^-----BEGIN PGP PUBLIC KEY BLOCK-----\s*$")
@@ -24,6 +30,28 @@ ARMOR_END = re.compile(r"^-----END PGP PUBLIC KEY BLOCK-----\s*$")
 VERIFIED = "verified"
 MISMATCH = "mismatch"
 UNABLE = "unable"
+TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+@contextlib.contextmanager
+def scratch_directory(prefix: str) -> Iterator[pathlib.Path]:
+    """A new private directory under the user's temp directory, removed when the context ends.
+
+    For the context's extent SIGTERM and SIGHUP raise SystemExit(128 + the signal number), so the interpreter unwinds
+    through the removal, and `subprocess.run` kills a child it is waiting on first; the previous handlers are restored
+    after. Call it from the main thread, the only one `signal.signal` accepts.
+    """
+
+    def terminate(signal_number, frame):
+        raise SystemExit(128 + signal_number)
+
+    previous = {signal_number: signal.signal(signal_number, terminate) for signal_number in TERMINATION_SIGNALS}
+    try:
+        with tempfile.TemporaryDirectory(prefix=prefix) as scratch:
+            yield pathlib.Path(scratch)
+    finally:
+        for signal_number, handler in previous.items():
+            signal.signal(signal_number, signal.SIG_DFL if handler is None else handler)
 
 
 @dataclass(frozen=True)

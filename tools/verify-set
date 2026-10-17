@@ -26,7 +26,6 @@ import os
 import pathlib
 import subprocess
 import sys
-import tempfile
 from typing import Optional
 
 TOOLS = pathlib.Path(__file__).resolve().parent
@@ -138,8 +137,8 @@ def verify(run: Verification, args: argparse.Namespace, signer, key: bytes, dire
         files[name] = read.data
     if run.status:
         return
-    with tempfile.TemporaryDirectory(prefix="verify-set.") as scratch:
-        signature = openpgp.valid_signature(pathlib.Path(scratch), key, files[INVENTORY_FILE], files[SIGNATURE_FILE])
+    with openpgp.scratch_directory("verify-set.") as scratch:
+        signature = openpgp.valid_signature(scratch, key, files[INVENTORY_FILE], files[SIGNATURE_FILE])
     if signature.outcome != openpgp.VERIFIED:
         status = signed_inventory.MISMATCH if signature.outcome == openpgp.MISMATCH else signed_inventory.UNABLE
         run.fail(status, SIGNATURE_FILE, "release.signature", signature.error)
@@ -205,10 +204,10 @@ def compare_with_source(run: Verification, directory_fd: int, source: pathlib.Pa
     if not fmt.is_valid_name(set_name or ""):
         run.fail(signed_inventory.UNABLE, fmt.SET_CONF_FILE, "set.conf.name", f"`name={set_name}` is not a set name")
         return
-    with tempfile.TemporaryDirectory(prefix="verify-set.") as scratch:
-        build = pathlib.Path(scratch) / "build"
+    with openpgp.scratch_directory("verify-set.") as scratch:
+        build = scratch / "build"
         completed = subprocess.run([sys.executable, str(TOOLS / "build-set"), set_name, "--root", str(source),
-                                    "--build", str(build), "--dist", str(pathlib.Path(scratch) / "dist")],
+                                    "--build", str(build), "--dist", str(scratch / "dist")],
                                    capture_output=True, text=True)
         if completed.returncode != 0:
             reason = completed.stderr.strip().splitlines()[-1:] or ["no output"]

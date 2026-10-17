@@ -14,9 +14,11 @@ import importlib.util
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -871,6 +873,36 @@ class CheckPublisherRelease(unittest.TestCase):
 # REUSE-IgnoreEnd
 
 
+class ScratchDirectory(unittest.TestCase):
+    """openpgp.scratch_directory, which sign-set and verify-set write their scratch material into."""
+
+    def test_the_handlers_are_installed_for_the_context_and_restored_after(self):
+        import openpgp
+        before = {number: signal.getsignal(number) for number in openpgp.TERMINATION_SIGNALS}
+        with self.assertRaises(SystemExit) as raised:
+            with openpgp.scratch_directory("probe.") as scratch:
+                self.assertTrue(scratch.is_dir())
+                for number in openpgp.TERMINATION_SIGNALS:
+                    self.assertNotEqual(signal.getsignal(number), before[number], number)
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(5)
+        self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
+        self.assertFalse(scratch.exists())
+        self.assertEqual({number: signal.getsignal(number) for number in openpgp.TERMINATION_SIGNALS}, before)
+
+    def test_a_process_sent_a_termination_signal_removes_its_scratch_directory(self):
+        code = "import openpgp, time\nwith openpgp.scratch_directory('probe.') as scratch:\n    print(scratch, flush=True)\n    time.sleep(60)\n"
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
+                                     env=dict(os.environ, PYTHONPATH=str(TOOLS / "lib")))
+            scratch = pathlib.Path(child.stdout.readline().strip())
+            self.assertTrue(scratch.is_dir(), "control: the directory exists while the context runs")
+            child.send_signal(number)
+            self.assertEqual(child.wait(timeout=10), 128 + number)
+            child.stdout.close()
+            self.assertFalse(scratch.exists(), number)
+
+
 class SignSet(unittest.TestCase):
     """sign-set's refusals that come before gpg runs."""
 
@@ -1188,6 +1220,21 @@ class VerifySetWithAKey(SignedSetCase):
         status, _, stderr = self.verify("--source", str(self.root))
         self.assertEqual(status, 1)
         self.assertIn(f"verify-set: {skill.relative_to(self.root / 'sets' / 'acme').as_posix()}: release.inventory: differs from the source's build", stderr)
+
+    def test_sigterm_during_the_source_build_leaves_no_scratch_directory(self):
+        temporary = self.scratch / "tmp"
+        temporary.mkdir()
+        child = subprocess.Popen([sys.executable, str(TOOLS / "verify-set"), str(self.stage), "--key", str(self.public),
+                                  "--source", str(self.root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 env=dict(os.environ, TMPDIR=str(temporary)))
+        deadline = time.monotonic() + 30
+        while child.poll() is None and time.monotonic() < deadline and not list(temporary.glob("verify-set.*/build")):
+            time.sleep(0.01)
+        if child.poll() is not None:
+            self.skipTest("verify-set finished before its source build was seen; the race is not deterministic here")
+        child.send_signal(signal.SIGTERM)
+        self.assertEqual(child.wait(timeout=30), 128 + signal.SIGTERM)
+        self.assertEqual(list(temporary.iterdir()), [])
 
 
 class LicenseCheck(unittest.TestCase):
