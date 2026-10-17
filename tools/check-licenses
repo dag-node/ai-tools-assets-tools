@@ -13,12 +13,13 @@
 # every expression that applies is judged; a file the reader refuses (a second hard link, a special file) or cannot
 # open is refused, not judged on an annotation as though it declared no licence. Every identifier is on the list in
 # force -- `publisher.conf` `licenses=`, or the GPLv3-compatible permissive default, plus each `--allow` -- and has its
-# text under `LICENSES/`. An `--exception` accepts one identifier for the files its glob (REUSE's grammar: `**` crosses
-# `/`, `*` does not) matches alone, so `vendor/**=GPL-3.0-only` lets a tree carry one directory under another
-# licence. `LICENSE`, `LICENSES/`, `REUSE.toml` and a `.license` sidecar are not judged: they are the texts and the
-# declarations themselves. A symbolic link is not judged either, as `reuse lint` does not judge one: it holds a path,
-# not content, and its target is judged where it is tracked. A `REUSE.toml` inside a subdirectory is not read, and
-# every file under it is reported. Standard library only.
+# text under `LICENSES/`, and every text there is held to the text SPDX publishes as `tools/lib/license_texts.py`
+# states, and the summary line names each identifier's class. An `--exception` accepts one identifier for the files
+# its glob (REUSE's grammar: `**` crosses `/`, `*` does not) matches alone, so `vendor/**=GPL-3.0-only` lets a tree
+# carry one directory under another licence. `LICENSE`, `LICENSES/`, `REUSE.toml` and a `.license` sidecar are not
+# judged: they are the texts and the declarations themselves. A symbolic link is not judged either, as `reuse lint`
+# does not judge one: it holds a path, not content, and its target is judged where it is tracked. A `REUSE.toml`
+# inside a subdirectory is not read, and every file under it is reported. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -34,6 +35,7 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
+from license_texts import check_license_text_directory, describe_classes, read_declared_digests  # noqa: E402
 from license_policy import (LICENSE_SIDECAR_SUFFIX, applicable_expressions, check_declared_license,  # noqa: E402
                             check_license_texts, exception_for, read_reuse_annotations, resolve_license_allowlist,
                             reuse_glob_problem)
@@ -101,6 +103,9 @@ def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: lis
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
     allowlist = tuple(allowlist) + allowed
+    declared_digests, declared_error = read_declared_digests(publisher)
+    if declared_error:
+        collector.refuse("publisher.conf", "repo.publisher-conf", declared_error)
     annotations, reuse_error = read_reuse_annotations(root_fd)
     if reuse_error is not None:
         collector.refuse("REUSE.toml", "license.file", reuse_error)
@@ -134,8 +139,9 @@ def check_tree(root_fd: int, root: pathlib.Path, allowed: tuple, exceptions: lis
             if evaluation.is_well_formed:
                 used.update(evaluation.identifiers)
     check_license_texts(collector, "LICENSES", used, set(), [root])
+    check_license_text_directory(collector, root_fd, declared_digests)
     if not collector.has_refusals():
-        print(f"check-licenses: every file is under {', '.join(sorted(used))}; texts present")
+        print(f"check-licenses: every file is under {describe_classes(used)}; texts present")
 
 
 if __name__ == "__main__":

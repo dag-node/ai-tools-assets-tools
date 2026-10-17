@@ -184,7 +184,9 @@ SET_CONF_REQUIRED: Tuple[str, ...] = ("format", "name", "version", "summary", "l
 SET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_base", "requires_integrations", "requires_capabilities")
 SET_CONF_LIST_KEYS: Tuple[str, ...] = ("maintainers", "requires_integrations", "requires_capabilities")
 PUBLISHER_CONF_REQUIRED: Tuple[str, ...] = ("publisher", "contact", "maintainers", "source", "description")
-PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses", "allow_dynamic_injection")
+# `license_text_digests` lists `<identifier>:<sha256>` pairs, the digests a licence text is compared with beside the tools'.
+LICENSE_TEXT_DIGESTS_KEY = "license_text_digests"
+PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses", "allow_dynamic_injection", LICENSE_TEXT_DIGESTS_KEY)
 UPSTREAM_CONF_REQUIRED: Tuple[str, ...] = ("source", "path", "revision", "license")
 UPSTREAM_CONF_OPTIONAL: Tuple[str, ...] = ("signature", "signer")
 UPSTREAM_CONF_FILE = "UPSTREAM.conf"
@@ -318,10 +320,13 @@ RULES: Dict[str, str] = {
     "license.expression": "a licence is a well-formed SPDX expression without `WITH`, `LicenseRef` or a `+` suffix",
     "license.allowlist": "every identifier of a licence is on the list in force",
     "license.text": "`LICENSES/<identifier>.txt` exists for every identifier a set declares",
+    "license.text-modified": "a licence text whose digest the tools or `publisher.conf` `license_text_digests` hold is the text SPDX publishes, its holder line the placeholder; one that differs warns",
+    "license.text-unpinned": "a licence text whose digest neither the tools nor `publisher.conf` `license_text_digests` hold warns, since it is not compared",
     "license.file": "every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation",
     "release.inventory": "`SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each",
 }
-RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix"})
+RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix",
+                                          "license.text-modified", "license.text-unpinned"})
 
 
 def is_valid_name(name: str) -> bool:

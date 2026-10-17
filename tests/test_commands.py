@@ -64,6 +64,19 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("repo.marketplace", stderr)
 
+    def test_a_root_licence_text_with_its_holder_filled_warns_in_validate_and_build_set(self):
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual((status, stderr), (0, ""), "the published texts pass")
+        text = self.root / "LICENSES" / "MIT.txt"
+        text.write_text(text.read_text(encoding="utf-8").replace("<year> <copyright holders>", "2026 Acme"), encoding="utf-8")
+        status, _, stderr = run("validate", "--root", str(self.root))
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("validate: warning: LICENSES/MIT.txt: license.text-modified: is not the `MIT` text as published", stderr)
+        status, _, stderr = run("build-set", "acme", "--root", str(self.root))
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("acme/LICENSES/MIT.txt: license.text-modified: is not the `MIT` text as published", stderr,
+                      "the staged copy is held to it too")
+
     def test_a_publisher_conf_without_its_keys_is_refused(self):
         (self.root / "publisher.conf").write_text("publisher=acme\n", encoding="utf-8")
         status, _, stderr = run("validate", "--root", str(self.root))
@@ -491,9 +504,8 @@ class LicenseCheckOverATree(unittest.TestCase):
     def setUp(self):
         self.scratch = pathlib.Path(tempfile.mkdtemp())
         (self.scratch / "LICENSES").mkdir()
-        for identifier in ("MIT", "CC0-1.0"):
+        for identifier in ("MIT", "CC0-1.0", "GPL-3.0-only"):
             shutil.copy(FIXTURES / "LICENSES" / f"{identifier}.txt", self.scratch / "LICENSES" / f"{identifier}.txt")
-        (self.scratch / "LICENSES" / "GPL-3.0-only.txt").write_text("GPL text\n", encoding="utf-8")
 
     def tearDown(self):
         shutil.rmtree(self.scratch)
@@ -666,6 +678,49 @@ class LicenseCheckOverATree(unittest.TestCase):
         stderr = check_with("vendor/**=GPL-3.0-only")
         self.assertNotIn("vendor/", stderr)
         self.assertIn("tool.py: license.allowlist", stderr, "a file outside the glob is judged on the list in force")
+
+    def test_a_licence_text_is_held_to_the_text_as_published(self):
+        self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')
+        self.write("tool.py", "print()\n")
+        status, stdout, stderr = run("check-licenses", "--root", str(self.scratch))
+        self.assertEqual((status, stderr), (0, ""), "the published texts pass")
+        self.assertIn("every file is under MIT (permissive)", stdout)
+        published = (self.scratch / "LICENSES" / "MIT.txt").read_text(encoding="utf-8")
+        for edited in (published.replace("<year> <copyright holders>", "2026 Acme"), published.replace("\n", " \n", 1),
+                       published.rstrip("\n")):
+            (self.scratch / "LICENSES" / "MIT.txt").write_text(edited, encoding="utf-8")
+            status, stderr = self.check()
+            self.assertEqual(status, 0, "a text that differs warns; format 1 sets passed without the comparison")
+            self.assertIn("check-licenses: warning: LICENSES/MIT.txt: license.text-modified: is not the `MIT` text as published", stderr,
+                          "a filled holder line, a changed byte and a dropped newline each warn")
+
+    def test_an_unpinned_text_warns_until_publisher_conf_declares_its_digest(self):
+        self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')
+        self.write("LICENSES/Beerware.txt", "A licence text the tools hold no digest of.\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("check-licenses: warning: LICENSES/Beerware.txt: license.text-unpinned: ", stderr)
+        digest = hashlib.sha256(b"A licence text the tools hold no digest of.\n").hexdigest()
+        self.write("publisher.conf", f"license_text_digests=[Beerware:{digest}]\n")
+        status, stderr = self.check()
+        self.assertEqual((status, stderr), (0, ""), "a declared digest that matches checks the text")
+        self.write("publisher.conf", f"license_text_digests=[Beerware:{'0' * 64}]\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("warning: LICENSES/Beerware.txt: license.text-modified: is not the `Beerware` text as published", stderr)
+        self.write("publisher.conf", "license_text_digests=[Beerware]\n")
+        status, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("publisher.conf: repo.publisher-conf: `license_text_digests` item `Beerware` is not `<identifier>:<sha256>`", stderr)
+
+    def test_the_summary_names_each_licence_with_its_class(self):
+        shutil.copy(FIXTURES / "LICENSES" / "CC-BY-NC-4.0.txt", self.scratch / "LICENSES" / "CC-BY-NC-4.0.txt")
+        self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"', 'path = "data/**"\nSPDX-License-Identifier = "CC-BY-NC-4.0"')
+        self.write("data/table.csv", "a,b\n")
+        self.write("tool.py", "print()\n")
+        status, stdout, stderr = run("check-licenses", "--root", str(self.scratch), "--allow", "CC-BY-NC-4.0")
+        self.assertEqual((status, stderr), (0, ""), "the allowlist decides; a class is not a finding")
+        self.assertIn("every file is under CC-BY-NC-4.0 (limited-use), MIT (permissive)", stdout)
 
     def test_a_file_the_reader_refuses_or_cannot_open_is_refused_not_judged_on_an_annotation(self):
         self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')

@@ -163,10 +163,12 @@ that differs.
 `publisher.conf` at the repository root carries `publisher`, `contact`,
 `maintainers`, `source` and `description` (the marketplace's), and optionally
 `licenses`, the SPDX allowlist that replaces the default,
-and `allow_dynamic_injection`, `yes` or `no`, which allows the load-time
-substitution of [Bodies and files](#bodies-and-files). An absent key reads
-as `no`; any other value is refused under `repo.publisher-conf` and also
-reads as `no`.
+`allow_dynamic_injection`, `yes` or `no`, which allows the load-time
+substitution of [Bodies and files](#bodies-and-files), and
+`license_text_digests`, the `<identifier>:<sha256>` pairs of
+[Licences](#licences). An absent `allow_dynamic_injection` reads as `no`;
+any other value is refused under `repo.publisher-conf` and also reads
+as `no`.
 
 ## Skills
 
@@ -339,6 +341,24 @@ of each identifier is `LICENSES/<identifier>.txt`, in the set
 or at the repository root -- one regular file, not a link -- and `build-set`
 copies it into the payload.
 
+A licence text is the text SPDX publishes, byte for byte, as
+`reuse download <identifier>` writes it: a holder line stays the placeholder
+the published text carries, and the holder is stated in `REUSE.toml`,
+`LICENSE` or a file's header. The tools hold the SHA-256 of the published text
+of each widely used licence, with every revision SPDX has published since
+list 3.20, and warn for a text that matches none under
+`license.text-modified`. A text whose identifier the tools do not hold warns
+under `license.text-unpinned`; `publisher.conf`
+`license_text_digests=[<identifier>:<sha256>, ...]` names the digests that
+text is held to instead, the digest 64 lower-case hex digits. The tools also
+class each of those licences as `public-domain`, `permissive`,
+`weak-copyleft`, `copyleft` or `limited-use`, the last a licence that limits
+use by field, hosted service, commercial use or derivatives, and
+`check-licenses` names the class in its summary line. The allowlist decides
+whether a licence is used, and its default does not hold a `limited-use`
+licence; a class describes the licence's terms, and the tools do not decide
+whether two licences may be combined.
+
 Every other tracked file of a publisher repository states its licence too,
 as REUSE 3.2 resolves it: every `SPDX-License-Identifier` header anywhere
 in the file (read whole, up to the file bound; the lines from
@@ -484,6 +504,8 @@ differ.
 | `license.expression` | refuses | a licence is a well-formed SPDX expression without `WITH`, `LicenseRef` or a `+` suffix |
 | `license.allowlist` | refuses | every identifier of a licence is on the list in force |
 | `license.text` | refuses | `LICENSES/<identifier>.txt` exists for every identifier a set declares |
+| `license.text-modified` | warns | a licence text whose digest the tools or `publisher.conf` `license_text_digests` hold is the text SPDX publishes, its holder line the placeholder; one that differs warns |
+| `license.text-unpinned` | warns | a licence text whose digest neither the tools nor `publisher.conf` `license_text_digests` hold warns, since it is not compared |
 | `license.file` | refuses | every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation |
 | `release.inventory` | refuses | `SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each |
 <!-- rules:end -->
