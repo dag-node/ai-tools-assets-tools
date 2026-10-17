@@ -10,14 +10,14 @@
 # The set is the one `build-set` staged under `<build>/<set>/`: the marker `build-set` writes beside it must name the
 # set, and the staged set must validate under the release profile, so a stale or edited stage is refused before `gpg`
 # runs. The build root is opened once, and the marker, the stage and the signature's write are reached under that
-# descriptor (`tools/lib/staged_build.py`). The bytes of `SHA256SUMS` that validation read are the bytes signed, on gpg's standard input with the
-# publisher's own `gpg` and `gpg-agent` (`--detach-sign --armor`, `--local-user` where `--key` is given), the agent
-# asking for the passphrase; no secret key leaves the keyring and no other copy is made. The signature is then verified
-# with `gpgv` against the signer's exported public key in a scratch directory the command removes, the signing key and
-# its primary are printed, since a host's binding names the primary, and a signature whose key and primary both differ
-# from `--key` is refused. `SHA256SUMS.asc` is written last, replaced as a directory entry (`tools/lib/safe_write.py`),
-# so a refusal leaves the stage as it was and a link at that name is refused. Standard library only; `gpg` and `gpgv`
-# run as separate programs, and a missing one is a refusal naming it.
+# descriptor (`tools/lib/staged_build.py`). The bytes of `SHA256SUMS` that validation read are the bytes signed, on
+# gpg's standard input with the publisher's own `gpg` and `gpg-agent` (`--detach-sign --armor`, `--local-user` where
+# `--key` is given), the agent asking for the passphrase; no secret key leaves the keyring and no other copy is made.
+# The signature is then verified with `gpgv` against the signer's exported public key in a scratch directory the command
+# removes, the signing key and its primary are printed, since a host's binding names the primary, and a signature whose
+# key and primary both differ from `--key` is refused. `SHA256SUMS.asc` is written last, replaced as a directory entry
+# (`tools/lib/safe_write.py`), so a refusal leaves the stage as it was and a link at that name is refused. Standard
+# library only; `gpg` and `gpgv` run as separate programs, and a missing one is a refusal naming it.
 from __future__ import annotations
 
 import argparse

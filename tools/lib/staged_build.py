@@ -42,8 +42,8 @@ def check_output_root(root: pathlib.Path, given: pathlib.Path, what: str, collec
     """The absolute output root, or None after a refusal: it does not overlap sets/ and no existing component is
     a link.
 
-    The `islink` label decides where an output tree is created; it decides nothing a command reads, which goes through
-    the descriptor `open_output_root` returns.
+    The `islink` label decides where an output tree is created. It does not decide what a command reads, which goes
+    through the descriptor `open_output_root` returns.
     """
     output_root = pathlib.Path(os.path.abspath(root / given))
     sets_root = root / "sets"

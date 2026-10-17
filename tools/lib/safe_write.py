@@ -2,23 +2,23 @@
 """The writer every scaffolding and build command creates files through: by directory descriptor, never through a
 symbolic link, a new file created exclusively, and an existing inode never written into.
 
-A command that writes under a publisher repository walks a tree a pull request may have shaped, so the directory a
-file goes into is opened component by component from the root with `O_DIRECTORY|O_NOFOLLOW`, as `safe_read` opens
-one for reading: a symbolic link at a component refuses (`file.symlink`), an entry that is not a directory refuses
+A command that writes under a publisher repository walks a tree a pull request may have shaped, so the directory a file
+goes into is opened component by component from the root with `O_DIRECTORY|O_NOFOLLOW`, as `safe_read` opens one for
+reading: a symbolic link at a component refuses (`file.symlink`), an entry that is not a directory refuses
 (`file.special`), a missing directory is created with `mkdir` at the descriptor, and the file is then created at that
-descriptor, so a component swapped for a link after it was opened does not redirect the write -- the write lands in
-the directory the inspection opened. A new file is opened with `O_CREAT|O_EXCL|O_NOFOLLOW`, so a dangling link or any
-other entry at the name fails with EEXIST instead of being written through; and a generated file that is rewritten is
-replaced as a directory entry, never written into: the entry is `lstat`ed at the descriptor, a link, a directory or a
-special file at the name (`file.symlink`) or a regular file with a second hard link (`file.hardlink`, since the other
-name may lie outside the tree) refuses, the bytes go to `.<name>.<random>` beside it, created exclusively, and that
-name is renamed over the entry at the same descriptor. A removal goes the same way: `remove_file` unlinks the entry at
-its directory's descriptor, and `remove_tree` empties a directory by descriptor, unlinking every entry that is not
-a directory, a link included, and removing each directory once it is empty, so a link inside the tree is removed and
-its target is not. The root a command was handed is the operator's argument and is the one open that follows a link,
-as `safe_read.open_root` is; a caller that already holds the root's descriptor passes it instead, and each call works
-on a duplicate of it, so a root path swapped after the caller opened it does not redirect the call. Every refusal is a `safe_read.RefusedRead`, so a command reports it under the rule
-the caller names.
+descriptor, so a component swapped for a link after it was opened does not redirect the write -- the write lands in the
+directory the inspection opened. A new file is opened with `O_CREAT|O_EXCL|O_NOFOLLOW`, so a dangling link or any other
+entry at the name fails with EEXIST instead of being written through; and a generated file that is rewritten is replaced
+as a directory entry, never written into: the entry is `lstat`ed at the descriptor, a link, a directory or a special
+file at the name (`file.symlink`) or a regular file with a second hard link (`file.hardlink`, since the other name may
+lie outside the tree) refuses, the bytes go to `.<name>.<random>` beside it, created exclusively, and that name is
+renamed over the entry at the same descriptor. A removal goes the same way: `remove_file` unlinks the entry at its
+directory's descriptor, and `remove_tree` empties a directory by descriptor, unlinking every entry that is not a
+directory, a link included, and removing each directory once it is empty, so a link inside the tree is removed and its
+target is not. The root a command was handed is the operator's argument and is the one open that follows a link, as
+`safe_read.open_root` is; a caller that already holds the root's descriptor passes it instead, and each call works on a
+duplicate of it, so a root path swapped after the caller opened it does not redirect the call. Every refusal is a
+`safe_read.RefusedRead`, so a command reports it under the rule the caller names.
 """
 from __future__ import annotations
 
