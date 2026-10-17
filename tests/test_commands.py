@@ -832,6 +832,16 @@ class SignSet(unittest.TestCase):
         self.assertNotIn("is not on PATH", stderr, "the stage is judged before gpg is looked for")
         self.assertFalse((self.root / "build" / "acme" / "SHA256SUMS.asc").exists())
 
+    def test_the_bytes_signed_are_the_inventory_validation_read(self):
+        status, _, stderr = run("build-set", "acme", "--root", str(self.root))
+        self.assertEqual(status, 0, stderr)
+        from findings import FindingCollector
+        collector = FindingCollector("sign-set")
+        build_root = self.root / "build"
+        inventory = load_command("sign-set").validate_stage(self.root, build_root, build_root / "acme", collector)
+        self.assertEqual(collector.findings, [])
+        self.assertEqual(inventory, (build_root / "acme" / "SHA256SUMS").read_bytes())
+
 
 class SignedSetCase(unittest.TestCase):
     """A staged acme set and a key generated for the test, in a GnuPG home of its own."""

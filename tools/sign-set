@@ -9,9 +9,9 @@
 #
 # The set is the one `build-set` staged under `<build>/<set>/`: the marker `build-set` writes beside it must name the
 # set, and the staged set must validate under the release profile, so a stale or edited stage is refused before `gpg`
-# runs. `SHA256SUMS` is read through `tools/lib/safe_read.py` and signed on gpg's standard input with the publisher's
-# own `gpg` and `gpg-agent` (`--detach-sign --armor`, `--local-user` where `--key` is given), the agent asking for the
-# passphrase; no secret key leaves the keyring and no other copy is made. The signature is then verified with `gpgv`
+# runs. The bytes of `SHA256SUMS` that validation read are the bytes signed, on gpg's standard input with
+# the publisher's own `gpg` and `gpg-agent` (`--detach-sign --armor`, `--local-user` where `--key` is given), the agent
+# asking for the passphrase; no secret key leaves the keyring and no other copy is made. The signature is then verified with `gpgv`
 # against the signer's exported public key in a scratch directory the command removes, the signing key and its primary
 # are printed, since a host's binding names the primary, and a signature whose key and primary both differ from
 # `--key` is refused. `SHA256SUMS.asc` is written last, replaced as a directory entry (`tools/lib/safe_write.py`), so
@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Optional
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
@@ -35,7 +36,7 @@ from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import resolve_license_allowlist  # noqa: E402
 from openpgp import FINGERPRINT_PATTERN, valid_signature  # noqa: E402
-from safe_read import RefusedRead, open_root, read_file_under, read_text_under  # noqa: E402
+from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
 from safe_write import replace_file  # noqa: E402
 from set_validation import PROFILE_RELEASE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
 from staged_build import INVENTORY_FILE, SIGNATURE_FILE, check_output_root, is_managed_build_directory, marker_path  # noqa: E402
@@ -64,29 +65,18 @@ def main() -> int:
     if not is_managed_build_directory(build_root, args.set):
         collector.refuse(str(stage), "repo.layout", f"is not a set build-set staged (no `{marker_path(build_root, args.set).name}` beside it names it); run build-set {args.set} first")
         return collector.report()
-    if not validate_stage(root, build_root, stage, collector):
+    inventory = validate_stage(root, build_root, stage, collector)
+    if inventory is None:
         return collector.report()
     for program in ("gpg", "gpgv"):
         if shutil.which(program) is None:
             collector.refuse(args.set, "release.signature", f"`{program}` is not on PATH; sign-set signs and verifies with the publisher's own GnuPG")
     if collector.has_refusals():
         return collector.report()
-    try:
-        stage_fd = open_root(stage)
-    except OSError as error:
-        collector.refuse(str(stage), "repo.layout", f"cannot be opened: {error.strerror}")
-        return collector.report()
-    try:
-        inventory = read_file_under(stage_fd, pathlib.PurePath(INVENTORY_FILE), fmt.FILE_MAX_BYTES)
-    except (FileNotFoundError, RefusedRead) as error:
-        collector.refuse(f"{stage}/{INVENTORY_FILE}", "release.inventory", getattr(error, "message", "is absent"))
-        return collector.report()
-    finally:
-        os.close(stage_fd)
-    signature = sign(inventory.data, key, collector)
+    signature = sign(inventory, key, collector)
     if signature is None:
         return collector.report()
-    signer = verify(inventory.data, signature, key, collector)
+    signer = verify(inventory, signature, key, collector)
     if signer is None:
         return collector.report()
     signing_key, primary = signer
@@ -104,8 +94,9 @@ def main() -> int:
     return collector.report()
 
 
-def validate_stage(root: pathlib.Path, build_root: pathlib.Path, stage: pathlib.Path, collector: FindingCollector) -> bool:
-    """True when the staged set validates under the release profile, its inventory equal to its tree."""
+def validate_stage(root: pathlib.Path, build_root: pathlib.Path, stage: pathlib.Path, collector: FindingCollector) -> Optional[bytes]:
+    """The bytes of `SHA256SUMS` the validator read, where the staged set validates under the release profile, its
+    inventory equal to its tree; None after a finding."""
     publisher = None
     try:
         root_fd = open_root(root)
@@ -115,19 +106,23 @@ def validate_stage(root: pathlib.Path, build_root: pathlib.Path, stage: pathlib.
             os.close(root_fd)
     except (OSError, RefusedRead):
         collector.refuse("publisher.conf", "repo.layout", f"is not readable under {root}; a set is signed inside its publisher repository")
-        return False
+        return None
     allowlist, allowlist_error = resolve_license_allowlist(publisher)
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
-        return False
+        return None
     options = ValidationOptions(publisher=publisher.get("publisher") or None, profile=PROFILE_RELEASE,
                                 reserved_words=read_reserved_words(TOOLS / "reserved-words.txt"), license_allowlist=allowlist,
                                 license_text_directories=[], display_root=build_root, publisher_conf=publisher)
-    validate_set_directory(stage, options, collector)
+    summary = validate_set_directory(stage, options, collector)
     if collector.has_refusals():
         print(f"sign-set: the staged set does not validate under the release profile; run build-set {stage.name} again; nothing was signed", file=sys.stderr)
-        return False
-    return True
+        return None
+    record = next((record for record in summary.files if record.relative_path == pathlib.Path(INVENTORY_FILE)), None)
+    if record is None or record.data is None:
+        collector.refuse(f"{stage}/{INVENTORY_FILE}", "release.inventory", "was not read whole; nothing was signed")
+        return None
+    return record.data
 
 
 def sign(data: bytes, key, collector: FindingCollector):
