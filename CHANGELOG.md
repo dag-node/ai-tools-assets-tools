@@ -7,6 +7,26 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **Each licence text is compared with the text SPDX publishes.**
+  `check-licenses` and `validate` hold every `LICENSES/<identifier>.txt`,
+  the repository's, a set's own and the copy `build-set` stages, to the SHA-256
+  of the text spdx/license-list-data publishes, for the widely used licences,
+  with every revision published since list 3.20. A text that differs,
+  a filled holder line included, warns under `license.text-modified`;
+  `reuse download <identifier>` writes the published text, and the holder
+  belongs in `REUSE.toml` or `LICENSE`. A text the tools hold no digest of
+  warns under `license.text-unpinned`, and `publisher.conf`
+  `license_text_digests=[<identifier>:<sha256>]` names the digest to compare it
+  with.
+- **Each known licence carries a class.** The tools class a licence as
+  `public-domain`, `permissive`, `weak-copyleft`, `copyleft` or `limited-use`
+  (source-available, non-commercial or no-derivatives terms), and
+  `check-licenses` names the class of each licence in its summary line.
+  The allowlist still decides whether a licence is used; its default does not
+  hold a `limited-use` licence.
+
 ### Changed
 
 - **The tools are MIT throughout.** The formatters under `formatters/` and

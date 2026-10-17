@@ -150,3 +150,4 @@ the tools RPM.
 | `nfpm-set.yaml.in` | the package a set ships as |
 | `nfpm-tools.yaml.in` | the package this repository's tools ship as, built by `release.yml` from the release archive |
 | `sign-rpms.sh` | signs and verifies an RPM inside the EL container; a copy from ai-tools-base |
+| `license-text-digests.py` | prints the lines of the licence table in `tools/lib/license_texts.py` from spdx/license-list-data: each licence's class as the table holds it, its OSI and FSF flags, and the digest of every published revision of its text since `--floor`; a maintainer runs it when a licence joins the table or SPDX publishes a list |

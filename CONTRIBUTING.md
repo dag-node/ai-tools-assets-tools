@@ -14,6 +14,7 @@ this file is about changing the tools that apply it.
 | a workflow a publisher calls | `.github/workflows/`, with its inputs documented in the workflow's header |
 | a formatter | `formatters/` |
 | a release step | `packaging/release-steps.sh`, which both release workflows run |
+| a licence the tools know | `tools/lib/license_texts.py`, a line with its class; `python3 packaging/license-text-digests.py` prints the table again with its flags and digests |
 
 A tool is Python 3.9 and the standard library alone, or bash, so it runs
 on an EL9 host and on the GitHub runner without an install step; a script is
