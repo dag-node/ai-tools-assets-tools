@@ -822,9 +822,8 @@ class SignSet(unittest.TestCase):
         self.assertFalse((self.root / "build" / "acme" / "SHA256SUMS.asc").exists())
 
 
-@unittest.skipUnless(gpg_runs(), "signing needs gpg and gpgv")
-class SignSetWithAKey(unittest.TestCase):
-    """sign-set with a key generated for the test, in a GnuPG home of its own."""
+class SignedSetCase(unittest.TestCase):
+    """A staged acme set and a key generated for the test, in a GnuPG home of its own."""
 
     def setUp(self):
         self.scratch = pathlib.Path(tempfile.mkdtemp())
@@ -850,6 +849,11 @@ class SignSetWithAKey(unittest.TestCase):
 
     def sign(self, *arguments: str):
         return run("sign-set", "acme", "--root", str(self.root), *arguments, env=self.environment)
+
+
+@unittest.skipUnless(gpg_runs(), "signing needs gpg and gpgv")
+class SignSetWithAKey(SignedSetCase):
+    """sign-set with the generated key."""
 
     def test_signs_and_prints_the_primary_a_binding_names(self):
         status, stdout, stderr = self.sign()
@@ -882,6 +886,114 @@ class SignSetWithAKey(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("file.symlink", stderr)
         self.assertEqual(outside.read_text(encoding="utf-8"), "theirs\n")
+
+
+class VerifySet(unittest.TestCase):
+    """verify-set's inventory half over the conformance fixtures, and the refusals that come before gpgv runs."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        self.root = self.scratch / "acme-assets"
+        compose_publisher(self.root)
+        status, _, stderr = run("build-set", "acme", "--root", str(self.root))
+        self.assertEqual(status, 0, stderr)
+        self.stage = self.root / "build" / "acme"
+        self.key = self.scratch / "key.asc"
+        self.key.write_text("-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEZQ==\n=abcd\n-----END PGP PUBLIC KEY BLOCK-----\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def test_the_inventory_half_holds_the_release_fixtures_and_a_fresh_build(self):
+        import signed_inventory
+        check = signed_inventory.verify_inventory(self.stage, (self.stage / "SHA256SUMS").read_text(encoding="utf-8"))
+        self.assertEqual((check.outcome, check.problems), (signed_inventory.VERIFIED, []), "control: the stage build-set wrote")
+        for name in ("release.inventory", "release.inventory.duplicate"):
+            set_directory = FIXTURES / "fail" / name / "acme"
+            check = signed_inventory.verify_inventory(set_directory, (set_directory / "SHA256SUMS").read_text(encoding="utf-8"))
+            self.assertEqual(check.outcome, signed_inventory.MISMATCH, name)
+        (self.stage / "attestations").mkdir()
+        (self.stage / "attestations" / "timestamp.tsr").write_text("a statement\n", encoding="utf-8")
+        check = signed_inventory.verify_inventory(self.stage, (self.stage / "SHA256SUMS").read_text(encoding="utf-8"))
+        self.assertEqual(check.outcome, signed_inventory.VERIFIED, "attestations/ lies outside the inventory")
+
+    def test_an_input_it_cannot_read_exits_2(self):
+        status, stdout, stderr = run("verify-set", str(self.stage), "--key", str(self.key))
+        self.assertEqual((status, stdout), (2, ""))
+        self.assertIn("SHA256SUMS.asc: release.signature: is absent", stderr)
+        (self.stage / "SHA256SUMS.asc").write_text("not a signature\n", encoding="utf-8")
+        for key_text in ("not a key\n", "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n!!!\n-----END PGP PUBLIC KEY BLOCK-----\n"):
+            self.key.write_text(key_text, encoding="utf-8")
+            status, _, stderr = run("verify-set", str(self.stage), "--key", str(self.key))
+            self.assertEqual(status, 2, key_text)
+            self.assertIn("key.asc: release.signature: is ", stderr)
+        status, _, stderr = run("verify-set", str(self.stage), "--key", str(self.key), "--signer", "ABC")
+        self.assertEqual(status, 2)
+        self.assertIn("`ABC` is not a fingerprint of 40 hex digits", stderr)
+
+
+@unittest.skipUnless(gpg_runs(), "signing needs gpg and gpgv")
+class VerifySetWithAKey(SignedSetCase):
+    """verify-set over a set sign-set signed with a key generated for the test."""
+
+    def setUp(self):
+        super().setUp()
+        status, _, stderr = self.sign()
+        self.assertEqual(status, 0, stderr)
+        self.stage = self.root / "build" / "acme"
+        self.public = self.scratch / "acme.asc"
+        self.public.write_text(self.gpg("--armor", "--export", self.primary), encoding="utf-8")
+
+    def verify(self, *arguments: str, key=None):
+        return run("verify-set", str(self.stage), "--key", str(key or self.public), *arguments)
+
+    def test_a_signed_set_verifies_and_prints_its_primary(self):
+        status, stdout, stderr = self.verify("--signer", self.primary)
+        self.assertEqual((status, stdout, stderr), (0, f"{self.primary}\n", ""))
+
+    def test_another_key_and_another_signer_leave_it_unable(self):
+        other = self.scratch / "other"
+        other.mkdir(mode=0o700)
+        environment = dict(os.environ, GNUPGHOME=str(other))
+        subprocess.run(["gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "Other <o@example.org>",
+                        "ed25519", "sign", "never"], capture_output=True, check=True, env=environment)
+        exported = subprocess.run(["gpg", "--armor", "--export"], capture_output=True, check=True, env=environment).stdout
+        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=environment, capture_output=True)
+        (self.scratch / "other.asc").write_bytes(exported)
+        status, _, stderr = self.verify(key=self.scratch / "other.asc")
+        self.assertEqual(status, 2, "a key that does not hold the signer leaves the check unable, as base's contract has it")
+        self.assertIn("release.signature: the signature is by ", stderr)
+        status, _, stderr = self.verify("--signer", "0" * 40)
+        self.assertEqual(status, 2)
+        self.assertIn(f"not by `--signer {'0' * 40}`", stderr)
+
+    def test_a_changed_added_or_removed_file_and_an_edited_inventory_are_mismatches(self):
+        readme = self.stage / "README.md"
+        original = readme.read_bytes()
+        cases = (("README.md", lambda: readme.write_bytes(original + b"changed\n"), "does not match its hash"),
+                 ("extra.md", lambda: (self.stage / "extra.md").write_text("added\n", encoding="utf-8"), "is present and not listed"),
+                 ("README.md", lambda: readme.unlink(), "is listed and absent"))
+        for path, change, message in cases:
+            change()
+            status, _, stderr = self.verify()
+            self.assertEqual(status, 1, path)
+            self.assertIn(f"verify-set: {path}: release.inventory: {message}", stderr)
+            readme.write_bytes(original)
+            (self.stage / "extra.md").unlink(missing_ok=True)
+        inventory = self.stage / "SHA256SUMS"
+        inventory.write_text(inventory.read_text(encoding="utf-8") + "0" * 64 + "  extra.md\n", encoding="utf-8")
+        status, _, stderr = self.verify()
+        self.assertEqual(status, 1, "an edited inventory fails the signature")
+        self.assertIn("SHA256SUMS.asc: release.signature: the signature does not match SHA256SUMS", stderr)
+
+    def test_the_source_it_was_built_from_reproduces_it(self):
+        status, stdout, stderr = self.verify("--source", str(self.root))
+        self.assertEqual((status, stderr), (0, ""))
+        skill = next((self.root / "sets" / "acme" / "skills").glob("*/SKILL.md"))
+        skill.write_text(skill.read_text(encoding="utf-8") + "One more line.\n", encoding="utf-8")
+        status, _, stderr = self.verify("--source", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn(f"verify-set: {skill.relative_to(self.root / 'sets' / 'acme').as_posix()}: release.inventory: differs from the source's build", stderr)
 
 
 class LicenseCheck(unittest.TestCase):

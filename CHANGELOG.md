@@ -29,6 +29,14 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   so a set can be signed and placed in a base host's local root without
   GitHub or a release workflow. A stage edited after `build-set` is refused
   before `gpg` runs.
+- **`verify-set` verifies a signed set without ai-tools-base.**
+  `python3 tools/verify-set <dir> --key <file> [--signer <fingerprint>]`
+  checks `SHA256SUMS.asc` with `gpgv` against the publisher's public key and
+  `SHA256SUMS` against the tree, as base does before it links a set, and exits
+  0 with the signer's primary printed, 1 on a mismatch, 2 when it could not
+  verify. `--source <tree>` builds the set from its repository and refuses
+  each path whose hash differs, so a reviewer can show that a signed set is
+  its public source.
 - **Each licence text is compared with the text SPDX publishes.**
   `check-licenses` and `validate` hold every `LICENSES/<identifier>.txt`,
   the repository's, a set's own and the copy `build-set` stages, to the SHA-256
