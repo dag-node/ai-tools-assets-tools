@@ -32,7 +32,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 import openpgp  # noqa: E402
 from openpgp import MISMATCH, UNABLE, VERIFIED  # noqa: E402
@@ -110,9 +110,14 @@ def main() -> int:
         run.fail(UNABLE, directory, "release.inventory", f"is not a directory: {error.strerror}")
         return run.finish()
     try:
-        verify(run, args, signer, key, directory_fd)
+        return refuse_unconverted_errors(run.collector, "release.inventory", directory,
+                                         lambda: verify_and_report(run, args, signer, key, directory_fd), status=UNABLE)
     finally:
         os.close(directory_fd)
+
+
+def verify_and_report(run: Verification, args: argparse.Namespace, signer, key: bytes, directory_fd: int) -> int:
+    verify(run, args, signer, key, directory_fd)
     return run.finish()
 
 

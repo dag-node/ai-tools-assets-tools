@@ -45,7 +45,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import resolve_license_allowlist  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_file_under, read_text_under  # noqa: E402
@@ -178,7 +178,7 @@ def main() -> int:
         collector.refuse(str(root), "repo.layout", "is not a directory; a set is built inside its publisher repository")
         return collector.report()
     try:
-        return build(root_fd, root, args.set, args.build, args.dist, collector)
+        return refuse_unconverted_errors(collector, "repo.layout", root, lambda: build(root_fd, root, args.set, args.build, args.dist, collector))
     finally:
         os.close(root_fd)
 

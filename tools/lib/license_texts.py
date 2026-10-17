@@ -255,9 +255,16 @@ def check_license_text_directory(collector: FindingCollector, root_fd: int, decl
     except (RefusedRead, NotADirectoryError):
         collector.refuse(fmt.LICENSE_TEXTS_DIRECTORY, "license.text", "is not a directory; the licence texts are files in one")
         return
+    except OSError as error:
+        collector.refuse(fmt.LICENSE_TEXTS_DIRECTORY, "license.text", f"cannot be read ({error.strerror}); a text this check has not read is not taken as published")
+        return
     try:
-        with os.scandir(directory_fd) as listing:
-            names = sorted(entry.name for entry in listing if entry.name.endswith(".txt"))
+        try:
+            with os.scandir(directory_fd) as listing:
+                names = sorted(entry.name for entry in listing if entry.name.endswith(".txt"))
+        except OSError as error:
+            collector.refuse(fmt.LICENSE_TEXTS_DIRECTORY, "license.text", f"cannot be read ({error.strerror}); a text this check has not read is not taken as published")
+            return
         for name in names:
             path = f"{fmt.LICENSE_TEXTS_DIRECTORY}/{name}"
             try:

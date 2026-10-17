@@ -1002,6 +1002,100 @@ class CheckPublisherRelease(unittest.TestCase):
 # REUSE-IgnoreEnd
 
 
+class OperatingSystemErrors(unittest.TestCase):
+    """An input the operating system refuses is a reported refusal in the command's shape, never a traceback."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        for path in self.scratch.rglob("*"):
+            if not path.is_symlink():
+                path.chmod(0o755 if path.is_dir() else 0o644)
+        shutil.rmtree(self.scratch)
+
+    def assert_refused(self, completed, status, line):
+        returned, _, stderr = completed
+        self.assertEqual(returned, status, stderr)
+        self.assertIn(line, stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_new_publisher_refuses_an_unreadable_input_before_its_first_write(self):
+        root = self.scratch / "ai-tools-assets"
+        compose_template(root)
+        (root / "LICENSES" / "MIT.txt").write_bytes((REPOSITORY / "LICENSES" / "MIT.txt").read_bytes())
+        for relative, line in (("sets", "new-publisher: sets: repo.layout: cannot be read: Permission denied"),
+                               ("LICENSES/MIT.txt", "new-publisher: LICENSES/MIT.txt: license.text: cannot be read: Permission denied")):
+            before = tree_state(root)
+            path = root / relative
+            mode = path.stat().st_mode
+            path.chmod(0)
+            try:
+                completed = run("new-publisher", "--root", str(root), *INITIALIZE)
+            finally:
+                path.chmod(mode)
+            self.assert_refused(completed, 1, line)
+            self.assertEqual(tree_state(root), before, relative)
+        self.assertEqual(run("new-publisher", "--root", str(root), *INITIALIZE)[0], 0, "control: the same copy readable")
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_check_publisher_and_validate_refuse_an_unreadable_licence_input(self):
+        root = self.scratch / "acme-assets"
+        compose_publisher(root)
+        reuse = root / "REUSE.toml"
+        reuse.write_text('version = 1\nSPDX-PackageName = "ai-tools-assets"\n', encoding="utf-8")
+        self.assertEqual(run("check-publisher", "--root", str(root), "--repository", "acme/ai-tools-assets")[:3:2], (0, ""),
+                         "control: REUSE.toml readable")
+        reuse.chmod(0)
+        self.assert_refused(run("check-publisher", "--root", str(root), "--repository", "acme/ai-tools-assets"), 1,
+                            "check-publisher: REUSE.toml: cannot be read: Permission denied")
+        reuse.chmod(0o644)
+        self.assertEqual(run("validate", "--root", str(root))[0], 0, "control: LICENSES/ readable")
+        (root / "LICENSES").chmod(0)
+        self.assert_refused(run("validate", "--root", str(root)), 1, "validate: LICENSES: license.text: cannot be read (Permission denied)")
+
+    def test_a_gpgv_that_cannot_be_run_leaves_the_signature_unable(self):
+        import openpgp
+        with mock.patch.object(openpgp.shutil, "which", return_value="/usr/bin/gpgv"), \
+                mock.patch.object(openpgp.subprocess, "run", side_effect=PermissionError(13, "Permission denied", "gpgv")):
+            check = openpgp.check_signature(self.scratch, b"key", b"data", b"signature")
+        self.assertEqual((check.outcome, check.error), (openpgp.UNABLE, "`gpgv` could not be run: Permission denied"))
+
+    def run_main(self, command: str, *arguments: str, patch=None):
+        """`main()` of `tools/<command>` in this process, with `patch` applied; its status and its stderr."""
+        module = load_command(command)
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "argv", [command, *arguments]), contextlib.redirect_stderr(stderr), \
+                contextlib.redirect_stdout(io.StringIO()), (patch(module) if patch else contextlib.nullcontext()):
+            status = module.main()
+        return status, "", stderr.getvalue()
+
+    def test_an_error_no_reader_converted_is_the_commands_refusal(self):
+        stage = self.scratch / "stage"
+        stage.mkdir()
+        for name in ("SHA256SUMS", "SHA256SUMS.asc"):
+            (stage / name).write_text("x\n", encoding="utf-8")
+        key = self.scratch / "key.asc"
+        key.write_text("-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEZQ==\n-----END PGP PUBLIC KEY BLOCK-----\n", encoding="utf-8")
+        refused = PermissionError(13, "Permission denied", str(self.scratch / "verify-set.scratch"))
+        self.assert_refused(self.run_main("verify-set", str(stage), "--key", str(key),
+                                          patch=lambda module: mock.patch.object(module.openpgp, "scratch_directory", side_effect=refused)),
+                            2, f"verify-set: {self.scratch / 'verify-set.scratch'}: release.inventory: Permission denied; verify-set stopped before it finished")
+        status, _, stderr = self.run_main("verify-set", str(stage), "--key", str(key))
+        self.assertEqual(status, 2, "control: the scratch directory made, gpgv decides")
+        self.assertNotIn("stopped before it finished", stderr)
+        root = self.scratch / "acme-assets"
+        compose_publisher(root)
+        self.assertEqual(self.run_main("check-publisher", "--root", str(root))[0], 0, "control")
+        self.assert_refused(self.run_main("check-publisher", "--root", str(root),
+                                          patch=lambda module: mock.patch.object(module, "reserved_words", side_effect=PermissionError(13, "Permission denied", "reserved-words.txt"))),
+                            1, "check-publisher: reserved-words.txt: Permission denied; check-publisher stopped before it finished")
+        self.assert_refused(self.run_main("build-set", "acme", "--root", str(root),
+                                          patch=lambda module: mock.patch.object(module, "render_checksum_inventory", side_effect=OSError(5, "Input/output error"))),
+                            1, f"build-set: {root}: repo.layout: Input/output error; build-set stopped before it finished")
+
+
 class ScratchDirectory(unittest.TestCase):
     """openpgp.scratch_directory, which sign-set and verify-set write their scratch material into."""
 

@@ -118,8 +118,11 @@ def check_signature(scratch: pathlib.Path, key: bytes, data: bytes, signature: b
     keyring.write_bytes(key)
     data_path.write_bytes(data)
     signature_path.write_bytes(signature)
-    completed = subprocess.run(["gpgv", "--homedir", str(scratch), "--status-fd", "1", "--keyring", str(keyring),
-                                str(signature_path), str(data_path)], capture_output=True, text=True)
+    try:
+        completed = subprocess.run(["gpgv", "--homedir", str(scratch), "--status-fd", "1", "--keyring", str(keyring),
+                                    str(signature_path), str(data_path)], capture_output=True, text=True)
+    except OSError as error:
+        return SignatureCheck(UNABLE, error=f"`gpgv` could not be run: {error.strerror or error}")
     records = [fields[1:] for fields in (line.split() for line in completed.stdout.splitlines())
                if len(fields) >= 2 and fields[0] == "[GNUPG:]"]
     keywords = [record[0] for record in records]
