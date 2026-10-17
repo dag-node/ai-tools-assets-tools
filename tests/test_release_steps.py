@@ -1066,6 +1066,19 @@ class RepinCase(ChangeCase):
 
 
 class RepinTools(RepinCase):
+    def test_a_caller_without_develop_is_told_to_create_it(self):
+        self.git(self.caller, "switch", "--quiet", "-c", "main-only")
+        self.git(self.caller, "branch", "--quiet", "-D", "develop")
+        status, _, stderr = self.repin("v1.6.0")
+        self.assertEqual(status, 1)
+        self.assertIn("the checkout is on main-only, not `develop`; run `git switch develop`", stderr,
+                      "origin/develop is there, so `git switch develop` creates the branch")
+        self.git(self.caller, "update-ref", "-d", "refs/remotes/origin/develop")
+        status, _, stderr = self.repin("v1.6.0")
+        self.assertEqual(status, 1)
+        self.assertIn("the checkout is on main-only and has no `develop` branch; create it with `git switch -c develop`"
+                      " and `git push -u origin develop`, then run again", stderr)
+
     def test_a_refresh_commit_is_pinned_with_its_pull_request(self):
         sha = self.push_refresh()
         self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"], stdout="31\n")

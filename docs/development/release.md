@@ -307,7 +307,10 @@ request starts green.
 ### Re-pinning a caller to a release
 
 The same command, given a tag, re-pins a caller to a release of the tools.
-From the caller's root, with the tools checked out at `develop` beside it,
+A caller holds a `develop` branch because it follows the branch model of
+[dag-node/ai-tools-assets](https://github.com/dag-node/ai-tools-assets/blob/main/docs/development/release.md):
+pull requests into `develop`, releases on `main`. From the caller's root,
+on its `develop` and with the tools checked out at `develop` beside it,
 after the final's release run is green:
 
 ```bash
