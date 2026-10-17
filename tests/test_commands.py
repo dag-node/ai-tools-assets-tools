@@ -1284,16 +1284,29 @@ class SignSet(unittest.TestCase):
     def test_the_bytes_signed_are_the_inventory_validation_read(self):
         status, _, stderr = run("build-set", "acme", "--root", str(self.root))
         self.assertEqual(status, 0, stderr)
-        from findings import FindingCollector
-        collector = FindingCollector("sign-set")
-        build_root = self.root / "build"
-        build_fd = os.open(build_root, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            inventory = load_command("sign-set").validate_stage(self.root, build_root, build_fd, build_root / "acme", collector)
-        finally:
-            os.close(build_fd)
-        self.assertEqual(collector.findings, [])
-        self.assertEqual(inventory, (build_root / "acme" / "SHA256SUMS").read_bytes())
+        inventory = self.root / "build" / "acme" / "SHA256SUMS"
+        validated = inventory.read_bytes()
+        sign_set = load_command("sign-set")
+        validate = sign_set.validate_set_directory
+        signed = []
+
+        def validate_then_replace(*arguments, **keywords):
+            summary = validate(*arguments, **keywords)
+            inventory.write_bytes(b"0" * 64 + b"  replaced-after-validation\n")
+            return summary
+
+        def sign(data, key, collector):
+            signed.append(data)
+            return None  # the helper's refusal path: main stops before gpg would run
+
+        with mock.patch.object(sys, "argv", ["sign-set", "acme", "--root", str(self.root)]), \
+                mock.patch.object(sign_set, "validate_set_directory", side_effect=validate_then_replace), \
+                mock.patch.object(sign_set.shutil, "which", return_value="/usr/bin/gpg"), \
+                mock.patch.object(sign_set, "sign", side_effect=sign), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            sign_set.main()
+        self.assertNotEqual(inventory.read_bytes(), validated, "control: SHA256SUMS was replaced after validation")
+        self.assertEqual(signed, [validated], "the signing helper is handed the bytes validation read")
 
 
 class SignedSetCase(unittest.TestCase):
@@ -1593,6 +1606,7 @@ class VerifySetWithAKey(SignedSetCase):
         self.assertEqual(status, 1, "an edited inventory fails the signature")
         self.assertIn("SHA256SUMS.asc: release.signature: the signature does not match SHA256SUMS", stderr)
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
     def test_a_file_the_reader_refuses_or_cannot_read_exits_2_naming_it(self):
         readme = self.stage / "README.md"
         os.link(readme, self.scratch / "README.md")
@@ -1600,15 +1614,14 @@ class VerifySetWithAKey(SignedSetCase):
         self.assertEqual((status, stdout), (2, ""))
         self.assertIn("verify-set: README.md: release.inventory: has 2 links", stderr)
         (self.scratch / "README.md").unlink()
-        if os.geteuid() != 0:
-            readme.chmod(0)
-            try:
-                status, _, stderr = self.verify()
-            finally:
-                readme.chmod(0o644)
-            self.assertEqual(status, 2)
-            self.assertIn("verify-set: README.md: release.inventory: cannot be read: Permission denied", stderr)
-            self.assertNotIn("Traceback", stderr)
+        readme.chmod(0)
+        try:
+            status, _, stderr = self.verify()
+        finally:
+            readme.chmod(0o644)
+        self.assertEqual(status, 2)
+        self.assertIn("verify-set: README.md: release.inventory: cannot be read: Permission denied", stderr)
+        self.assertNotIn("Traceback", stderr)
         self.assertEqual(self.verify()[0], 0, "control: the same set readable")
 
     def test_the_source_it_was_built_from_reproduces_it(self):
@@ -1631,6 +1644,10 @@ class VerifySetWithAKey(SignedSetCase):
             time.sleep(0.01)
         if child.poll() is not None:
             self.skipTest("verify-set finished before its source build was seen; the race is not deterministic here")
+        if not list(temporary.glob("verify-set.*/build")):
+            child.kill()
+            child.wait(timeout=30)
+            self.fail("verify-set ran 30 s without starting its source build; the case measured no signal")
         child.send_signal(signal.SIGTERM)
         self.assertEqual(child.wait(timeout=30), 128 + signal.SIGTERM)
         self.assertEqual(list(temporary.iterdir()), [])
