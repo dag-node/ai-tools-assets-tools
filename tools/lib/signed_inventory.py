@@ -3,9 +3,11 @@
 
 ai-tools-base's `assets-verify.lib.sh` makes the same check before it links a set, and this is its twin for a consumer
 without base, a reviewer, or the publisher before shipping: `SHA256SUMS` lists every file of the set other than itself
-and `SHA256SUMS.asc` exactly once, as `<sha256>  <relative path>`, and each hash matches. A line outside that shape,
-a path outside the set or with a component outside the portable name set, a path listed twice, a file listed and
-absent or present and unlisted, and a hash that differs are a MISMATCH. The walk reads the set by descriptor through
+and `SHA256SUMS.asc` exactly once, in `sha256sum`'s text or binary form (`<sha256>  <path>` or `<sha256> *<path>`,
+the line grammar `set_validation` holds a release to), and each hash matches. A line outside that shape, a path outside
+the set or with a component outside the portable name set, a path listed twice, an inventory that lists no file, a file
+listed and absent or present and unlisted, and a hash that differs are a MISMATCH; an inventory listing more files than
+a set holds leaves the check UNABLE before the tree is walked. The walk reads the set by descriptor through
 `safe_read`, from the directory descriptor the caller holds, as the validator's walk does: an entry the reader refuses
 (a symbolic link, a special file, a file with a second hard link), an entry or a directory that cannot be opened or
 listed, a file over the format's per-file bound, and a set over its file, directory, depth, entry or payload budget
@@ -15,16 +17,14 @@ can carry a third party's statement there without a change here.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import asset_format as fmt
 from openpgp import MISMATCH, UNABLE, VERIFIED
 from safe_read import RefusedRead, open_directory, read_file
+from set_validation import SHA256SUMS_LINE
 from staged_build import INVENTORY_EXCLUDED, INVENTORY_FILE
-
-INVENTORY_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64})  (?P<path>[^\n]+)$")
 
 
 @dataclass
@@ -47,15 +47,15 @@ class InventoryCheck:
 
 def parse_inventory(text: str, check: InventoryCheck) -> Dict[str, str]:
     """Each listed path with its digest; a line outside the shape, an unportable or escaping path and a path listed
-    twice are mismatches."""
+    twice are mismatches, and a path past the format's file budget leaves the check UNABLE and ends the parse."""
     listed: Dict[str, str] = {}
     lines = text.split("\n")
     for number, line in enumerate(lines, start=1):
         if line == "" and number == len(lines):
             continue
-        match = INVENTORY_LINE.match(line)
+        match = SHA256SUMS_LINE.match(line)
         if match is None:
-            check.mismatch(INVENTORY_FILE, f"line {number} is not `<sha256>  <path>`")
+            check.mismatch(INVENTORY_FILE, f"line {number} is not `<sha256>  <path>` or `<sha256> *<path>`")
             continue
         path = match.group("path")
         parts = path.split("/")
@@ -66,6 +66,9 @@ def parse_inventory(text: str, check: InventoryCheck) -> Dict[str, str]:
             check.mismatch(INVENTORY_FILE, f"`{path}` is listed twice")
             continue
         listed[path] = match.group("digest")
+        if len(listed) > fmt.SET_MAX_FILES:
+            check.unable(INVENTORY_FILE, f"lists more than {fmt.SET_MAX_FILES} files, the most a set holds")
+            break
     return listed
 
 
@@ -77,6 +80,10 @@ def verify_inventory(root_fd: int, inventory_text: str) -> InventoryCheck:
     check = InventoryCheck()
     listed = parse_inventory(inventory_text, check)
     check.listed = listed
+    if check.outcome == UNABLE:
+        return check
+    if not listed:
+        check.mismatch(INVENTORY_FILE, "does not list any file")
     walk = _InventoryWalk(check)
     if not walk.run(root_fd):
         return check

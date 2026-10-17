@@ -1435,6 +1435,51 @@ class VerifySet(unittest.TestCase):
                          "a link at a directory name, and no listed-and-absent finding for the files under it")
         self.assertIn("is a symbolic link", check.problems[0][1])
 
+    def inventory_of(self, files, inventory_text):
+        """The inventory check of a fresh directory holding `files`, a name-to-bytes map, against `inventory_text`."""
+        import signed_inventory
+        directory = pathlib.Path(tempfile.mkdtemp(dir=self.scratch))
+        for name, data in files.items():
+            (directory / name).write_bytes(data)
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            return signed_inventory.verify_inventory(directory_fd, inventory_text)
+        finally:
+            os.close(directory_fd)
+
+    def test_the_binary_separator_is_read_as_sha256sum_writes_it(self):
+        import signed_inventory
+        digest = hashlib.sha256(b"x").hexdigest()
+        for line in (f"{digest}  payload\n", f"{digest} *payload\n"):
+            self.assertEqual(self.inventory_of({"payload": b"x"}, line).outcome, signed_inventory.VERIFIED, line)
+        for line in (f"{digest} +payload\n", f"{digest}\tpayload\n", f"{digest}payload\n"):
+            self.assertEqual(self.inventory_of({"payload": b"x"}, line).outcome, signed_inventory.MISMATCH, line)
+
+    def test_an_inventory_that_lists_no_file_is_a_mismatch(self):
+        import signed_inventory
+        check = self.inventory_of({}, "")
+        self.assertEqual((check.outcome, check.problems), (signed_inventory.MISMATCH, [("SHA256SUMS", "does not list any file")]))
+        digest = hashlib.sha256(b"x").hexdigest()
+        self.assertEqual(self.inventory_of({"payload": b"x"}, f"{digest}  payload\n").outcome, signed_inventory.VERIFIED,
+                         "control: one file listed")
+        (self.stage / "SHA256SUMS").unlink()
+        (self.stage / "SHA256SUMS.asc").write_text("not a signature\n", encoding="utf-8")
+        status, _, stderr = run("verify-set", str(self.stage), "--key", str(self.key))
+        self.assertEqual(status, 2, "an absent inventory stays unable")
+        self.assertIn("verify-set: SHA256SUMS: release.inventory: is absent", stderr)
+
+    def test_an_inventory_listing_more_files_than_a_set_holds_is_unable_before_the_walk(self):
+        import asset_format as fmt
+        import signed_inventory
+        lines = [f"{'0' * 64}  missing{number}\n" for number in range(fmt.SET_MAX_FILES + 1)]
+        check = self.inventory_of({}, "".join(lines[:-1]))
+        self.assertEqual(check.outcome, signed_inventory.MISMATCH, "control: the budget itself parses, each path listed and absent")
+        self.assertEqual(len(check.problems), fmt.SET_MAX_FILES)
+        check = self.inventory_of({}, "".join(lines))
+        self.assertEqual((check.outcome, check.problems),
+                         (signed_inventory.UNABLE, [("SHA256SUMS", f"lists more than {fmt.SET_MAX_FILES} files, the most a set holds")]),
+                         "one over the budget, as base reports it, and no walk")
+
     def test_an_input_it_cannot_read_exits_2(self):
         status, stdout, stderr = run("verify-set", str(self.stage), "--key", str(self.key))
         self.assertEqual((status, stdout), (2, ""))
