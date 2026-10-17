@@ -31,8 +31,12 @@ sets/<set>/
 ```
 
 A set directory holds these entries and no other. `jobs/`, `libs/`,
-`variants/` and `llms.txt` are reserved: the names are spoken for, and no
-capability of format 1 allows content at one. `llms.txt` is the
+`variants/`, `attestations/` and `llms.txt` are reserved: the names are
+spoken for, and no capability of format 1 allows content at one.
+`attestations/` is where a third party's signed statement about a set will
+sit, bound to the set by digest beside the publisher's signature, which it
+leaves as signed; until that design exists every validator and every base
+refuses a set carrying the directory. `llms.txt` is the
 agent-discovery index of [llmstxt.org](https://llmstxt.org/) -- an H1,
 a blockquote summary and H2 link lists, which an agent without a plugin
 loader reads from a root -- that the tools may generate beside the manifests;
@@ -59,7 +63,10 @@ The **release** profile is a set `tools/build-set` staged: the same tree plus
 where the set has none, and `SHA256SUMS` at the set root listing every file
 of the set other than `SHA256SUMS` and its signature, `SHA256SUMS.asc`.
 `SHA256SUMS` and its signature are not committed: the source profile refuses
-them.
+them. `SHA256SUMS.asc` is a detached OpenPGP signature of `SHA256SUMS` by the
+key a host's binding names, written by the release workflow or by
+`tools/sign-set` with the publisher's own key; `tools/verify-set` checks
+a staged or installed set against that key.
 
 ## Names
 
@@ -383,8 +390,8 @@ set carries breaks that set, which is why each list starts narrow. `format`
 stays the integer `1` until a change in what an existing entry means, which
 is `format=2` and a new major of the tools; a new entry is not that change.
 
-A reserved entry (`jobs/`, `libs/`, `variants/`, `llms.txt`, a reserved kind)
-is added by one bundled change: a capability token in the existing
+A reserved entry (`jobs/`, `libs/`, `variants/`, `attestations/`, `llms.txt`,
+a reserved kind) is added by one bundled change: a capability token in the existing
 `<kind>.<profile>.v<n>` shape joins the capabilities this format defines,
 the entry moves to the allowed table with its shape and rules, a rule
 requires a set carrying content at it to declare the token
@@ -456,7 +463,7 @@ differ.
 | `set.conf.requires-integrations` | refuses | every required integration is written as `integration-<name>` |
 | `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
-| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; a set holding one, empty or not, is refused |
+| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/`, `attestations/` and `llms.txt` are reserved; a set holding one, empty or not, is refused |
 | `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |
 | `set.manifest.components` | refuses | a plugin manifest does not declare a component key |
 | `set.manifest.claude-plugin` | refuses | `.claude-plugin` holds `plugin.json` alone |
@@ -508,4 +515,5 @@ differ.
 | `license.text-unpinned` | warns | a licence text whose digest neither the tools nor `publisher.conf` `license_text_digests` hold warns, since it is not compared |
 | `license.file` | refuses | every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation |
 | `release.inventory` | refuses | `SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each |
+| `release.signature` | refuses | `SHA256SUMS.asc` is a detached OpenPGP signature of `SHA256SUMS` by the key a host's binding names |
 <!-- rules:end -->

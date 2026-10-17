@@ -3,7 +3,7 @@
 # tools/new-publisher -- turns an unmodified copy of the publisher template into the publisher's own repository.
 #
 # ```bash
-# python3 tools/new-publisher --repository <owner>/<repo> --contact <email> [--root DIR] [--maintainers <email>,...]
+# python3 tools/new-publisher --repository <owner>/<repo> --contact <email> [--root DIR] [--source URL] [--maintainers <email>,...]
 #     [--holder TEXT] [--license ID] [--set NAME] [--summary TEXT] [--code-owner @handle]... [--job-id ID]
 #     [--tag-signer FINGERPRINT]... [--tag-signer-key-url URL] [--artifact-signer FINGERPRINT] [--description TEXT]
 # ```
@@ -14,7 +14,8 @@
 # holder line, `REUSE.toml`'s package lines and annotation), matched as text. Every input and every one of those files
 # is checked before the first write, so a refusal leaves the tree as it was; a second run on an initialized copy is
 # refused rather than repeated. The publisher is the owner lower-cased and `source` its GitHub URL, the two values
-# `check-publisher --repository` holds a release to. The command writes `publisher.conf`, `REUSE.toml`, `CODEOWNERS`
+# `check-publisher --repository` holds a release to; `--source` names another URL for a publisher whose hosts take its
+# sets from elsewhere, which the pull-request checks accept and the release check does not. The command writes `publisher.conf`, `REUSE.toml`, `CODEOWNERS`
 # and `README.md` whole, rewrites the template lines of the two workflows, writes `LICENSE` from the licence text with
 # its holder line filled, takes `LICENSES/<ID>.txt` from the copy or from `LICENSES/` beside this directory (removing
 # the template's `MIT-0` text when the licence differs, since `reuse lint` refuses an unused text), removes the example
@@ -73,6 +74,8 @@ CODE_OWNER_PATTERN = re.compile(r"^@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:/
 JOB_ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 FINGERPRINT_PATTERN = re.compile(r"^[0-9A-Fa-f]{40}$")
 KEY_URL_PATTERN = re.compile(r"^https://[^\s\"'<>]+$")
+# A `KEY=value` value and a TOML basic string: a scheme, then no whitespace, quote, bracket, comma or `#`.
+SOURCE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>#\[\],\\]+$")
 LICENSE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]*$")
 # The holder line of a published licence text that carries one: `Copyright (c) <year> <copyright holders>` (MIT),
 # `Copyright <YEAR> <COPYRIGHT HOLDER>` (MIT-0). It is read within the text's opening lines.
@@ -203,7 +206,9 @@ class Initialization:
             return
         self.owner, self.repo = owner, repo
         self.publisher = owner.lower()
-        self.source = f"https://github.com/{owner}/{repo}"
+        self.source = args.source or f"https://github.com/{owner}/{repo}"
+        if not SOURCE_PATTERN.match(self.source):
+            self.refuse("publisher.conf", "repo.publisher-conf", f"the source `{self.source}` is not a URL (a scheme, then no whitespace, quote, bracket, comma or `#`)")
         self.maintainers = [item.strip() for item in (args.maintainers or args.contact).split(",")]
         self.holder = args.holder if args.holder is not None else owner
         self.set_name = args.set or self.publisher
@@ -467,6 +472,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Turn an unmodified copy of the publisher template into the publisher's repository.")
     parser.add_argument("--repository", required=True, metavar="OWNER/REPO", help="the GitHub repository the copy is")
     parser.add_argument("--contact", required=True, metavar="EMAIL", help="publisher.conf contact")
+    parser.add_argument("--source", metavar="URL", help="publisher.conf source (default: https://github.com/<owner>/<repo>)")
     parser.add_argument("--maintainers", metavar="EMAIL,...", help="publisher.conf maintainers (default: the contact)")
     parser.add_argument("--holder", help="the copyright holder in LICENSE and REUSE.toml (default: the owner)")
     parser.add_argument("--license", default="MIT", metavar="ID", help="the copy's licence (default: MIT)")

@@ -108,7 +108,9 @@ SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SET_ROOT_ENTRY_TYPES)
 # a capability token joins KNOWN_CAPABILITIES, the entry moves to the allowed table, and a set carrying content at it
 # declares the token, so a reader without the token refuses the set whole. Until then no capability allows content
 # at one. `llms.txt` is the agent-discovery index (llmstxt.org) the tools may generate beside the manifests.
-SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt"})
+# `attestations/` is where a third party's signed statement about a set, bound to it by digest, will sit beside the
+# publisher's signature; until its design exists every validator and every base refuses a set carrying one.
+SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt", "attestations"})
 RELEASE_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({"SHA256SUMS", "SHA256SUMS.asc"})
 CLAUDE_PLUGIN_DIRECTORY = ".claude-plugin"
 CLAUDE_PLUGIN_MANIFEST = "plugin.json"
@@ -140,7 +142,7 @@ RESERVED_FILE_NAMES: FrozenSet[str] = frozenset({
     "SHA256SUMS", "SHA256SUMS.asc", "UPSTREAM.conf", "asset.conf", "plugin.json", "README.md",
 })
 RESERVED_FILE_NAME_PATTERNS: Tuple[re.Pattern, ...] = (re.compile(r"^SHA512SUMS.*$"), re.compile(r"^.*\.oms\.sig$"))
-RESERVED_DIRECTORY_NAMES: FrozenSet[str] = frozenset({".claude-plugin", ".agents", "metadata", "variants"})
+RESERVED_DIRECTORY_NAMES: FrozenSet[str] = frozenset({".claude-plugin", ".agents", "metadata", "variants", "attestations"})
 
 # ── Frontmatter ────────────────────────────────────────────────────────────────────────────────────────────────────
 DESCRIPTION_MAX_LENGTH = 1024
@@ -278,7 +280,7 @@ RULES: Dict[str, str] = {
     "set.conf.requires-integrations": "every required integration is written as `integration-<name>`",
     "set.conf.unknown-key": "a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key",
     "set.entry.unknown": "a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone",
-    "set.entry.reserved": "`jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; a set holding one, empty or not, is refused",
+    "set.entry.reserved": "`jobs/`, `libs/`, `variants/`, `attestations/` and `llms.txt` are reserved; a set holding one, empty or not, is refused",
     "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read",
     "set.manifest.components": "a plugin manifest does not declare a component key",
     "set.manifest.claude-plugin": "`.claude-plugin` holds `plugin.json` alone",
@@ -330,6 +332,7 @@ RULES: Dict[str, str] = {
     "license.text-unpinned": "a licence text whose digest neither the tools nor `publisher.conf` `license_text_digests` hold warns, since it is not compared",
     "license.file": "every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation",
     "release.inventory": "`SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each",
+    "release.signature": "`SHA256SUMS.asc` is a detached OpenPGP signature of `SHA256SUMS` by the key a host's binding names",
 }
 RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix",
                                           "license.text-modified", "license.text-unpinned"})

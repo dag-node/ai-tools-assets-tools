@@ -30,6 +30,9 @@ END_MARKER = "<!-- rules:end -->"
 UNCOMMITTABLE_RULES = {"file.hardlink", "file.special", "file.size"}
 # Rules about a repository rather than a set; tests/test_commands.py drives each.
 REPOSITORY_RULES = {"repo.layout", "repo.publisher-conf", "repo.marketplace", "license.file"}
+# Rules about a signed release rather than a set's tree; tests/test_commands.py's sign-set and verify-set cases drive
+# each where gpg runs.
+SIGNATURE_RULES = {"release.signature"}
 
 
 def load_validate_module():
@@ -56,7 +59,7 @@ class RulesDocumented(unittest.TestCase):
                         "a variant fixture follows its rule's first fixture")
 
     def test_every_rule_has_a_proof(self):
-        uncovered = set(fmt.RULES) - fixture_rules() - UNCOMMITTABLE_RULES - REPOSITORY_RULES
+        uncovered = set(fmt.RULES) - fixture_rules() - UNCOMMITTABLE_RULES - REPOSITORY_RULES - SIGNATURE_RULES
         self.assertEqual(uncovered, set(), f"rules without a fixture or a named test: {sorted(uncovered)}")
         self.assertEqual(fixture_rules() & (UNCOMMITTABLE_RULES | REPOSITORY_RULES), set())
 
@@ -66,7 +69,7 @@ class RulesDocumented(unittest.TestCase):
         commands_tests = (TESTS / "test_commands.py").read_text(encoding="utf-8")
         for rule in sorted(UNCOMMITTABLE_RULES):
             self.assertIn(rule, fixtures_tests, f"{rule} has no assertion in tests/test_fixtures.py")
-        for rule in sorted(REPOSITORY_RULES):
+        for rule in sorted(REPOSITORY_RULES | SIGNATURE_RULES):
             self.assertIn(rule, commands_tests, f"{rule} has no assertion in tests/test_commands.py")
 
     def test_a_variant_fixture_is_named_for_its_rule(self):

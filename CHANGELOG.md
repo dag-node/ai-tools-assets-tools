@@ -18,7 +18,17 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   release signers, and replaces the example set with the publisher's first
   set, so the copy passes every pull-request check and the release check. It
   checks every input and file before the first write, refuses a second run,
-  and prints the git steps instead of running them.
+  and prints the git steps instead of running them. `--source <url>` names
+  where the sets come from for a publisher whose hosts do not take them from
+  GitHub.
+- **`sign-set` signs a staged set with the publisher's own key.**
+  `python3 tools/sign-set <set> [--key <fingerprint>]` signs the
+  `SHA256SUMS` of the set `build-set` staged through the publisher's `gpg`
+  and `gpg-agent`, verifies the signature with `gpgv`, writes
+  `SHA256SUMS.asc` and prints the primary fingerprint a host's binding names,
+  so a set can be signed and placed in a base host's local root without
+  GitHub or a release workflow. A stage edited after `build-set` is refused
+  before `gpg` runs.
 - **Each licence text is compared with the text SPDX publishes.**
   `check-licenses` and `validate` hold every `LICENSES/<identifier>.txt`,
   the repository's, a set's own and the copy `build-set` stages, to the SHA-256
@@ -39,6 +49,11 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ### Changed
 
+- **`attestations/` is reserved at a set's root.** A set carrying it is
+  refused under `set.entry.reserved`, as `variants/` is, so the name stays
+  free for a third party's signed statement about a set, bound to it by
+  digest beside the publisher's signature. The format names that signature
+  under the new rule `release.signature`.
 - **A release refuses a copy of the template that was not initialized.**
   `check-publisher --repository`, which every set release runs, refuses
   a `publisher.conf` whose `publisher`, `contact`, `maintainers` or `source`
