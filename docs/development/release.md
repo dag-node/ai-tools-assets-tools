@@ -94,11 +94,12 @@ is a patch, and a new command, option or workflow input is a minor.
    opened earlier, it runs CI on a tree without that commit and again when it
    lands. Its body lists the commits `main` lacks, oldest first,
    which `origin/main..origin/develop` is exactly, since `main` is a merge
-   of `develop`:
+   of `develop`. Each line opens with the commit's short hash, which GitHub
+   renders as a link to the commit:
 
    ```bash
    git fetch origin
-   gh pr create --repo dag-node/ai-tools-assets-tools --base main --head develop --title "Merge develop" --body "$(git log --reverse --format='- **%s**' origin/main..origin/develop)"
+   gh pr create --repo dag-node/ai-tools-assets-tools --base main --head develop --title "Merge develop" --body "$(git log --reverse --format='- %h **%s**' origin/main..origin/develop)"
    gh pr merge <number> --repo dag-node/ai-tools-assets-tools --merge --admin
    ```
 
