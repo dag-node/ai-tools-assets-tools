@@ -28,8 +28,9 @@ UNABLE = "unable"
 
 @dataclass(frozen=True)
 class SignatureCheck:
-    """What gpgv found: `outcome` is VERIFIED, MISMATCH (a bad signature, or one by another key) or UNABLE (gpgv did
-    not run, or could not read the signature or the key); the keys are set when VERIFIED, `error` otherwise."""
+    """What gpgv found: `outcome` is VERIFIED, MISMATCH (a signature gpgv rejects) or UNABLE (gpgv did not run, could
+    not read the signature, or the key does not hold the signer), the split ai-tools-base's verifier makes; the keys are
+    set when VERIFIED, `error` otherwise."""
 
     outcome: str
     signing_key: Optional[str] = None
@@ -89,7 +90,7 @@ def valid_signature(scratch: pathlib.Path, key: bytes, data: bytes, signature: b
     if "EXPKEYSIG" in status or "REVKEYSIG" in status:
         return SignatureCheck(MISMATCH, error="the signing key is expired or revoked")
     if "NO_PUBKEY" in status:
-        return SignatureCheck(MISMATCH, error=f"the signature is by {status['NO_PUBKEY'][0] if status['NO_PUBKEY'] else 'a key'}, which the given key does not hold")
+        return SignatureCheck(UNABLE, error=f"the signature is by {status['NO_PUBKEY'][0] if status['NO_PUBKEY'] else 'a key'}, which the given key does not hold")
     validsig = status.get("VALIDSIG")
     if validsig and "GOODSIG" in status:
         signing_key = validsig[0].upper()
