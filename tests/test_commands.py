@@ -766,6 +766,28 @@ class NewPublisher(unittest.TestCase):
         self.assertEqual((self.root / "LICENSE").read_text(encoding="utf-8"), "Apache License\nVersion 2.0, January 2004\n",
                          "a text without a holder line is written as published")
 
+    def test_the_holder_line_of_every_default_list_licence_that_carries_one_is_filled(self):
+        year = datetime.datetime.now(datetime.timezone.utc).year
+        # The opening lines of each text as SPDX publishes it, trailing blanks included, and the line LICENSE holds.
+        cases = {
+            "MIT": ("MIT License\n\nCopyright (c) <year> <copyright holders>\n", f"Copyright (c) {year} Acme"),
+            "MIT-0": ("MIT No Attribution\n\nCopyright <YEAR> <COPYRIGHT HOLDER>\n", f"Copyright {year} Acme"),
+            "ISC": ("ISC License\n\nCopyright <year> <owner> \n", f"Copyright {year} Acme"),
+            "BSD-2-Clause": ("Copyright (c) <year> <owner> \n", f"Copyright (c) {year} Acme"),
+            "BSD-3-Clause": ("Copyright (c) <year> <owner>. \n", f"Copyright (c) {year} Acme."),
+            "0BSD": ("Copyright (C) YEAR by AUTHOR EMAIL\n", f"Copyright (C) {year} Acme"),
+        }
+        for identifier, (opening, holder_line) in cases.items():
+            self.tearDown()
+            self.setUp()
+            (self.root / "LICENSES" / f"{identifier}.txt").write_text(opening + "\nPermission is granted.\n", encoding="utf-8")
+            status, _, stderr = self.initialize(*INITIALIZE, "--license", identifier)
+            self.assertEqual(status, 0, (identifier, stderr))
+            license_text = (self.root / "LICENSE").read_text(encoding="utf-8")
+            self.assertIn(holder_line, license_text.splitlines(), identifier)
+            self.assertNotIn("year>", license_text.lower(), identifier)
+            self.assertNotIn("YEAR", license_text, identifier)
+
 
 class CheckPublisherRelease(unittest.TestCase):
     """check-publisher --repository over the template as generated and as initialized."""
