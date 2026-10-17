@@ -724,6 +724,28 @@ class NewPublisher(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("sets/change-me-example: file.symlink: ", stderr)
         self.assertTrue((outside / "change-me-example" / "set.conf").is_file(), "the link's target is not removed")
+        (self.root / "sets" / "change-me-example").unlink()
+        (self.root / "sets").rename(outside / "sets")
+        shutil.move(str(outside / "change-me-example"), str(outside / "sets" / "change-me-example"))
+        (self.root / "sets").symlink_to(outside / "sets")
+        before = tree_state(self.root)
+        status, _, stderr = self.initialize()
+        self.assertEqual(status, 1)
+        self.assertIn("sets: file.symlink: ", stderr)
+        self.assertEqual(tree_state(self.root), before, "a link at sets/ is refused before the first write")
+        self.assertTrue((outside / "sets" / "change-me-example" / "set.conf").is_file())
+
+    def test_removes_a_link_inside_the_example_set_and_not_its_target(self):
+        outside = self.scratch / "outside"
+        (outside / "kept").mkdir(parents=True)
+        (outside / "kept" / "file.txt").write_text("theirs\n", encoding="utf-8")
+        example = self.root / "sets" / "change-me-example"
+        (example / "skills" / "linked").symlink_to(outside / "kept")
+        (example / "linked-file").symlink_to(outside / "kept" / "file.txt")
+        status, _, stderr = self.initialize()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertFalse(example.exists() or example.is_symlink())
+        self.assertEqual((outside / "kept" / "file.txt").read_text(encoding="utf-8"), "theirs\n")
 
     def test_the_signer_inputs(self):
         status, stdout, _ = self.initialize(*INITIALIZE, "--tag-signer", "A" * 40, "--artifact-signer", "B" * 40)
