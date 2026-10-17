@@ -21,6 +21,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 REPOSITORY = TESTS.parent
@@ -901,6 +902,86 @@ class ScratchDirectory(unittest.TestCase):
             self.assertEqual(child.wait(timeout=10), 128 + number)
             child.stdout.close()
             self.assertFalse(scratch.exists(), number)
+
+
+class SignatureStatus(unittest.TestCase):
+    """openpgp.check_signature over status streams gpgv may print, the process mocked, so the policy is held without
+    gpg."""
+
+    SIGNER = "A" * 40
+    PRIMARY = "B" * 40
+    OTHER = "C" * 40
+
+    def validsig(self, fingerprint=SIGNER, primary=PRIMARY):
+        return f"[GNUPG:] VALIDSIG {fingerprint} 2026-01-01 1767225600 0 4 0 22 8 00{' ' + primary if primary else ''}\n"
+
+    def good(self, fingerprint=SIGNER, primary=PRIMARY):
+        return f"[GNUPG:] NEWSIG\n[GNUPG:] GOODSIG {fingerprint[-16:]} Acme\n" + self.validsig(fingerprint, primary)
+
+    def expired(self, fingerprint=OTHER):
+        return f"[GNUPG:] NEWSIG\n[GNUPG:] EXPSIG {fingerprint[-16:]} Acme\n" + self.validsig(fingerprint, fingerprint)
+
+    def check(self, stdout, returncode=0):
+        import openpgp
+        completed = subprocess.CompletedProcess([], returncode, stdout, "gpgv: the last line\n")
+        with tempfile.TemporaryDirectory() as scratch, \
+                mock.patch.object(openpgp.shutil, "which", return_value="/usr/bin/gpgv"), \
+                mock.patch.object(openpgp.subprocess, "run", return_value=completed):
+            result = openpgp.check_signature(pathlib.Path(scratch), b"key", b"data", b"signature")
+        return result.outcome, result.primary
+
+    def test_a_complete_good_signature_alone_verifies(self):
+        import openpgp
+        self.assertEqual(self.check(self.good()), (openpgp.VERIFIED, self.PRIMARY), "control: ten fields, the tenth the primary")
+        self.assertEqual(self.check(self.good(primary=None)), (openpgp.VERIFIED, self.SIGNER), "nine fields: the signing key is the primary")
+        self.assertEqual(self.check(self.good() + "[GNUPG:] KEYEXPIRED 1700000000\n"), (openpgp.VERIFIED, self.PRIMARY),
+                         "an expired subkey the signature does not use")
+
+    def test_a_second_signature_leaves_the_check_unable_in_either_order(self):
+        import openpgp
+        errsig = f"[GNUPG:] NEWSIG\n[GNUPG:] ERRSIG {self.OTHER[-16:]} 22 8 00 1767225600 4\n"
+        for stdout, returncode in ((self.good() + self.expired(), 0), (self.expired() + self.good(), 0), (self.good() + errsig, 2),
+                                   (self.good() + self.good(self.OTHER, self.OTHER), 0)):
+            self.assertEqual(self.check(stdout, returncode), (openpgp.UNABLE, None), stdout)
+        without_newsig = self.good().replace("[GNUPG:] NEWSIG\n", "")
+        self.assertEqual(self.check(without_newsig + without_newsig.replace(self.SIGNER, self.OTHER)), (openpgp.UNABLE, None),
+                         "two result lines count as two signatures without a NEWSIG")
+
+    def test_an_expired_signature_and_an_expired_or_revoked_key_are_mismatches(self):
+        import openpgp
+        self.assertEqual(self.check(self.expired()), (openpgp.MISMATCH, None))
+        for keyword in ("EXPKEYSIG", "REVKEYSIG"):
+            self.assertEqual(self.check(self.good().replace("GOODSIG", keyword)), (openpgp.MISMATCH, None), keyword)
+        self.assertEqual(self.check(self.good() + "[GNUPG:] KEYREVOKED\n"), (openpgp.MISMATCH, None))
+        self.assertEqual(self.check(self.good().replace("GOODSIG", "BADSIG")[:-len(self.validsig())], 1), (openpgp.MISMATCH, None))
+
+    def test_an_incomplete_record_or_a_failed_exit_leaves_the_check_unable(self):
+        import openpgp
+        one_field = f"[GNUPG:] NEWSIG\n[GNUPG:] GOODSIG {self.SIGNER[-16:]} Acme\n[GNUPG:] VALIDSIG {self.SIGNER}\n"
+        eight_fields = self.good(primary=None).replace(" 00\n", "\n")
+        for stdout, returncode in ((one_field, 0), (eight_fields, 0), (self.good(), 2), (self.good().replace("GOODSIG", "ERRSIG"), 0),
+                                   (self.validsig(), 0), ("", 0)):
+            self.assertEqual(self.check(stdout, returncode), (openpgp.UNABLE, None), (stdout, returncode))
+        self.assertEqual(self.check(self.good()), (openpgp.VERIFIED, self.PRIMARY), "control: the same stream, complete, exit 0")
+
+    def test_verify_set_exits_2_for_a_file_of_two_signatures(self):
+        verify_set = load_command("verify-set")
+        import openpgp
+        completed = subprocess.CompletedProcess([], 0, self.good() + self.expired(), "")
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ("SHA256SUMS", "SHA256SUMS.asc"):
+                (pathlib.Path(directory) / name).write_text("x\n", encoding="utf-8")
+            run_record = verify_set.Verification(pathlib.Path(directory))
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with mock.patch.object(openpgp.shutil, "which", return_value="/usr/bin/gpgv"), \
+                        mock.patch.object(openpgp.subprocess, "run", return_value=completed):
+                    verify_set.verify(run_record, mock.Mock(source=None), None, b"key", directory_fd)
+            finally:
+                os.close(directory_fd)
+        self.assertEqual(run_record.status, openpgp.UNABLE)
+        self.assertEqual([(finding.path, finding.message) for finding in run_record.collector.findings],
+                         [("SHA256SUMS.asc", "the signature file holds more than one signature; a set is signed once")])
 
 
 class SignSet(unittest.TestCase):

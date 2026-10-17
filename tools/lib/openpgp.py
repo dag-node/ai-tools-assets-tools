@@ -2,10 +2,15 @@
 """The one signature check `sign-set` and `verify-set` make: `gpgv` over a detached signature, against one key.
 
 `gpgv` runs with `--homedir` set to a scratch directory the caller owns and removes, so the keyring it reads is the key
-the caller passed and no keyring of the user's own GnuPG home, and with `--status-fd 1`, whose machine-readable lines
-decide the outcome; its exit status and its human-readable output do not. A good signature is a `VALIDSIG` line: its
-fields name the signing key and, where it differs, the primary, which is the fingerprint a host's binding pins. An
-armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone. `scratch_directory` makes the
+the caller passed and no keyring of the user's own GnuPG home, and with `--status-fd 1`. The machine-readable status
+lines and the exit status decide the outcome; the human-readable output does not. A set is signed once, so a status
+stream reporting more than one signature (a second `NEWSIG`, `VALIDSIG` or result line) is UNABLE, and every other line
+is read as the one signature's. `BADSIG` is a MISMATCH, and so are `EXPSIG`, `EXPKEYSIG`, `REVKEYSIG` and
+`KEYREVOKED`, since `gpgv` exits 0 for a good signature by an expired or a revoked key; `KEYEXPIRED` alone decides
+nothing, as `gpgv` prints it for an expired subkey the signature does not use. `NO_PUBKEY`, `ERRSIG` and a non-zero exit
+are UNABLE. VERIFIED needs a zero exit, `GOODSIG`, and a `VALIDSIG` with its nine fields: the first names the signing
+key, and the tenth, where present, the primary, which is the fingerprint a host's binding pins. ai-tools-base's verifier
+takes the same policy. An armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone. `scratch_directory` makes the
 scratch directory the commands write the key, the inventory and its signature into: a `tempfile.TemporaryDirectory`
 removed on exit, on an exception and on SIGTERM or SIGHUP, whose default action would end the interpreter without
 removing it.
@@ -32,6 +37,10 @@ VERIFIED = 0
 MISMATCH = 1
 UNABLE = 2
 TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+# The status lines gpgv prints once per signature, each ending that signature's check.
+SIGNATURE_RESULTS = ("GOODSIG", "BADSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERRSIG")
+KEY_REFUSALS = ("EXPKEYSIG", "REVKEYSIG", "KEYREVOKED")
+VALIDSIG_FIELDS = 9
 
 
 @contextlib.contextmanager
@@ -57,9 +66,10 @@ def scratch_directory(prefix: str) -> Iterator[pathlib.Path]:
 
 @dataclass(frozen=True)
 class SignatureCheck:
-    """What gpgv found: `outcome` is VERIFIED, MISMATCH (a signature gpgv rejects) or UNABLE (gpgv did not run, could
-    not read the signature, or the key does not hold the signer), the split ai-tools-base's verifier makes; the keys are
-    set when VERIFIED, `error` otherwise."""
+    """What gpgv found: `outcome` is VERIFIED, MISMATCH (a bad or expired signature, or one by an expired or revoked
+    key) or UNABLE (gpgv did not run or did not complete the check, the key does not hold the signer, or the file holds
+    more than one signature), the split ai-tools-base's verifier makes; the keys are set when VERIFIED, `error`
+    otherwise."""
 
     outcome: int
     signing_key: Optional[str] = None
@@ -110,22 +120,28 @@ def check_signature(scratch: pathlib.Path, key: bytes, data: bytes, signature: b
     signature_path.write_bytes(signature)
     completed = subprocess.run(["gpgv", "--homedir", str(scratch), "--status-fd", "1", "--keyring", str(keyring),
                                 str(signature_path), str(data_path)], capture_output=True, text=True)
-    status = {}
-    for line in completed.stdout.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[0] == "[GNUPG:]":
-            status.setdefault(fields[1], fields[2:])
+    records = [fields[1:] for fields in (line.split() for line in completed.stdout.splitlines())
+               if len(fields) >= 2 and fields[0] == "[GNUPG:]"]
+    keywords = [record[0] for record in records]
+    if (keywords.count("NEWSIG") > 1 or keywords.count("VALIDSIG") > 1
+            or sum(keywords.count(keyword) for keyword in SIGNATURE_RESULTS) > 1):
+        return SignatureCheck(UNABLE, error="the signature file holds more than one signature; a set is signed once")
+    status = {record[0]: record[1:] for record in records}
+    reason = completed.stderr.strip().splitlines()[-1:] or ["no status"]
     if "BADSIG" in status:
         return SignatureCheck(MISMATCH, error="the signature does not match SHA256SUMS")
-    if "EXPKEYSIG" in status or "REVKEYSIG" in status:
+    if "EXPSIG" in status:
+        return SignatureCheck(MISMATCH, error="the signature is expired")
+    if any(keyword in status for keyword in KEY_REFUSALS):
         return SignatureCheck(MISMATCH, error="the signing key is expired or revoked")
     if "NO_PUBKEY" in status:
         return SignatureCheck(UNABLE, error=f"the signature is by {status['NO_PUBKEY'][0] if status['NO_PUBKEY'] else 'a key'}, which the given key does not hold")
+    if "ERRSIG" in status or completed.returncode != 0:
+        return SignatureCheck(UNABLE, error=f"gpgv could not check the signature (exit {completed.returncode}: {reason[0]})")
     validsig = status.get("VALIDSIG")
-    if validsig and "GOODSIG" in status:
+    if "GOODSIG" in status and validsig is not None and len(validsig) >= VALIDSIG_FIELDS:
         signing_key = validsig[0].upper()
-        primary = validsig[9].upper() if len(validsig) > 9 else signing_key
+        primary = validsig[VALIDSIG_FIELDS].upper() if len(validsig) > VALIDSIG_FIELDS else signing_key
         if FINGERPRINT_PATTERN.match(signing_key) and FINGERPRINT_PATTERN.match(primary):
             return SignatureCheck(VERIFIED, signing_key=signing_key, primary=primary)
-    reason = completed.stderr.strip().splitlines()[-1:] or ["no status"]
-    return SignatureCheck(UNABLE, error=f"gpgv could not verify the signature ({reason[0]})")
+    return SignatureCheck(UNABLE, error=f"gpgv did not report a complete good signature ({reason[0]})")
