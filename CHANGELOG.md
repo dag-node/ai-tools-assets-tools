@@ -7,6 +7,8 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-17
+
 ### Added
 
 - **`new-publisher` initializes a copy of the publisher template.**
