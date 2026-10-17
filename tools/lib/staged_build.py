@@ -5,15 +5,20 @@
 `<build>/.<set>.ai-tools-assets-build` names that set under this marker version, and writes the marker after the rename,
 so a directory at that name without the marker is not this command's and is left alone. `sign-set` signs a staged set
 only where the same marker stands beside it. An output root may not be `sets/`, hold it or lie inside it, and no
-existing component of it is a link.
+existing component of it is a link. Past those checks a command opens the output root once (`open_output_root`) and
+works under that descriptor alone: the marker is read through `safe_read`, and the stage is written, replaced, removed
+and renamed at the descriptor, so a build root swapped for a link after the checks does not redirect a read, a removal
+or a write.
 """
 from __future__ import annotations
 
 import os
 import pathlib
+import stat
 from typing import Optional
 
 from findings import FindingCollector
+from safe_read import DIRECTORY_FLAGS, RefusedRead, read_file
 
 INVENTORY_FILE = "SHA256SUMS"
 SIGNATURE_FILE = "SHA256SUMS.asc"
@@ -25,13 +30,21 @@ def marker_text(set_name: str) -> str:
     return f"{BUILD_MARKER_VERSION}\nset={set_name}\n"
 
 
+def marker_name(set_name: str) -> str:
+    return f".{set_name}.ai-tools-assets-build"
+
+
 def marker_path(build_root: pathlib.Path, set_name: str) -> pathlib.Path:
-    return build_root / f".{set_name}.ai-tools-assets-build"
+    return build_root / marker_name(set_name)
 
 
 def check_output_root(root: pathlib.Path, given: pathlib.Path, what: str, collector: FindingCollector) -> Optional[pathlib.Path]:
     """The absolute output root, or None after a refusal: it does not overlap sets/ and no existing component is
-    a link."""
+    a link.
+
+    The `islink` label decides where an output tree is created; it decides nothing a command reads, which goes through
+    the descriptor `open_output_root` returns.
+    """
     output_root = pathlib.Path(os.path.abspath(root / given))
     sets_root = root / "sets"
     if output_root == sets_root or sets_root in output_root.parents or output_root in sets_root.parents:
@@ -47,13 +60,24 @@ def check_output_root(root: pathlib.Path, given: pathlib.Path, what: str, collec
     return output_root
 
 
-def is_managed_build_directory(build_root: pathlib.Path, set_name: str) -> bool:
-    """True when `build/<set>` is a real directory beside a marker naming this set under this marker version."""
-    destination = build_root / set_name
-    marker = marker_path(build_root, set_name)
-    if destination.is_symlink() or not destination.is_dir() or marker.is_symlink() or not marker.is_file():
-        return False
+def open_output_root(output_root: pathlib.Path) -> int:
+    """The descriptor of an output root `check_output_root` returned, its last component opened without following
+    a link; OSError when it is not a directory. The caller closes it."""
+    return os.open(output_root, DIRECTORY_FLAGS)
+
+
+def is_managed_build_directory(build_fd: int, set_name: str) -> bool:
+    """True when `<set>` under the build root `build_fd` is a directory and not a link, beside a marker naming this
+    set under this marker version.
+
+    The marker is read through `safe_read.read_file` at `build_fd`, bounded by the marker's own length, so a marker that
+    is a link, a special file or a file with a second hard link reads as no marker.
+    """
+    expected = marker_text(set_name).encode("utf-8")
     try:
-        return marker.read_text(encoding="utf-8") == marker_text(set_name)
-    except (OSError, UnicodeDecodeError):
+        if not stat.S_ISDIR(os.lstat(set_name, dir_fd=build_fd).st_mode):
+            return False
+        read = read_file(marker_name(set_name), build_fd, len(expected))
+    except (OSError, RefusedRead):
         return False
+    return not read.truncated and read.data == expected
