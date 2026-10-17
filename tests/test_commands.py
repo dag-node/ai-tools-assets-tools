@@ -1155,22 +1155,25 @@ def rmtree(*arguments, **keywords):
     return real(*arguments, **keywords)
 shutil.rmtree = rmtree"""
 
-    def run_injected(self, patch: str, number: int):
-        """The child's exit status and what it left in its temp directory."""
+    def assert_injected(self, patch: str, number: int, status: int, label: str):
+        """Run the child with `patch` and signal `number`: it exits `status` and leaves its temp directory empty. The
+        signal is passed as its integer, since `str()` of a `signal.Signals` member is its name before Python 3.11; the
+        child's stderr is the failure message."""
         with tempfile.TemporaryDirectory() as temporary:
             child = subprocess.run([sys.executable, "-c", self.INJECTED.format(patch=patch)], capture_output=True, text=True, timeout=30,
-                                   env=dict(os.environ, PYTHONPATH=str(TOOLS / "lib"), TMPDIR=temporary, SIGNAL=str(number)))
-            return child.returncode, sorted(os.listdir(temporary))
+                                   env=dict(os.environ, PYTHONPATH=str(TOOLS / "lib"), TMPDIR=temporary, SIGNAL=str(int(number))))
+            left = sorted(os.listdir(temporary))
+        self.assertEqual((child.returncode, left), (status, []), f"{label}, {number!r}; the child's stderr: {child.stderr}")
 
     def test_a_signal_while_the_directory_is_made_is_held_until_the_context_owns_it(self):
         for number in (signal.SIGTERM, signal.SIGHUP):
-            self.assertEqual(self.run_injected(self.AFTER_CREATION, number), (128 + number, []), number)
-            self.assertEqual(self.run_injected(self.DURING_INSTALLATION, number), (128 + number, []), number)
-            self.assertEqual(self.run_injected("", number), (0, []), "control: no signal")
+            self.assert_injected(self.AFTER_CREATION, number, 128 + number, "after the creation")
+            self.assert_injected(self.DURING_INSTALLATION, number, 128 + number, "during the handler installation")
+            self.assert_injected("", number, 0, "control: no signal")
 
     def test_a_signal_during_the_removal_waits_for_it_and_reaches_the_previous_handler(self):
         for number in (signal.SIGTERM, signal.SIGHUP):
-            self.assertEqual(self.run_injected(self.DURING_REMOVAL, number), (-number, []), number)
+            self.assert_injected(self.DURING_REMOVAL, number, -number, "during the removal")
 
 
 class SignatureStatus(unittest.TestCase):
