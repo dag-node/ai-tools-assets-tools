@@ -15,13 +15,13 @@
 # is checked before the first write, so a refusal leaves the tree as it was; a second run on an initialized copy is
 # refused rather than repeated. The publisher is the owner lower-cased and `source` its GitHub URL, the two values
 # `check-publisher --repository` holds a release to; `--source` names another URL for a publisher whose hosts take its
-# sets from elsewhere, which the pull-request checks accept and the release check does not. The command writes `publisher.conf`, `REUSE.toml`, `CODEOWNERS`
-# and `README.md` whole, rewrites the template lines of the two workflows, writes `LICENSE` from the licence text with
-# its holder line filled, takes `LICENSES/<ID>.txt` from the copy or from `LICENSES/` beside this directory (removing
-# the template's `MIT-0` text when the licence differs, since `reuse lint` refuses an unused text), removes the example
-# set, and runs `new-set` and `new-asset` for the publisher's first set. Every file goes through
-# `tools/lib/safe_write.py`, so no write follows a link. It does not run git: it prints the steps that follow as `next`
-# lines. Standard library only.
+# sets from elsewhere, which the pull-request checks accept and the release check does not. The command writes
+# `publisher.conf`, `REUSE.toml`, `CODEOWNERS` and `README.md` whole, rewrites the template lines of the two workflows,
+# writes `LICENSE` from the licence text with its holder line filled, takes `LICENSES/<ID>.txt` from the copy or from
+# `LICENSES/` beside this directory (removing the template's `MIT-0` text when the licence differs, since `reuse lint`
+# refuses an unused text), removes the example set, and runs `new-set` and `new-asset` for the publisher's first set.
+# Every write and removal goes through `tools/lib/safe_write.py`, so neither follows a link. It does not run git: it
+# prints the steps that follow as `next` lines. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -29,7 +29,6 @@ import datetime
 import os
 import pathlib
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -41,7 +40,7 @@ import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
-from safe_write import create_file, replace_file  # noqa: E402
+from safe_write import create_file, remove_file, remove_tree, replace_file  # noqa: E402
 from set_validation import read_reserved_words  # noqa: E402
 
 TEMPLATE_SET = "change-me-example"
@@ -429,16 +428,15 @@ class Initialization:
                 path = template_text
                 remove_file(self.root, template_text)
                 print(f"new-publisher: removed {template_text}")
+            path = pathlib.PurePath("sets", TEMPLATE_SET)
+            remove_tree(self.root, path)
+            print(f"new-publisher: removed {path}/")
         except RefusedRead as refusal:
             self.refuse(path, refusal.rule_id, f"{refusal.message}; the files before it are written, the rest are not")
             return self.collector.report()
         except OSError as error:
-            self.refuse(path, "repo.layout", f"cannot be written: {error.strerror}; the files before it are written, the rest are not")
+            self.refuse(path, "repo.layout", f"cannot be written or removed: {error.strerror}; the files before it are written, the rest are not")
             return self.collector.report()
-        # `sets/` and its one entry were checked not to be links; Python's rmtree removes by descriptor where the
-        # platform offers it (rmtree.avoids_symlink_attacks), so a link inside the set is unlinked, not followed.
-        shutil.rmtree(self.root / "sets" / TEMPLATE_SET)
-        print(f"new-publisher: removed sets/{TEMPLATE_SET}/")
         for command in (["new-set", self.set_name, "--license", args.license, "--summary", args.summary],
                         ["new-asset", self.set_name, "skill", f"{self.set_name}-hello", "--description", SKILL_DESCRIPTION]):
             status = subprocess.run([sys.executable, str(TOOLS / command[0]), *command[1:], "--root", str(self.root)]).returncode
@@ -455,19 +453,6 @@ class Initialization:
         if left:
             print(f"new-publisher: next, set the release signers in {RELEASE_WORKFLOW} ({', '.join(left)} left at {fmt.TEMPLATE_PLACEHOLDER})")
         print(f"new-publisher: next, apply the settings a copy does not inherit, listed in https://github.com/dag-node/{fmt.TEMPLATE_PACKAGE_NAME}#readme")
-
-
-def remove_file(root: pathlib.Path, relative_path: pathlib.PurePath) -> None:
-    """Unlink the regular file at `relative_path`, its directory opened from `root` without following a link."""
-    dir_fd = open_root(root)
-    try:
-        for part in relative_path.parts[:-1]:
-            child = open_directory(part, dir_fd)
-            os.close(dir_fd)
-            dir_fd = child
-        os.unlink(relative_path.name, dir_fd=dir_fd)
-    finally:
-        os.close(dir_fd)
 
 
 def main() -> int:

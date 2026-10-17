@@ -12,9 +12,12 @@ other entry at the name fails with EEXIST instead of being written through; and 
 replaced as a directory entry, never written into: the entry is `lstat`ed at the descriptor, a link, a directory or a
 special file at the name (`file.symlink`) or a regular file with a second hard link (`file.hardlink`, since the other
 name may lie outside the tree) refuses, the bytes go to `.<name>.<random>` beside it, created exclusively, and that
-name is renamed over the entry at the same descriptor. The root a command was handed is the operator's argument and is
-the one open that follows a link, as `safe_read.open_root` is. Every refusal is a `safe_read.RefusedRead`, so a
-command reports it under the rule the caller names.
+name is renamed over the entry at the same descriptor. A removal goes the same way: `remove_file` unlinks the entry at
+its directory's descriptor, and `remove_tree` empties a directory by descriptor, unlinking every entry that is not
+a directory, a link included, and removing each directory once it is empty, so a link inside the tree is removed and
+its target is not. The root a command was handed is the operator's argument and is the one open that follows a link,
+as `safe_read.open_root` is. Every refusal is a `safe_read.RefusedRead`, so a command reports it under the rule
+the caller names.
 """
 from __future__ import annotations
 
@@ -38,12 +41,31 @@ def open_parent(root: Path, relative_path: PurePath) -> int:
     caller closes the descriptor. `relative_path` is one a tool composed from validated names: an absolute path or a
     `.`/`..` part is a programming error and raises ValueError.
     """
-    parts = relative_path.parts
-    if not parts or relative_path.is_absolute() or any(part in (".", "..") for part in parts):
-        raise ValueError(f"not a relative path of plain names: {relative_path}")
+    parts = _plain_parts(relative_path)
     dir_fd = open_root(root)
     for depth, part in enumerate(parts[:-1], start=1):
         dir_fd = _descend(part, dir_fd, PurePath(*parts[:depth]))
+    return dir_fd
+
+
+def _plain_parts(relative_path: PurePath):
+    parts = relative_path.parts
+    if not parts or relative_path.is_absolute() or any(part in (".", "..") for part in parts):
+        raise ValueError(f"not a relative path of plain names: {relative_path}")
+    return parts
+
+
+def _open_existing_parent(root: Path, relative_path: PurePath) -> int:
+    """A descriptor on the directory that holds the last component of `relative_path`, each component opened from
+    `root` without following a link and none created; the caller closes it."""
+    parts = _plain_parts(relative_path)
+    dir_fd = open_root(root)
+    for depth, part in enumerate(parts[:-1], start=1):
+        try:
+            child_fd = _open_child(part, dir_fd, PurePath(*parts[:depth]))
+        finally:
+            os.close(dir_fd)
+        dir_fd = child_fd
     return dir_fd
 
 
@@ -123,3 +145,45 @@ def replace_file(root: Path, relative_path: PurePath, data: bytes) -> None:
             raise
     finally:
         os.close(parent_fd)
+
+
+def remove_file(root: Path, relative_path: PurePath) -> None:
+    """Unlink the entry at `relative_path` under `root`, its directory opened without following a link."""
+    parent_fd = _open_existing_parent(root, relative_path)
+    try:
+        os.unlink(relative_path.name, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def remove_tree(root: Path, relative_path: PurePath) -> None:
+    """Remove the directory at `relative_path` under `root` and every entry under it, by descriptor.
+
+    A link at `relative_path` or at a component above it refuses (`file.symlink`); a link inside the tree is unlinked
+    as an entry. An entry that changes type during the removal raises the OSError or RefusedRead of the call it fails.
+    """
+    parent_fd = _open_existing_parent(root, relative_path)
+    try:
+        tree_fd = _open_child(relative_path.name, parent_fd, relative_path)
+        try:
+            _empty_directory(tree_fd)
+        finally:
+            os.close(tree_fd)
+        os.rmdir(relative_path.name, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _empty_directory(dir_fd: int) -> None:
+    with os.scandir(dir_fd) as listing:
+        entries = [(entry.name, entry.is_dir(follow_symlinks=False)) for entry in listing]
+    for name, is_directory in entries:
+        if not is_directory:
+            os.unlink(name, dir_fd=dir_fd)
+            continue
+        child_fd = open_directory(name, dir_fd)
+        try:
+            _empty_directory(child_fd)
+        finally:
+            os.close(child_fd)
+        os.rmdir(name, dir_fd=dir_fd)
