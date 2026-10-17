@@ -9,6 +9,16 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ### Added
 
+- **`new-publisher` initializes a copy of the publisher template.**
+  `python3 tools/new-publisher --repository <owner>/<repo> --contact <email>`
+  turns a repository generated from dag-node/ai-tools-assets-template into
+  the publisher's own: it writes `publisher.conf`, `LICENSE` (MIT by default,
+  `--license` for another licence on the default list), `REUSE.toml`,
+  `CODEOWNERS`, `README.md`, the workflows' job key and, where given, the
+  release signers, and replaces the example set with the publisher's first
+  set, so the copy passes every pull-request check and the release check. It
+  checks every input and file before the first write, refuses a second run,
+  and prints the git steps instead of running them.
 - **Each licence text is compared with the text SPDX publishes.**
   `check-licenses` and `validate` hold every `LICENSES/<identifier>.txt`,
   the repository's, a set's own and the copy `build-set` stages, to the SHA-256

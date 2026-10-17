@@ -25,9 +25,9 @@ at an installed version with dnf's `versionlock` plugin.
 
 ```text
 format/         FORMAT.md: format 1, the kind table and the rule ids
-tools/          validate, new-set, new-asset, sync-manifests, build-set,
-                link-set, check-licenses, check-signoff, check-publisher,
-                reserved-words.txt, lib/
+tools/          validate, new-publisher, new-set, new-asset, sync-manifests,
+                build-set, link-set, check-licenses, check-signoff,
+                check-publisher, reserved-words.txt, lib/
 fixtures/       conformance fixtures: sets that pass, and sets that fail
                 one named rule each
 formatters/     reflow prose at the column a checker names
