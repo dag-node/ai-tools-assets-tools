@@ -8,11 +8,11 @@
 #
 # The twin of ai-tools-base's `assets-verify.lib.sh`, for a consumer without base, a reviewer, or the publisher before
 # shipping, under the same status contract: 0 verified, the signer's primary fingerprint printed alone on stdout;
-# 1 a mismatch, the signed inventory and the tree not both what the publisher built (gpgv rejects the signature, or
-# `SHA256SUMS` does not describe the tree); 2 unable to verify (an input absent or unreadable, a file of the set that
-# is a link, a special file or a second hard link, a key that does not hold the signer, a `--signer` the signature does
-# not match). `--key` is the publisher's public key, armored (dearmored here)
-# or binary; `gpgv` checks `SHA256SUMS.asc` over `SHA256SUMS` against it alone (`tools/lib/openpgp.py`), before the
+# 1 a mismatch, the signed inventory and the tree not both what the publisher built (the signature is bad or expired or
+# by an expired or revoked key, or `SHA256SUMS` does not describe the tree); 2 unable to verify (an input absent or
+# unreadable, a file of the set that is a link, a special file or a second hard link, a key that does not hold
+# the signer, a signature file holding more than one signature, a `--signer` the signature does not match). `--key` is
+# the publisher's public key, armored (dearmored here) or binary; `gpgv` checks `SHA256SUMS.asc` over `SHA256SUMS` against it alone (`tools/lib/openpgp.py`), before the
 # inventory is parsed, and the inventory is then held to the tree (`tools/lib/signed_inventory.py`). With
 # `--source <tree>`, `build-set` builds the set the verified `set.conf` names from that publisher repository into
 # a scratch directory, and every path whose hash differs between the two inventories is a mismatch: `build-set` writes
