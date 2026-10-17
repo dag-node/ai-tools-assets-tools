@@ -38,6 +38,9 @@ FileContent = Union[str, bytes]
 Tree = Dict[str, FileContent]
 Mutation = Callable[[Tree], None]
 
+# An SPDX identifier tools/lib/license_texts.py does not hold, for the `license.text-unpinned` cases.
+UNPINNED_LICENSE = "Crossword"
+
 PUBLISHER_CONF = """publisher={publisher}
 contact=tools@{publisher}.example
 maintainers=[maintainers@{publisher}.example]
@@ -256,7 +259,7 @@ FAIL_FIXTURES: List[Tuple[str, str, Mutation]] = [
     ("license.allowlist", "fail", lambda tree: replace_in(tree, "set.conf", "license=MIT\n", "license=GPL-3.0-only\n")),
     ("license.text", "fail", lambda tree: replace_in(tree, f"{SKILL}/SKILL.md", "compatibility: Requires python3.", "license: Apache-2.0")),
     ("license.text-modified", "warn", lambda tree: tree.__setitem__("LICENSES/CC0-1.0.txt", "Not the CC0-1.0 text as published.\n")),
-    ("license.text-unpinned", "warn", lambda tree: tree.__setitem__("LICENSES/Beerware.txt", "A licence text the tools hold no digest of.\n")),
+    ("license.text-unpinned", "warn", lambda tree: tree.__setitem__(f"LICENSES/{UNPINNED_LICENSE}.txt", "A licence text the tools hold no digest of.\n")),
 ]
 
 

@@ -32,7 +32,8 @@ TOOLS = REPOSITORY / "tools"
 sys.path.insert(0, str(TESTS))
 sys.path.insert(0, str(TOOLS / "lib"))
 
-from fixture_generator import PUBLISHER_CONF  # noqa: E402
+from fixture_generator import PUBLISHER_CONF, UNPINNED_LICENSE  # noqa: E402
+from license_texts import LICENSE_TEXTS  # noqa: E402
 
 
 def run(command: str, *arguments: str, cwd=None, env=None):
@@ -1862,23 +1863,26 @@ class LicenseCheckOverATree(unittest.TestCase):
                           "a filled holder line, a changed byte and a dropped newline each warn")
 
     def test_an_unpinned_text_warns_until_publisher_conf_declares_its_digest(self):
+        self.assertFalse(UNPINNED_LICENSE in LICENSE_TEXTS, "the case needs an identifier the table does not hold")
         self.reuse('path = "**"\nSPDX-License-Identifier = "MIT"')
-        self.write("LICENSES/Beerware.txt", "A licence text the tools hold no digest of.\n")
+        self.write(f"LICENSES/{UNPINNED_LICENSE}.txt", "A licence text the tools hold no digest of.\n")
         status, stderr = self.check()
         self.assertEqual(status, 0, stderr)
-        self.assertIn("check-licenses: warning: LICENSES/Beerware.txt: license.text-unpinned: ", stderr)
+        self.assertIn(f"check-licenses: warning: LICENSES/{UNPINNED_LICENSE}.txt: license.text-unpinned: ", stderr)
         digest = hashlib.sha256(b"A licence text the tools hold no digest of.\n").hexdigest()
-        self.write("publisher.conf", f"license_text_digests=[Beerware:{digest}]\n")
+        self.write("publisher.conf", f"license_text_digests=[{UNPINNED_LICENSE}:{digest}]\n")
         status, stderr = self.check()
         self.assertEqual((status, stderr), (0, ""), "a declared digest that matches checks the text")
-        self.write("publisher.conf", f"license_text_digests=[Beerware:{'0' * 64}]\n")
+        self.write("publisher.conf", f"license_text_digests=[{UNPINNED_LICENSE}:{'0' * 64}]\n")
         status, stderr = self.check()
         self.assertEqual(status, 0, stderr)
-        self.assertIn("warning: LICENSES/Beerware.txt: license.text-modified: is not the `Beerware` text as published", stderr)
-        self.write("publisher.conf", "license_text_digests=[Beerware]\n")
+        self.assertIn(f"warning: LICENSES/{UNPINNED_LICENSE}.txt: license.text-modified: is not the `{UNPINNED_LICENSE}` text as published",
+                      stderr)
+        self.write("publisher.conf", f"license_text_digests=[{UNPINNED_LICENSE}]\n")
         status, stderr = self.check()
         self.assertEqual(status, 1)
-        self.assertIn("publisher.conf: repo.publisher-conf: `license_text_digests` item `Beerware` is not `<identifier>:<sha256>`", stderr)
+        self.assertIn(f"publisher.conf: repo.publisher-conf: `license_text_digests` item `{UNPINNED_LICENSE}` is not `<identifier>:<sha256>`",
+                      stderr)
 
     def test_the_summary_names_each_licence_with_its_class(self):
         shutil.copy(FIXTURES / "LICENSES" / "CC-BY-NC-4.0.txt", self.scratch / "LICENSES" / "CC-BY-NC-4.0.txt")
