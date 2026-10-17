@@ -24,10 +24,10 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
-import stat
 import subprocess
 import sys
 import tempfile
+from typing import Optional
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
@@ -36,7 +36,7 @@ import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 import openpgp  # noqa: E402
-from safe_read import RefusedRead, open_root, read_file_under  # noqa: E402
+from safe_read import RefusedRead, open_root, read_file, read_file_under  # noqa: E402
 import signed_inventory  # noqa: E402
 from staged_build import INVENTORY_FILE, SIGNATURE_FILE  # noqa: E402
 
@@ -61,17 +61,24 @@ class Verification:
 
 
 def read_key(path: pathlib.Path):
-    """The binary key in the file at `path`, or (None, reason): a link, a special file, a file over the bound, an
-    armored block that does not decode and bytes that do not open with an OpenPGP packet are refused."""
+    """The binary key in the file at `path`, read from its directory's descriptor, or (None, reason): a link,
+    a special file, a second hard link, a file over the bound, an armored block that does not decode and bytes that do
+    not open with an OpenPGP packet are refused."""
     try:
-        status = os.lstat(path)
+        directory_fd = open_root(path.parent)
+    except OSError as error:
+        return None, f"cannot be read: its directory: {error.strerror}"
+    try:
+        read = read_file(path.name, directory_fd, KEY_MAX_BYTES)
+    except RefusedRead as refusal:
+        return None, refusal.message
     except OSError as error:
         return None, f"cannot be read: {error.strerror}"
-    if not stat.S_ISREG(status.st_mode):
-        return None, "is not a regular file"
-    if status.st_size > KEY_MAX_BYTES:
-        return None, f"is {status.st_size} bytes, over the {KEY_MAX_BYTES} a public key takes"
-    data = path.read_bytes()
+    finally:
+        os.close(directory_fd)
+    if read.truncated:
+        return None, f"is {read.size} bytes, over the {KEY_MAX_BYTES} a public key takes"
+    data = read.data
     if data.lstrip().startswith(b"-----BEGIN PGP PUBLIC KEY BLOCK-----"):
         key = openpgp.dearmor(data)
         return (key, None) if key else (None, "is an armored block that does not decode")
@@ -152,19 +159,49 @@ def verify(run: Verification, args: argparse.Namespace, signer, key: bytes, dire
     if run.status:
         return
     if args.source is not None:
-        compare_with_source(run, run.directory, args.source.resolve(), inventory.listed)
+        compare_with_source(run, directory_fd, args.source.resolve(), inventory.listed)
         if run.status:
             return
     print(signature.primary)
 
 
-def compare_with_source(run: Verification, directory: pathlib.Path, source: pathlib.Path, listed) -> None:
-    """Build the set from `source` into a scratch directory and hold its inventory to the verified one."""
+def read_inventory_file(run: Verification, directory_fd: int, name: str, listed_digest) -> Optional[str]:
+    """The text of the file `name` under `directory_fd`, held to `listed_digest` where one is given, or None after
+    an UNABLE finding."""
     try:
-        set_name = parse_key_value_text((directory / fmt.SET_CONF_FILE).read_text(encoding="utf-8")).get("name")
-    except (OSError, UnicodeDecodeError) as error:
-        run.fail(signed_inventory.UNABLE, fmt.SET_CONF_FILE, "release.inventory", f"cannot be read: {error}")
+        read = read_file_under(directory_fd, pathlib.PurePath(name), fmt.FILE_MAX_BYTES)
+    except FileNotFoundError:
+        run.fail(signed_inventory.UNABLE, name, "release.inventory", "is absent")
+        return None
+    except RefusedRead as refusal:
+        run.fail(signed_inventory.UNABLE, name, "release.inventory", refusal.message)
+        return None
+    except OSError as error:
+        run.fail(signed_inventory.UNABLE, name, "release.inventory", f"cannot be read: {error.strerror}")
+        return None
+    if read.truncated:
+        run.fail(signed_inventory.UNABLE, name, "release.inventory", f"is over {fmt.FILE_MAX_BYTES} bytes")
+        return None
+    if listed_digest is not None and read.digest != listed_digest:
+        run.fail(signed_inventory.UNABLE, name, "release.inventory", "changed since the inventory was verified")
+        return None
+    try:
+        return read.data.decode("utf-8")
+    except UnicodeDecodeError:
+        run.fail(signed_inventory.UNABLE, name, "release.inventory", "is not UTF-8 text")
+        return None
+
+
+def compare_with_source(run: Verification, directory_fd: int, source: pathlib.Path, listed) -> None:
+    """Build the set from `source` into a scratch directory and hold its inventory to the verified one, `listed`.
+
+    `set.conf` is read under the verified set's descriptor and held to the digest `listed` gives it before its name is
+    used, so the set built is the one the signed `set.conf` names.
+    """
+    text = read_inventory_file(run, directory_fd, fmt.SET_CONF_FILE, listed.get(fmt.SET_CONF_FILE, ""))
+    if text is None:
         return
+    set_name = parse_key_value_text(text).get("name")
     if not fmt.is_valid_name(set_name or ""):
         run.fail(signed_inventory.UNABLE, fmt.SET_CONF_FILE, "set.conf.name", f"`name={set_name}` is not a set name")
         return
@@ -177,8 +214,18 @@ def compare_with_source(run: Verification, directory: pathlib.Path, source: path
             reason = completed.stderr.strip().splitlines()[-1:] or ["no output"]
             run.fail(signed_inventory.UNABLE, str(source), "release.inventory", f"build-set {set_name} did not build it ({reason[0]})")
             return
-        rebuilt = signed_inventory.InventoryCheck()
-        built = signed_inventory.parse_inventory((build / set_name / INVENTORY_FILE).read_text(encoding="utf-8"), rebuilt)
+        try:
+            build_fd = open_root(build / set_name)
+        except OSError as error:
+            run.fail(signed_inventory.UNABLE, str(source), "release.inventory", f"build-set {set_name} staged no set: {error.strerror}")
+            return
+        try:
+            built_text = read_inventory_file(run, build_fd, INVENTORY_FILE, None)
+        finally:
+            os.close(build_fd)
+    if built_text is None:
+        return
+    built = signed_inventory.parse_inventory(built_text, signed_inventory.InventoryCheck())
     for path in sorted(set(listed) | set(built)):
         if listed.get(path) != built.get(path):
             what = "is absent from the source's build" if path not in built else "is absent from the signed set" if path not in listed else "differs from the source's build"
