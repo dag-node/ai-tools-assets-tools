@@ -10,10 +10,13 @@ is read as the one signature's. `BADSIG` is a MISMATCH, and so are `EXPSIG`, `EX
 nothing, as `gpgv` prints it for an expired subkey the signature does not use. `NO_PUBKEY`, `ERRSIG` and a non-zero exit
 are UNABLE. VERIFIED needs a zero exit, `GOODSIG`, and a `VALIDSIG` with its nine fields: the first names the signing
 key, and the tenth, where present, the primary, which is the fingerprint a host's binding pins. ai-tools-base's verifier
-takes the same policy. An armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone. `scratch_directory` makes the
-scratch directory the commands write the key, the inventory and its signature into: a `tempfile.TemporaryDirectory`
-removed on exit, on an exception and on SIGTERM or SIGHUP, whose default action would end the interpreter without
-removing it.
+takes the same policy. An armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone.
+
+`scratch_directory` makes the scratch directory the commands write the key, the inventory and its signature into:
+a `tempfile.TemporaryDirectory` removed on exit, on an exception and on SIGTERM or SIGHUP, whose default action would end
+the interpreter without removing it. The two signals are blocked while the handlers are installed and the directory is
+created, and again while it is removed, so a signal that arrives in either window waits instead of leaving
+the directory behind.
 """
 from __future__ import annotations
 
@@ -48,20 +51,30 @@ def scratch_directory(prefix: str) -> Iterator[pathlib.Path]:
     """A new private directory under the user's temp directory, removed when the context ends.
 
     For the context's extent SIGTERM and SIGHUP raise SystemExit(128 + the signal number), so the interpreter unwinds
-    through the removal, and `subprocess.run` kills a child it is waiting on first; the previous handlers are restored
-    after. Call it from the main thread, the only one `signal.signal` accepts.
+    through the removal, and `subprocess.run` kills a child it is waiting on first; the previous handlers and signal
+    mask are restored after. A signal that arrives before the directory is created is held until the context is
+    entered and then raises there; one that arrives during the removal is held until the previous handler is back,
+    which receives it. Call it from the main thread, the only one `signal.signal` accepts.
     """
 
     def terminate(signal_number, frame):
         raise SystemExit(128 + signal_number)
 
-    previous = {signal_number: signal.signal(signal_number, terminate) for signal_number in TERMINATION_SIGNALS}
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
     try:
-        with tempfile.TemporaryDirectory(prefix=prefix) as scratch:
-            yield pathlib.Path(scratch)
+        previous = {signal_number: signal.signal(signal_number, terminate) for signal_number in TERMINATION_SIGNALS}
+        try:
+            with tempfile.TemporaryDirectory(prefix=prefix) as scratch:
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+                try:
+                    yield pathlib.Path(scratch)
+                finally:
+                    signal.pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+        finally:
+            for signal_number, handler in previous.items():
+                signal.signal(signal_number, signal.SIG_DFL if handler is None else handler)
     finally:
-        for signal_number, handler in previous.items():
-            signal.signal(signal_number, signal.SIG_DFL if handler is None else handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 @dataclass(frozen=True)

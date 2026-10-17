@@ -1125,6 +1125,53 @@ class ScratchDirectory(unittest.TestCase):
             child.stdout.close()
             self.assertFalse(scratch.exists(), number)
 
+    # Each injection runs in a child whose temp directory is its own: `PATCH` replaces one step of the context so the
+    # child signals itself at that step, then the context runs to its end.
+    INJECTED = """import os, shutil, signal, tempfile
+number = int(os.environ["SIGNAL"])
+{patch}
+import openpgp
+with openpgp.scratch_directory("probe.") as scratch:
+    pass
+"""
+    AFTER_CREATION = """real = tempfile.mkdtemp
+def mkdtemp(*arguments, **keywords):
+    path = real(*arguments, **keywords)
+    signal.raise_signal(number)
+    return path
+tempfile.mkdtemp = mkdtemp"""
+    DURING_INSTALLATION = """real = signal.signal
+def install(signal_number, handler):
+    previous = real(signal_number, handler)
+    if not install.sent:
+        install.sent = True
+        signal.raise_signal(number)
+    return previous
+install.sent = False
+signal.signal = install"""
+    DURING_REMOVAL = """real = shutil.rmtree
+def rmtree(*arguments, **keywords):
+    signal.raise_signal(number)
+    return real(*arguments, **keywords)
+shutil.rmtree = rmtree"""
+
+    def run_injected(self, patch: str, number: int):
+        """The child's exit status and what it left in its temp directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            child = subprocess.run([sys.executable, "-c", self.INJECTED.format(patch=patch)], capture_output=True, text=True, timeout=30,
+                                   env=dict(os.environ, PYTHONPATH=str(TOOLS / "lib"), TMPDIR=temporary, SIGNAL=str(number)))
+            return child.returncode, sorted(os.listdir(temporary))
+
+    def test_a_signal_while_the_directory_is_made_is_held_until_the_context_owns_it(self):
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            self.assertEqual(self.run_injected(self.AFTER_CREATION, number), (128 + number, []), number)
+            self.assertEqual(self.run_injected(self.DURING_INSTALLATION, number), (128 + number, []), number)
+            self.assertEqual(self.run_injected("", number), (0, []), "control: no signal")
+
+    def test_a_signal_during_the_removal_waits_for_it_and_reaches_the_previous_handler(self):
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            self.assertEqual(self.run_injected(self.DURING_REMOVAL, number), (-number, []), number)
+
 
 class SignatureStatus(unittest.TestCase):
     """openpgp.check_signature over status streams gpgv may print, the process mocked, so the policy is held without
