@@ -65,12 +65,12 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 - **A release refuses a copy of the template that was not initialized.**
   `check-publisher --repository`, which every set release runs, refuses
   a `publisher.conf` whose `publisher`, `contact`, `maintainers` or `source`
-  still holds the template placeholder `change-me`, in any case, and
-  a `REUSE.toml` whose `SPDX-PackageName` is still
-  `ai-tools-assets-template`, and names `new-publisher` as the fix. A pull
-  request runs neither check, so a copy passes every pull request as
-  generated. Before, a copy whose GitHub owner was itself named `change-me`
-  passed the release check.
+  still holds the template placeholder `change-me` as a whole token, in any
+  case (an owner such as `exchange-media` passes), and a `REUSE.toml`
+  whose `SPDX-PackageName` is still `ai-tools-assets-template`, and names
+  `new-publisher` as the fix. A pull request runs neither check, so a copy
+  passes every pull request as generated. Before, a copy whose GitHub owner was
+  itself named `change-me` passed the release check.
 - **The tools are MIT throughout.** The formatters under `formatters/` and
   `packaging/sign-rpms.sh` are under MIT, as the rest of the repository is,
   and the tools RPM's licence tag is `MIT`. A publisher who copied

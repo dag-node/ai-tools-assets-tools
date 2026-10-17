@@ -692,6 +692,20 @@ class NewPublisher(unittest.TestCase):
         self.assertIn(".github/workflows/validate.yml: repo.layout: lacks the template line `ai-tools-assets-template:`", stderr)
         self.assertEqual(tree_state(self.root), before)
 
+    def test_the_placeholder_is_refused_as_a_whole_token(self):
+        before = tree_state(self.root)
+        for arguments in (("--holder", "change-me-example"), ("--holder", "Change-Me"), ("--contact", "change-me@example.com"),
+                          ("--tag-signer", "A" * 40, "--tag-signer-key-url", "https://github.com/change-me.gpg"),
+                          ("--source", "https://example.org/change-me/ai-tools-assets")):
+            status, _, stderr = self.initialize(*INITIALIZE, *arguments)
+            self.assertEqual(status, 1, arguments)
+            self.assertIn("holds the template placeholder `change-me`", stderr, arguments)
+            self.assertEqual(tree_state(self.root), before, arguments)
+        status, _, stderr = self.initialize("--repository", "exchange-media/ai-tools-assets", "--contact", "richange-meter@acme.example")
+        self.assertEqual((status, stderr), (0, ""), "a name that carries the letters inside a word is the publisher's own")
+        status, _, stderr = run("check-publisher", "--root", str(self.root), "--repository", "exchange-media/ai-tools-assets")
+        self.assertEqual((status, stderr), (0, ""))
+
     def test_does_not_write_through_a_link(self):
         outside = self.scratch / "outside"
         outside.mkdir()
@@ -789,6 +803,15 @@ class CheckPublisherRelease(unittest.TestCase):
             status, stderr = self.check("--repository", "Acme/ai-tools-assets")
             self.assertEqual(status, 1, key)
             self.assertIn(f"publisher.conf: `{key}` still holds the template placeholder `change-me`", stderr, key)
+        for value in ("change-me-example", "change-me@example.com", "https://github.com/change-me.gpg", "change-me/ai-tools-assets", "Change-Me"):
+            conf.write_text(original.replace("contact=tools@acme.example", f"contact={value}"), encoding="utf-8")
+            status, stderr = self.check("--repository", "Acme/ai-tools-assets")
+            self.assertEqual(status, 1, value)
+            self.assertIn("publisher.conf: `contact` still holds the template placeholder `change-me`", stderr, value)
+        conf.write_text(original.replace("contact=tools@acme.example", "contact=richange-meter@acme.example"), encoding="utf-8")
+        status, stderr = self.check("--repository", "Acme/ai-tools-assets")
+        self.assertIn("plugin.json", stderr, "control: the manifests no longer carry the contact")
+        self.assertNotIn("placeholder", stderr, "the letters inside a word are not the token")
         conf.write_text(original, encoding="utf-8")
 
     def test_the_template_package_name_is_refused_at_release_alone(self):

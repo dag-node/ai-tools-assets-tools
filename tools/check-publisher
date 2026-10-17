@@ -26,11 +26,11 @@
 # start with a word from tools/reserved-words.txt. With `--repository` (a release passes github.repository), the
 # publisher is the repository's owner and `source` is its GitHub URL, compared case-insensitively as GitHub compares
 # them; a publisher other than `UPSTREAM_PUBLISHER` may not keep a contact at `UPSTREAM_DOMAIN`; no identity key holds
-# the template's placeholder `change-me`, in any case, whatever the owner, so a copy whose owner is itself `change-me`
-# is refused too; and `REUSE.toml`'s `SPDX-PackageName` is not the template's, the marker of a copy that skipped
-# `new-publisher` and would ship the template's notice in every set. A pull request runs neither, so a copy passes
-# every pull request as generated and its first release fails until it is initialized. The names and constants are
-# `tools/lib/asset_format.py`'s. Each finding is printed as `check-publisher: <file>: <what>`; the exit status is 1
+# the template's placeholder `change-me` as a whole token, in any case, whatever the owner, so a copy whose owner is
+# itself `change-me` is refused too; and `REUSE.toml`'s `SPDX-PackageName` is not the template's, the marker of a copy
+# that skipped `new-publisher` and would ship the template's notice in every set. A pull request runs neither, so a copy
+# passes every pull request as generated and its first release fails until it is initialized. The names and constants
+# are `tools/lib/asset_format.py`'s. Each finding is printed as `check-publisher: <file>: <what>`; the exit status is 1
 # when any is found. Standard library only.
 
 import argparse
