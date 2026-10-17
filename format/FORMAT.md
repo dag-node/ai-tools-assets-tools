@@ -348,23 +348,23 @@ of each identifier is `LICENSES/<identifier>.txt`, in the set
 or at the repository root -- one regular file, not a link -- and `build-set`
 copies it into the payload.
 
-A licence text is the text SPDX publishes, byte for byte, as
-`reuse download <identifier>` writes it: a holder line stays the placeholder
-the published text carries, and the holder is stated in `REUSE.toml`,
-`LICENSE` or a file's header. The tools hold the SHA-256 of the published text
-of each widely used licence, with every revision SPDX has published since
-list 3.20, and warn for a text that matches none under
-`license.text-modified`. A text whose identifier the tools do not hold warns
-under `license.text-unpinned`; `publisher.conf`
-`license_text_digests=[<identifier>:<sha256>, ...]` names the digests that
-text is held to instead, the digest 64 lower-case hex digits. The tools also
-class each of those licences as `public-domain`, `permissive`,
-`weak-copyleft`, `copyleft` or `limited-use`, the last a licence that limits
-use by field, hosted service, commercial use or derivatives, and
-`check-licenses` names the class in its summary line. The allowlist decides
-whether a licence is used, and its default does not hold a `limited-use`
-licence; a class describes the licence's terms, and the tools do not decide
-whether two licences may be combined.
+A licence text is the text SPDX publishes, byte for byte,
+as `reuse download <identifier>` writes it: a holder line stays the placeholder
+the published text carries, and the holder is stated in `REUSE.toml`, `LICENSE`
+or a file's header. The tools hold the SHA-256 of the published text of each
+widely used licence and of every licence that 25 or more Fedora packages carry,
+with every revision SPDX has published since list 3.20, and warn for a text
+that matches none under `license.text-modified`. A text whose identifier
+the tools do not hold warns under `license.text-unpinned`; `publisher.conf`
+`license_text_digests=[<identifier>:<sha256>, ...]` names the digests that text
+is held to instead, the digest 64 lower-case hex digits. The tools also class
+each of those licences as `public-domain`, `permissive`, `weak-copyleft`,
+`copyleft` or `limited-use`, the last a licence that limits use by field,
+hosted service, commercial use or derivatives, and `check-licenses` names
+the class in its summary line. The allowlist decides whether a licence is used,
+and its default does not hold a `limited-use` licence; a class describes
+the licence's terms, and the tools do not decide whether two licences may be
+combined.
 
 Every other tracked file of a publisher repository states its licence too,
 as REUSE 3.2 resolves it: every `SPDX-License-Identifier` header anywhere
