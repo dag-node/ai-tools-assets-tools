@@ -38,7 +38,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
 from safe_write import create_file, remove_file, remove_tree, replace_file  # noqa: E402
@@ -335,9 +335,15 @@ class Initialization:
         except RefusedRead as refusal:
             self.refuse("sets", refusal.rule_id, refusal.message)
             return
+        except OSError as error:
+            self.refuse("sets", "repo.layout", f"cannot be read: {error.strerror}")
+            return
         try:
             with os.scandir(sets_fd) as listing:
                 entries = {entry.name: os.lstat(entry.name, dir_fd=sets_fd) for entry in listing}
+        except OSError as error:
+            self.refuse("sets", "repo.layout", f"cannot be read: {error.strerror}")
+            return
         finally:
             os.close(sets_fd)
         if set(entries) != {TEMPLATE_SET}:
@@ -368,6 +374,9 @@ class Initialization:
         except RefusedRead as refusal:
             self.refuse(relative, refusal.rule_id, refusal.message)
             return
+        except OSError as error:
+            self.refuse(relative, "license.text", f"cannot be read: {error.strerror}")
+            return
         finally:
             os.close(root_fd)
         tools_fd = open_root(TOOLS.parent)
@@ -376,6 +385,8 @@ class Initialization:
             self.license_from_tools = True
         except (FileNotFoundError, RefusedRead):
             self.refuse(relative, "license.text", f"no `{identifier}.txt` in the copy's LICENSES/ or the tools'; place it with `reuse download {identifier}` and run the command again")
+        except OSError as error:
+            self.refuse(f"{TOOLS.parent / relative}", "license.text", f"cannot be read: {error.strerror}")
         finally:
             os.close(tools_fd)
 
@@ -478,6 +489,10 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     collector = FindingCollector("new-publisher")
+    return refuse_unconverted_errors(collector, "repo.layout", root, lambda: initialize(args, root, collector))
+
+
+def initialize(args: argparse.Namespace, root: pathlib.Path, collector: FindingCollector) -> int:
     try:
         root_fd = open_root(root)
     except OSError:

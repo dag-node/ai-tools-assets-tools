@@ -213,6 +213,8 @@ def read_reuse_package_name(root_fd: int) -> Tuple[Optional[str], Optional[str]]
         return None, None
     except RefusedRead as refusal:
         return None, refusal.message
+    except OSError as error:
+        return None, f"cannot be read: {error.strerror}"
     for line_number, line in enumerate(text.splitlines(), start=1):
         if REUSE_TABLE_HEADER.match(line):
             break

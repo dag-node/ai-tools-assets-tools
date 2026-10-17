@@ -161,6 +161,11 @@ def main():
         return report()
     try:
         return check(reserved_words(), args.repository)
+    except OSError as error:
+        # One no reader turned into a finding; the findings so far are printed with it instead of a traceback.
+        path = error.filename if isinstance(error.filename, (str, bytes, os.PathLike)) else ROOT
+        finding(os.fsdecode(path), f"{error.strerror or error}; check-publisher stopped before it finished")
+        return report()
     finally:
         os.close(ROOT_FD)
 

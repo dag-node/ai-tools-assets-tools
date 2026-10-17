@@ -32,7 +32,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import resolve_license_allowlist  # noqa: E402
 from openpgp import FINGERPRINT_PATTERN, check_signature, scratch_directory  # noqa: E402
@@ -66,7 +66,7 @@ def main() -> int:
     except OSError:
         build_fd = None
     try:
-        return sign_stage(args.set, key, root, build_root, build_fd, collector)
+        return refuse_unconverted_errors(collector, "release.signature", root, lambda: sign_stage(args.set, key, root, build_root, build_fd, collector))
     finally:
         if build_fd is not None:
             os.close(build_fd)
