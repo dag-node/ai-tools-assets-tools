@@ -28,9 +28,25 @@ sys.path.insert(0, str(TOOLS / "lib"))
 from fixture_generator import PUBLISHER_CONF  # noqa: E402
 
 
-def run(command: str, *arguments: str, cwd=None):
-    completed = subprocess.run([sys.executable, str(TOOLS / command), *arguments], capture_output=True, text=True, cwd=cwd)
+def run(command: str, *arguments: str, cwd=None, env=None):
+    completed = subprocess.run([sys.executable, str(TOOLS / command), *arguments], capture_output=True, text=True, cwd=cwd,
+                               env=env)
     return completed.returncode, completed.stdout, completed.stderr
+
+
+def compose_publisher(root: pathlib.Path) -> None:
+    """A publisher repository at `root` composed from fixtures/pass/acme."""
+    (root / "sets").mkdir(parents=True)
+    shutil.copytree(FIXTURES / "pass" / "acme" / "acme", root / "sets" / "acme")
+    shutil.copytree(FIXTURES / "LICENSES", root / "LICENSES")
+    (root / "LICENSE").write_text((FIXTURES / "LICENSES" / "MIT.txt").read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "publisher.conf").write_text(PUBLISHER_CONF.format(publisher="acme"), encoding="utf-8")
+    status, _, stderr = run("sync-manifests", "--root", str(root))
+    assert status == 0, stderr
+
+
+def gpg_runs() -> bool:
+    return shutil.which("gpg") is not None and shutil.which("gpgv") is not None
 
 
 class PublisherRepository(unittest.TestCase):
@@ -38,13 +54,7 @@ class PublisherRepository(unittest.TestCase):
 
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp()) / "acme-assets"
-        (self.root / "sets").mkdir(parents=True)
-        shutil.copytree(FIXTURES / "pass" / "acme" / "acme", self.root / "sets" / "acme")
-        shutil.copytree(FIXTURES / "LICENSES", self.root / "LICENSES")
-        (self.root / "LICENSE").write_text((FIXTURES / "LICENSES" / "MIT.txt").read_text(encoding="utf-8"), encoding="utf-8")
-        (self.root / "publisher.conf").write_text(PUBLISHER_CONF.format(publisher="acme"), encoding="utf-8")
-        status, _, stderr = run("sync-manifests", "--root", str(self.root))
-        self.assertEqual(status, 0, stderr)
+        compose_publisher(self.root)
 
     def tearDown(self):
         shutil.rmtree(self.root.parent)
@@ -616,6 +626,20 @@ class NewPublisher(unittest.TestCase):
                     self.assertNotIn("change-me", text, path)
         self.assertIn('new-publisher: next, commit the initialization: git add -A && git commit -s -m "chore: initialize the publisher acme"', stdout)
 
+    def test_a_source_outside_github_passes_a_pull_request_and_not_the_release_check(self):
+        status, _, stderr = self.initialize(*INITIALIZE, "--source", "https://git.acme.example/a b")
+        self.assertEqual(status, 1)
+        self.assertIn("repo.publisher-conf: the source `https://git.acme.example/a b` is not a URL", stderr)
+        status, _, stderr = self.initialize(*INITIALIZE, "--source", "https://git.acme.example/assets")
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertIn("source=https://git.acme.example/assets\n", (self.root / "publisher.conf").read_text(encoding="utf-8"))
+        self.assertIn('SPDX-PackageDownloadLocation = "https://git.acme.example/assets"', (self.root / "REUSE.toml").read_text(encoding="utf-8"))
+        for command in (("validate",), ("check-publisher",)):
+            status, _, stderr = run(*command, "--root", str(self.root))
+            self.assertEqual((status, stderr), (0, ""), command)
+        status, _, stderr = run("check-publisher", "--root", str(self.root), "--repository", "Acme/ai-tools-assets")
+        self.assertIn("source is `https://git.acme.example/assets`", stderr, "a GitHub release keeps requiring the GitHub form")
+
     def test_a_second_run_is_refused_and_leaves_the_tree_whole(self):
         self.assertEqual(self.initialize()[0], 0)
         before = tree_state(self.root)
@@ -767,6 +791,97 @@ class CheckPublisherRelease(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("REUSE.toml: `SPDX-PackageName` still names the template; run new-publisher", stderr)
 # REUSE-IgnoreEnd
+
+
+class SignSet(unittest.TestCase):
+    """sign-set's refusals that come before gpg runs."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp()) / "acme-assets"
+        compose_publisher(self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self.root.parent)
+
+    def test_a_set_build_set_did_not_stage_is_refused(self):
+        status, _, stderr = run("sign-set", "acme", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("repo.layout: is not a set build-set staged", stderr)
+        self.assertIn("run build-set acme first", stderr)
+
+    def test_a_stale_stage_is_refused_before_gpg_runs(self):
+        status, _, stderr = run("build-set", "acme", "--root", str(self.root))
+        self.assertEqual(status, 0, stderr)
+        readme = self.root / "build" / "acme" / "README.md"
+        readme.write_text(readme.read_text(encoding="utf-8") + "Edited after the build.\n", encoding="utf-8")
+        status, _, stderr = run("sign-set", "acme", "--root", str(self.root), env=dict(os.environ, PATH="/nonexistent"))
+        self.assertEqual(status, 1)
+        self.assertIn("release.inventory", stderr)
+        self.assertIn("nothing was signed", stderr)
+        self.assertNotIn("is not on PATH", stderr, "the stage is judged before gpg is looked for")
+        self.assertFalse((self.root / "build" / "acme" / "SHA256SUMS.asc").exists())
+
+
+@unittest.skipUnless(gpg_runs(), "signing needs gpg and gpgv")
+class SignSetWithAKey(unittest.TestCase):
+    """sign-set with a key generated for the test, in a GnuPG home of its own."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        self.root = self.scratch / "acme-assets"
+        compose_publisher(self.root)
+        self.gnupg = self.scratch / "gnupg"
+        self.gnupg.mkdir(mode=0o700)
+        self.environment = dict(os.environ, GNUPGHOME=str(self.gnupg))
+        self.gpg("--quick-generate-key", "--passphrase", "", "Acme <tools@acme.example>", "ed25519", "sign", "never")
+        self.primary = next(line.split(":")[9] for line in self.gpg("--with-colons", "--list-keys").splitlines()
+                            if line.startswith("fpr:"))
+        status, _, stderr = run("build-set", "acme", "--root", str(self.root))
+        self.assertEqual(status, 0, stderr)
+        self.signature = self.root / "build" / "acme" / "SHA256SUMS.asc"
+
+    def tearDown(self):
+        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=self.environment, capture_output=True)
+        shutil.rmtree(self.scratch)
+
+    def gpg(self, *arguments: str) -> str:
+        return subprocess.run(["gpg", "--batch", "--pinentry-mode", "loopback", *arguments], capture_output=True, text=True,
+                              check=True, env=self.environment).stdout
+
+    def sign(self, *arguments: str):
+        return run("sign-set", "acme", "--root", str(self.root), *arguments, env=self.environment)
+
+    def test_signs_and_prints_the_primary_a_binding_names(self):
+        status, stdout, stderr = self.sign()
+        self.assertEqual(status, 0, stderr)
+        self.assertIn(f"signers=openpgp:{self.primary}", stdout)
+        import openpgp
+        key = subprocess.run(["gpg", "--export", self.primary], capture_output=True, check=True, env=self.environment).stdout
+        with tempfile.TemporaryDirectory() as scratch:
+            check = openpgp.valid_signature(pathlib.Path(scratch), key, (self.root / "build" / "acme" / "SHA256SUMS").read_bytes(),
+                                            self.signature.read_bytes())
+        self.assertEqual((check.outcome, check.primary), (openpgp.VERIFIED, self.primary))
+
+    def test_a_key_the_keyring_lacks_is_refused_and_nothing_is_written(self):
+        status, _, stderr = self.sign("--key", "0" * 40)
+        self.assertEqual(status, 1)
+        self.assertIn("release.signature", stderr)
+        self.assertFalse(self.signature.exists())
+
+    def test_a_second_run_replaces_the_signature_and_a_link_at_its_name_is_refused(self):
+        self.assertEqual(self.sign("--key", self.primary)[0], 0)
+        first = self.signature.read_bytes()
+        self.assertEqual(self.sign()[0], 0)
+        self.assertTrue(self.signature.is_file() and not self.signature.is_symlink())
+        self.assertTrue(self.signature.read_bytes().startswith(b"-----BEGIN PGP SIGNATURE-----"), first)
+        outside = self.scratch / "outside.asc"
+        outside.write_text("theirs\n", encoding="utf-8")
+        self.signature.unlink()
+        self.signature.symlink_to(outside)
+        status, _, stderr = self.sign()
+        self.assertEqual(status, 1)
+        self.assertIn("file.symlink", stderr)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "theirs\n")
 
 
 class LicenseCheck(unittest.TestCase):

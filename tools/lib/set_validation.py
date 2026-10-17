@@ -272,7 +272,7 @@ class _SetValidator:
     def check_reserved_directory_name(self, relative_path: Path, name: str) -> None:
         if name == ".agents":
             self.refuse(relative_path, "file.reserved-name", "`.agents` is reserved and not used inside a set")
-        elif name in (fmt.CLAUDE_PLUGIN_DIRECTORY, fmt.METADATA_DIRECTORY, "variants") and relative_path.parent != Path("."):
+        elif name in fmt.RESERVED_DIRECTORY_NAMES and relative_path.parent != Path("."):
             if name == fmt.CLAUDE_PLUGIN_DIRECTORY and relative_path.parts[0] == "skills":
                 self.refuse(relative_path, "skill.plugin-manifest", "a `.claude-plugin` directory inside a skill makes it a plugin of its own")
             else:

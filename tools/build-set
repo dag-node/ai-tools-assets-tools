@@ -22,9 +22,10 @@
 # `build/.<set>.ai-tools-assets-build` names this set and this marker version -- another directory at that name is left
 # where it is and refused -- and the marker is written after the rename. The marker, the zip and its checksum are
 # replaced as directory entries (`tools/lib/safe_write.py`): an entry at one of those names that is a link or has a
-# second hard link is refused, not written into. When a step fails after staging, the staging directory is removed and
-# the findings name what failed. The release workflow signs `SHA256SUMS` and the zip; this command does not sign a
-# file. Standard library only.
+# second hard link is refused, not written into; the marker and the output-root checks are `tools/lib/staged_build.py`'s.
+# When a step fails after staging, the staging directory is removed and the findings name what failed. The release
+# workflow signs `SHA256SUMS` and the zip, and `sign-set` signs `SHA256SUMS` with the publisher's own key; this command
+# does not sign a file. Standard library only.
 from __future__ import annotations
 
 import argparse
@@ -36,7 +37,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
-from typing import Dict, Optional
+from typing import Dict
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
@@ -48,35 +49,9 @@ from license_policy import resolve_license_allowlist  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_file_under, read_text_under  # noqa: E402
 from safe_write import create_file, replace_file  # noqa: E402
 from set_validation import PROFILE_RELEASE, PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
+from staged_build import INVENTORY_EXCLUDED, check_output_root, is_managed_build_directory, marker_path, marker_text  # noqa: E402
 
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
-INVENTORY_EXCLUDED = ("SHA256SUMS", "SHA256SUMS.asc")
-BUILD_MARKER_VERSION = "ai-tools-assets-build 1"
-
-
-def marker_text(set_name: str) -> str:
-    return f"{BUILD_MARKER_VERSION}\nset={set_name}\n"
-
-
-def marker_path(build_root: pathlib.Path, set_name: str) -> pathlib.Path:
-    return build_root / f".{set_name}.ai-tools-assets-build"
-
-
-def check_output_root(root: pathlib.Path, given: pathlib.Path, what: str, collector: FindingCollector) -> Optional[pathlib.Path]:
-    """The absolute output root, or None after a refusal: it does not overlap sets/ and no existing component is a link."""
-    output_root = pathlib.Path(os.path.abspath(root / given))
-    sets_root = root / "sets"
-    if output_root == sets_root or sets_root in output_root.parents or output_root in sets_root.parents:
-        collector.refuse(str(given), "repo.layout", f"the {what} root {output_root} is sets/, holds it or lies inside it; the source tree is not a destination")
-        return None
-    for component in [output_root, *output_root.parents]:
-        try:
-            if os.path.islink(component):
-                collector.refuse(str(given), "repo.layout", f"`{component}` on the {what} root's path is a symbolic link")
-                return None
-        except OSError:
-            continue
-    return output_root
 
 
 def stage_license_texts(root_fd: int, set_name: str, staged: Dict[str, bytes], identifiers, collector: FindingCollector) -> None:
@@ -122,18 +97,6 @@ def build_zip_archive(staged: Dict[str, bytes]) -> bytes:
             info.external_attr = 0o644 << 16
             archive.writestr(info, data)
     return buffer.getvalue()
-
-
-def is_managed_build_directory(build_root: pathlib.Path, set_name: str) -> bool:
-    """True when `build/<set>` is a real directory beside a marker naming this set under this marker version."""
-    destination = build_root / set_name
-    marker = marker_path(build_root, set_name)
-    if destination.is_symlink() or not destination.is_dir() or marker.is_symlink() or not marker.is_file():
-        return False
-    try:
-        return marker.read_text(encoding="utf-8") == marker_text(set_name)
-    except (OSError, UnicodeDecodeError):
-        return False
 
 
 def main() -> int:
