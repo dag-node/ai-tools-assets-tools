@@ -20,14 +20,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import asset_format as fmt
+from openpgp import MISMATCH, UNABLE, VERIFIED
 from safe_read import RefusedRead, open_directory, read_file
 from staged_build import INVENTORY_EXCLUDED, INVENTORY_FILE
 
 INVENTORY_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64})  (?P<path>[^\n]+)$")
-ATTESTATIONS_DIRECTORY = "attestations"
-VERIFIED = 0
-MISMATCH = 1
-UNABLE = 2
 
 
 @dataclass
@@ -174,7 +171,7 @@ class _InventoryWalk:
                     continue
                 if not is_directory:
                     self.record_file(relative, entry.name, dir_fd)
-                elif prefix or entry.name != ATTESTATIONS_DIRECTORY:
+                elif prefix or entry.name != fmt.ATTESTATIONS_DIRECTORY:
                     child_fd = self.open_subdirectory(relative, entry.name, dir_fd, depth + 1)
                     if child_fd is not None:
                         subdirectories.append((relative, child_fd, depth + 1))
