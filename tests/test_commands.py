@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import importlib.machinery
+import importlib.util
 import os
 import pathlib
 import shutil
@@ -43,6 +45,15 @@ def compose_publisher(root: pathlib.Path) -> None:
     (root / "publisher.conf").write_text(PUBLISHER_CONF.format(publisher="acme"), encoding="utf-8")
     status, _, stderr = run("sync-manifests", "--root", str(root))
     assert status == 0, stderr
+
+
+def load_command(command: str):
+    """Import `tools/<command>`, a script without the .py suffix, as a module."""
+    name = command.replace("-", "_") + "_command"
+    loader = importlib.machinery.SourceFileLoader(name, str(TOOLS / command))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(module)
+    return module
 
 
 def gpg_runs() -> bool:
@@ -975,6 +986,46 @@ class VerifySet(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("`ABC` is not a fingerprint of 40 hex digits", stderr)
 
+    def test_the_key_is_read_through_the_reader(self):
+        armored = self.scratch / "armored.asc"
+        armored.write_text(self.key.read_text(encoding="utf-8"), encoding="utf-8")
+        self.key.unlink()
+        self.key.symlink_to(armored)
+        status, _, stderr = run("verify-set", str(self.stage), "--key", str(self.key))
+        self.assertEqual(status, 2)
+        self.assertIn("key.asc: release.signature: is a symbolic link", stderr)
+        status, _, stderr = run("verify-set", str(self.stage), "--key", str(armored))
+        self.assertEqual(status, 2)
+        self.assertIn("SHA256SUMS.asc: release.signature: is absent", stderr, "control: the link's target is read and the run goes on")
+        self.key.unlink()
+        self.key.write_bytes(b"-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n" + b"A" * 64 * 1024)
+        status, _, stderr = run("verify-set", str(self.stage), "--key", str(self.key))
+        self.assertEqual(status, 2)
+        self.assertIn("key.asc: release.signature: is 65574 bytes, over the 65536 a public key takes", stderr)
+
+    def test_the_source_comparison_reads_set_conf_under_the_set_and_holds_it_to_the_inventory(self):
+        verify_set = load_command("verify-set")
+        import signed_inventory
+
+        def compare(listed):
+            verification = verify_set.Verification(self.stage)
+            directory_fd = os.open(self.stage, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                verify_set.compare_with_source(verification, directory_fd, self.root, listed)
+            finally:
+                os.close(directory_fd)
+            return verification.status, [(finding.path, finding.message) for finding in verification.collector.findings]
+
+        listed = signed_inventory.parse_inventory((self.stage / "SHA256SUMS").read_text(encoding="utf-8"), signed_inventory.InventoryCheck())
+        self.assertEqual(compare(listed), (0, []), "control: the source the stage was built from")
+        self.assertEqual(compare(dict(listed, **{"set.conf": "0" * 64})), (2, [("set.conf", "changed since the inventory was verified")]))
+        set_conf = self.stage / "set.conf"
+        set_conf.rename(self.scratch / "set.conf")
+        set_conf.symlink_to(self.scratch / "set.conf")
+        status, findings = compare(listed)
+        self.assertEqual((status, findings[0][0]), (2, "set.conf"))
+        self.assertIn("is a symbolic link", findings[0][1])
+
 
 @unittest.skipUnless(gpg_runs(), "signing needs gpg and gpgv")
 class VerifySetWithAKey(SignedSetCase):
@@ -994,6 +1045,10 @@ class VerifySetWithAKey(SignedSetCase):
     def test_a_signed_set_verifies_and_prints_its_primary(self):
         status, stdout, stderr = self.verify("--signer", self.primary)
         self.assertEqual((status, stdout, stderr), (0, f"{self.primary}\n", ""))
+        binary = self.scratch / "acme.gpg"
+        binary.write_bytes(subprocess.run(["gpg", "--export", self.primary], capture_output=True, check=True, env=self.environment).stdout)
+        status, stdout, stderr = self.verify("--signer", self.primary, key=binary)
+        self.assertEqual((status, stdout, stderr), (0, f"{self.primary}\n", ""), "the binary key")
 
     def test_another_key_and_another_signer_leave_it_unable(self):
         other = self.scratch / "other"
