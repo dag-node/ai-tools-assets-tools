@@ -7,10 +7,12 @@ synthetic history each have a case here; the set-level rules are tests/test_fixt
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import pathlib
 import shutil
@@ -291,14 +293,16 @@ class PublisherRepository(unittest.TestCase):
         self.assertEqual(status, 0, stderr)
         marker = self.root / "build" / ".acme.ai-tools-assets-build"
         archive = self.root / "dist" / "ai-tools-assets-sets-acme-0.1.0.zip"
-        for generated, content in ((marker, marker.read_bytes()), (archive, b"OUTSIDE ZIP")):
+        # A hard-linked marker reads as no marker, so the build refuses before it would replace the marker.
+        for generated, content, refusal in ((marker, marker.read_bytes(), "repo.layout: exists and is not a build of `acme`"),
+                                            (archive, b"OUTSIDE ZIP", "file.hardlink: ")):
             other_name = self.root.parent / ("outside-" + generated.name)
             other_name.write_bytes(content)
             generated.unlink()
             os.link(other_name, generated)
             status, _, stderr = run("build-set", "acme", cwd=self.root)
             self.assertEqual(status, 1, generated.name)
-            self.assertIn("file.hardlink: ", stderr)
+            self.assertIn(refusal, stderr)
             self.assertEqual(other_name.read_bytes(), content, "the inode behind the other name is unchanged")
             generated.unlink()
             other_name.unlink()
@@ -395,6 +399,91 @@ class PublisherRepository(unittest.TestCase):
         self.assertTrue((destination / "SHA256SUMS").is_file())
         self.assertEqual(marker.read_text(encoding="utf-8"), "ai-tools-assets-build 1\nset=acme\n")
         self.assertEqual(sorted(path.name for path in (self.root / "build").iterdir()), [".acme.ai-tools-assets-build", "acme"])
+
+    def build_in_process(self, build_set):
+        """build-set's `build` run in this process, so a test can patch a step of it; its status."""
+        import safe_read
+        from findings import FindingCollector
+        root_fd = safe_read.open_root(self.root)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                return build_set.build(root_fd, self.root, "acme", pathlib.Path("build"), pathlib.Path("dist"), FindingCollector("build-set"))
+        finally:
+            os.close(root_fd)
+
+    def test_a_build_root_swapped_for_a_link_after_the_marker_check_removes_and_writes_nothing_outside(self):
+        self.assertEqual(run("build-set", "acme", cwd=self.root)[0], 0)
+        outside = self.root.parent / "outside"
+        (outside / "acme").mkdir(parents=True)
+        (outside / "acme" / "keep").write_text("theirs\n", encoding="utf-8")
+        build_set = load_command("build-set")
+        checked = build_set.is_managed_build_directory
+
+        def swap(*arguments):
+            answer = checked(*arguments)
+            (self.root / "build").rename(self.root / "build-checked")
+            (self.root / "build").symlink_to(outside, target_is_directory=True)
+            return answer
+
+        with mock.patch.object(build_set, "is_managed_build_directory", side_effect=swap):
+            status = self.build_in_process(build_set)
+        self.assertEqual((outside / "acme" / "keep").read_text(encoding="utf-8"), "theirs\n", "the outside tree is not removed")
+        self.assertEqual(sorted(path.relative_to(outside).as_posix() for path in outside.rglob("*")), ["acme", "acme/keep"],
+                         "and nothing is written into it")
+        self.assertEqual(status, 0)
+        self.assertTrue((self.root / "build-checked" / "acme" / "SHA256SUMS").is_file(), "the build replaces the stage the check read")
+        (self.root / "build").unlink()
+        (self.root / "build-checked").rename(self.root / "build")
+        (self.root / "build" / "acme" / "stale.txt").write_text("from the previous build\n", encoding="utf-8")
+        self.assertEqual(self.build_in_process(build_set), 0, "control: the same build root, unchanged")
+        self.assertFalse((self.root / "build" / "acme" / "stale.txt").exists(), "the managed stage is replaced")
+
+    def managed(self):
+        import staged_build
+        build_fd = os.open(self.root / "build", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            return staged_build.is_managed_build_directory(build_fd, "acme")
+        finally:
+            os.close(build_fd)
+
+    def test_a_marker_the_reader_refuses_reads_as_no_marker(self):
+        self.assertEqual(run("build-set", "acme", cwd=self.root)[0], 0)
+        marker = self.root / "build" / ".acme.ai-tools-assets-build"
+        text = marker.read_bytes()
+        self.assertTrue(self.managed(), "control: the regular marker build-set wrote")
+        other = self.root.parent / "outside-marker"
+        other.write_bytes(text)
+        marker.unlink()
+        marker.symlink_to(other)
+        self.assertFalse(self.managed(), "a link")
+        status, _, stderr = run("sign-set", "acme", "--root", str(self.root))
+        self.assertEqual(status, 1)
+        self.assertIn("repo.layout: is not a set build-set staged", stderr)
+        marker.unlink()
+        os.link(other, marker)
+        self.assertFalse(self.managed(), "a second hard link")
+        marker.unlink()
+        marker.write_bytes(text + b"set=other\n")
+        self.assertFalse(self.managed(), "a marker longer than its own text")
+        marker.write_bytes(text)
+        self.assertTrue(self.managed(), "control: the marker restored")
+        stage = self.root / "build" / "acme"
+        stage.rename(self.root / "build" / "acme-real")
+        stage.symlink_to(self.root / "build" / "acme-real", target_is_directory=True)
+        self.assertFalse(self.managed(), "a link at the stage")
+
+    def test_a_marker_that_is_a_fifo_reads_as_no_marker_without_waiting_on_a_writer(self):
+        self.assertEqual(run("build-set", "acme", cwd=self.root)[0], 0)
+        marker = self.root / "build" / ".acme.ai-tools-assets-build"
+        marker.unlink()
+        try:
+            os.mkfifo(marker)
+        except OSError as error:
+            self.skipTest(f"this host denies creating a FIFO: {error.strerror}")
+        completed = subprocess.run([sys.executable, str(TOOLS / "sign-set"), "acme", "--root", str(self.root)],
+                                   capture_output=True, text=True, timeout=30)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("repo.layout: is not a set build-set staged", completed.stderr)
 
     def test_link_set_places_records_and_removes(self):
         target = self.root.parent / "home" / ".claude" / "skills"
@@ -1018,7 +1107,11 @@ class SignSet(unittest.TestCase):
         from findings import FindingCollector
         collector = FindingCollector("sign-set")
         build_root = self.root / "build"
-        inventory = load_command("sign-set").validate_stage(self.root, build_root, build_root / "acme", collector)
+        build_fd = os.open(build_root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            inventory = load_command("sign-set").validate_stage(self.root, build_root, build_fd, build_root / "acme", collector)
+        finally:
+            os.close(build_fd)
         self.assertEqual(collector.findings, [])
         self.assertEqual(inventory, (build_root / "acme" / "SHA256SUMS").read_bytes())
 

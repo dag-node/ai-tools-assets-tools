@@ -9,7 +9,8 @@
 #
 # The set is the one `build-set` staged under `<build>/<set>/`: the marker `build-set` writes beside it must name the
 # set, and the staged set must validate under the release profile, so a stale or edited stage is refused before `gpg`
-# runs. The bytes of `SHA256SUMS` that validation read are the bytes signed, on gpg's standard input with the
+# runs. The build root is opened once, and the marker, the stage and the signature's write are reached under that
+# descriptor (`tools/lib/staged_build.py`). The bytes of `SHA256SUMS` that validation read are the bytes signed, on gpg's standard input with the
 # publisher's own `gpg` and `gpg-agent` (`--detach-sign --armor`, `--local-user` where `--key` is given), the agent
 # asking for the passphrase; no secret key leaves the keyring and no other copy is made. The signature is then verified
 # with `gpgv` against the signer's exported public key in a scratch directory the command removes, the signing key and
@@ -38,7 +39,7 @@ from openpgp import FINGERPRINT_PATTERN, check_signature, scratch_directory  # n
 from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
 from safe_write import replace_file  # noqa: E402
 from set_validation import PROFILE_RELEASE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
-from staged_build import INVENTORY_FILE, SIGNATURE_FILE, check_output_root, is_managed_build_directory, marker_path  # noqa: E402
+from staged_build import INVENTORY_FILE, SIGNATURE_FILE, check_output_root, is_managed_build_directory, marker_name, open_output_root  # noqa: E402
 
 
 def main() -> int:
@@ -60,16 +61,30 @@ def main() -> int:
     build_root = check_output_root(root, args.build, "build", collector)
     if build_root is None:
         return collector.report()
-    stage = build_root / args.set
-    if not is_managed_build_directory(build_root, args.set):
-        collector.refuse(str(stage), "repo.layout", f"is not a set build-set staged (no `{marker_path(build_root, args.set).name}` beside it names it); run build-set {args.set} first")
+    try:
+        build_fd = open_output_root(build_root)
+    except OSError:
+        build_fd = None
+    try:
+        return sign_stage(args.set, key, root, build_root, build_fd, collector)
+    finally:
+        if build_fd is not None:
+            os.close(build_fd)
+
+
+def sign_stage(set_name: str, key: Optional[str], root: pathlib.Path, build_root: pathlib.Path, build_fd: Optional[int],
+               collector: FindingCollector) -> int:
+    """Sign the stage `<set>` under the build root `build_fd`, every read and the write at that descriptor."""
+    stage = build_root / set_name
+    if build_fd is None or not is_managed_build_directory(build_fd, set_name):
+        collector.refuse(str(stage), "repo.layout", f"is not a set build-set staged (no `{marker_name(set_name)}` beside it names it); run build-set {set_name} first")
         return collector.report()
-    inventory = validate_stage(root, build_root, stage, collector)
+    inventory = validate_stage(root, build_root, build_fd, stage, collector)
     if inventory is None:
         return collector.report()
     for program in ("gpg", "gpgv"):
         if shutil.which(program) is None:
-            collector.refuse(args.set, "release.signature", f"`{program}` is not on PATH; sign-set signs and verifies with the publisher's own GnuPG")
+            collector.refuse(set_name, "release.signature", f"`{program}` is not on PATH; sign-set signs and verifies with the publisher's own GnuPG")
     if collector.has_refusals():
         return collector.report()
     signature = sign(inventory, key, collector)
@@ -83,7 +98,7 @@ def main() -> int:
         collector.refuse(f"{stage}/{SIGNATURE_FILE}", "release.signature", f"the signature is by {signing_key} (primary {primary}), not by `--key {key}`; nothing was written")
         return collector.report()
     try:
-        replace_file(build_root, pathlib.PurePath(args.set, SIGNATURE_FILE), signature)
+        replace_file(build_fd, pathlib.PurePath(set_name, SIGNATURE_FILE), signature)
     except RefusedRead as refusal:
         collector.refuse(f"{stage}/{SIGNATURE_FILE}", refusal.rule_id, refusal.message)
         return collector.report()
@@ -93,9 +108,10 @@ def main() -> int:
     return collector.report()
 
 
-def validate_stage(root: pathlib.Path, build_root: pathlib.Path, stage: pathlib.Path, collector: FindingCollector) -> Optional[bytes]:
-    """The bytes of `SHA256SUMS` the validator read, where the staged set validates under the release profile, its
-    inventory equal to its tree; None after a finding."""
+def validate_stage(root: pathlib.Path, build_root: pathlib.Path, build_fd: int, stage: pathlib.Path,
+                   collector: FindingCollector) -> Optional[bytes]:
+    """The bytes of `SHA256SUMS` the validator read, where the staged set `stage` validates under the release profile,
+    opened under the build root `build_fd`, its inventory equal to its tree; None after a finding."""
     publisher = None
     try:
         root_fd = open_root(root)
@@ -113,7 +129,7 @@ def validate_stage(root: pathlib.Path, build_root: pathlib.Path, stage: pathlib.
     options = ValidationOptions(publisher=publisher.get("publisher") or None, profile=PROFILE_RELEASE,
                                 reserved_words=read_reserved_words(TOOLS / "reserved-words.txt"), license_allowlist=allowlist,
                                 license_text_directories=[], display_root=build_root, publisher_conf=publisher)
-    summary = validate_set_directory(stage, options, collector)
+    summary = validate_set_directory(stage, options, collector, parent_fd=build_fd)
     if collector.has_refusals():
         print(f"sign-set: the staged set does not validate under the release profile; run build-set {stage.name} again; nothing was signed", file=sys.stderr)
         return None
