@@ -814,7 +814,7 @@ class NewPublisher(unittest.TestCase):
 
 
 class CheckPublisherRelease(unittest.TestCase):
-    """check-publisher --repository over the template as generated and as initialized."""
+    """`check-publisher --repository` over the template as generated and as initialized."""
 
     def setUp(self):
         self.scratch = pathlib.Path(tempfile.mkdtemp())
