@@ -25,6 +25,7 @@ from findings import FindingCollector
 from frontmatter import FrontmatterDocument, FrontmatterValue, Scalar, split_frontmatter
 from key_value_config import KeyValueDocument, parse_key_value_text
 from license_policy import check_declared_license, check_license_texts
+from license_texts import check_license_text, read_declared_digests
 from manifests import build_claude_plugin_document, build_portable_plugin_document, render_json
 from markdown_links import iter_relative_link_targets
 from portable_name import propose_portable_name
@@ -123,6 +124,8 @@ class _SetValidator:
         self.directories: Set[Path] = set()
         self.bytes_read = 0
         self.dynamic_injection_allowed, _ = dynamic_injection_setting(options.publisher_conf)
+        # A list publisher.conf gets wrong is reported where the repository is validated; here it reads as none.
+        self.declared_digests, _ = read_declared_digests(options.publisher_conf)
 
     # ── reporting ──────────────────────────────────────────────────────────────────────────────────────────────
     def display(self, relative_path: Path) -> str:
@@ -269,7 +272,7 @@ class _SetValidator:
     def check_reserved_directory_name(self, relative_path: Path, name: str) -> None:
         if name == ".agents":
             self.refuse(relative_path, "file.reserved-name", "`.agents` is reserved and not used inside a set")
-        elif name in (fmt.CLAUDE_PLUGIN_DIRECTORY, fmt.METADATA_DIRECTORY, "variants") and relative_path.parent != Path("."):
+        elif name in fmt.RESERVED_DIRECTORY_NAMES and relative_path.parent != Path("."):
             if name == fmt.CLAUDE_PLUGIN_DIRECTORY and relative_path.parts[0] == "skills":
                 self.refuse(relative_path, "skill.plugin-manifest", "a `.claude-plugin` directory inside a skill makes it a plugin of its own")
             else:
@@ -299,6 +302,8 @@ class _SetValidator:
             record.data = read.data
             record.digest = read.digest
             record.is_text = self.keep_text(relative_path, record)
+        if relative_path.parent.name == fmt.LICENSE_TEXTS_DIRECTORY and relative_path.suffix == ".txt":
+            check_license_text(self.collector, self.display(relative_path), relative_path.stem, record.digest, self.declared_digests)
         self.check_reserved_file_placement(relative_path)
         self.files_by_path[relative_path] = record
         self.summary.files.append(record)

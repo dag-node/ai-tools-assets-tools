@@ -17,66 +17,44 @@
 #
 # The output directories are the operator's and are checked before a write: `<set>` is a name before a path is composed
 # from it; the build and the dist root may not be `sets/`, hold it or lie inside it, so the source tree is never the
-# destination; and every existing component of each is `lstat`ed, a symbolic link refusing. The set is staged into a
-# fresh `mkdtemp` directory beside the destination and renamed over `build/<set>` only when the sibling marker
-# `build/.<set>.ai-tools-assets-build` names this set and this marker version -- another directory at that name is left
-# where it is and refused -- and the marker is written after the rename. The marker, the zip and its checksum are
-# replaced as directory entries (`tools/lib/safe_write.py`): an entry at one of those names that is a link or has a
-# second hard link is refused, not written into. When a step fails after staging, the staging directory is removed and
-# the findings name what failed. The release workflow signs `SHA256SUMS` and the zip; this command does not sign a
-# file. Standard library only.
+# destination; and every existing component of each is `lstat`ed, a symbolic link refusing. Each root is then opened
+# once, and every step after works under its descriptor. The set is staged into a fresh directory beside
+# the destination and renamed over `build/<set>` only when the sibling marker `build/.<set>.ai-tools-assets-build` names
+# this set and this marker version -- another directory at that name is left where it is and refused -- the previous
+# build removed by descriptor first, and the marker is written after the rename. The marker, the zip and its checksum
+# are replaced as directory entries (`tools/lib/safe_write.py`): an entry at one of those names that is a link or has
+# a second hard link is refused, not written into; the marker and the output-root checks are
+# `tools/lib/staged_build.py`'s. When a step fails after staging, the staging directory is removed and the findings name
+# what failed. The release
+# workflow signs `SHA256SUMS` and the zip, and `sign-set` signs `SHA256SUMS` with the publisher's own key; this command
+# does not sign a file. Standard library only.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import io
 import os
 import pathlib
-import shutil
+import secrets
 import sys
-import tempfile
 import zipfile
-from typing import Dict, Optional
+from typing import Dict
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import resolve_license_allowlist  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_file_under, read_text_under  # noqa: E402
-from safe_write import create_file, replace_file  # noqa: E402
+from safe_write import create_file, remove_tree, replace_file  # noqa: E402
 from set_validation import PROFILE_RELEASE, PROFILE_SOURCE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
+from staged_build import (INVENTORY_EXCLUDED, check_output_root, is_managed_build_directory, marker_name, marker_path,  # noqa: E402
+                          marker_text, open_output_root)
 
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
-INVENTORY_EXCLUDED = ("SHA256SUMS", "SHA256SUMS.asc")
-BUILD_MARKER_VERSION = "ai-tools-assets-build 1"
-
-
-def marker_text(set_name: str) -> str:
-    return f"{BUILD_MARKER_VERSION}\nset={set_name}\n"
-
-
-def marker_path(build_root: pathlib.Path, set_name: str) -> pathlib.Path:
-    return build_root / f".{set_name}.ai-tools-assets-build"
-
-
-def check_output_root(root: pathlib.Path, given: pathlib.Path, what: str, collector: FindingCollector) -> Optional[pathlib.Path]:
-    """The absolute output root, or None after a refusal: it does not overlap sets/ and no existing component is a link."""
-    output_root = pathlib.Path(os.path.abspath(root / given))
-    sets_root = root / "sets"
-    if output_root == sets_root or sets_root in output_root.parents or output_root in sets_root.parents:
-        collector.refuse(str(given), "repo.layout", f"the {what} root {output_root} is sets/, holds it or lies inside it; the source tree is not a destination")
-        return None
-    for component in [output_root, *output_root.parents]:
-        try:
-            if os.path.islink(component):
-                collector.refuse(str(given), "repo.layout", f"`{component}` on the {what} root's path is a symbolic link")
-                return None
-        except OSError:
-            continue
-    return output_root
 
 
 def stage_license_texts(root_fd: int, set_name: str, staged: Dict[str, bytes], identifiers, collector: FindingCollector) -> None:
@@ -124,16 +102,62 @@ def build_zip_archive(staged: Dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def is_managed_build_directory(build_root: pathlib.Path, set_name: str) -> bool:
-    """True when `build/<set>` is a real directory beside a marker naming this set under this marker version."""
-    destination = build_root / set_name
-    marker = marker_path(build_root, set_name)
-    if destination.is_symlink() or not destination.is_dir() or marker.is_symlink() or not marker.is_file():
-        return False
+def open_built_root(output_root: pathlib.Path, collector: FindingCollector):
+    """The descriptor of an output root `check_output_root` passed, created where it is missing, or None after
+    a refusal."""
     try:
-        return marker.read_text(encoding="utf-8") == marker_text(set_name)
-    except (OSError, UnicodeDecodeError):
+        output_root.mkdir(parents=True, exist_ok=True)
+        return open_output_root(output_root)
+    except OSError as error:
+        collector.refuse(str(output_root), "repo.layout", f"cannot be opened as an output root: {error.strerror}")
+        return None
+
+
+def place_stage(build_fd: int, build_root: pathlib.Path, set_name: str, staged: Dict[str, bytes],
+                release_options: ValidationOptions, collector: FindingCollector) -> bool:
+    """Write `staged` into a fresh directory under the build root `build_fd`, validate it under the release profile and
+    rename it over `<set>` where no directory stands there or a build of this set does; True once it stands there
+    with its marker, False after a finding. The staging directory is removed whatever the outcome."""
+    staging = f".{set_name}.{secrets.token_hex(8)}"
+    os.mkdir(staging, 0o700, dir_fd=build_fd)
+    try:
+        for relative, data in staged.items():
+            create_file(build_fd, pathlib.PurePath(staging, set_name, relative), data)
+        staging_fd = open_directory(staging, build_fd)
+        try:
+            validate_set_directory(build_root / staging / set_name, dataclasses.replace(release_options, display_root=build_root / staging),
+                                   collector, parent_fd=staging_fd)
+            if collector.has_refusals():
+                print("build-set: the staged set does not validate under the release profile; no zip was written", file=sys.stderr)
+                return False
+            if entry_exists(set_name, build_fd):
+                if not is_managed_build_directory(build_fd, set_name):
+                    collector.refuse(str(build_root / set_name), "repo.layout",
+                                     f"exists and is not a build of `{set_name}` by this command (no `{marker_name(set_name)}` beside it names it); remove it or name another --build")
+                    return False
+                remove_tree(build_fd, pathlib.PurePath(set_name))
+            os.rename(set_name, set_name, src_dir_fd=staging_fd, dst_dir_fd=build_fd)
+        finally:
+            os.close(staging_fd)
+        try:
+            replace_file(build_fd, pathlib.PurePath(marker_name(set_name)), marker_text(set_name).encode("utf-8"))
+        except RefusedRead as refusal:
+            collector.refuse(str(marker_path(build_root, set_name)), refusal.rule_id, refusal.message)
+            return False
+        return True
+    finally:
+        try:
+            remove_tree(build_fd, pathlib.PurePath(staging))
+        except (OSError, RefusedRead):
+            pass
+
+
+def entry_exists(name: str, dir_fd: int) -> bool:
+    try:
+        os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
         return False
+    return True
 
 
 def main() -> int:
@@ -154,7 +178,7 @@ def main() -> int:
         collector.refuse(str(root), "repo.layout", "is not a directory; a set is built inside its publisher repository")
         return collector.report()
     try:
-        return build(root_fd, root, args.set, args.build, args.dist, collector)
+        return refuse_unconverted_errors(collector, "repo.layout", root, lambda: build(root_fd, root, args.set, args.build, args.dist, collector))
     finally:
         os.close(root_fd)
 
@@ -195,45 +219,33 @@ def build(root_fd: int, root: pathlib.Path, set_name: str, build_given: pathlib.
         return collector.report()
     staged["SHA256SUMS"] = render_checksum_inventory(staged).encode("utf-8")
 
-    build_root.mkdir(parents=True, exist_ok=True)
-    staging_root = pathlib.Path(tempfile.mkdtemp(prefix=f".{set_name}.", dir=build_root))
+    release_options = ValidationOptions(publisher=options.publisher, profile=PROFILE_RELEASE, reserved_words=options.reserved_words,
+                                        license_allowlist=allowlist, license_text_directories=[], display_root=build_root,
+                                        publisher_conf=publisher)
+    build_fd = open_built_root(build_root, collector)
+    if build_fd is None:
+        return collector.report()
     try:
-        staging = staging_root / set_name
-        for relative, data in staged.items():
-            create_file(staging_root, pathlib.PurePath(set_name, relative), data)
-        release_options = ValidationOptions(publisher=options.publisher, profile=PROFILE_RELEASE, reserved_words=options.reserved_words,
-                                            license_allowlist=allowlist, license_text_directories=[], display_root=staging_root,
-                                            publisher_conf=publisher)
-        validate_set_directory(staging, release_options, collector)
-        if collector.has_refusals():
-            print("build-set: the staged set does not validate under the release profile; no zip was written", file=sys.stderr)
-            return collector.report()
-        destination = build_root / set_name
-        if destination.exists() or destination.is_symlink():
-            if not is_managed_build_directory(build_root, set_name):
-                collector.refuse(str(destination), "repo.layout",
-                                 f"exists and is not a build of `{set_name}` by this command (no `{marker_path(build_root, set_name).name}` beside it names it); remove it or name another --build")
-                return collector.report()
-            shutil.rmtree(destination)
-        os.rename(staging, destination)
-        try:
-            replace_file(build_root, pathlib.PurePath(marker_path(build_root, set_name).name), marker_text(set_name).encode("utf-8"))
-        except RefusedRead as refusal:
-            collector.refuse(str(marker_path(build_root, set_name)), refusal.rule_id, refusal.message)
+        if not place_stage(build_fd, build_root, set_name, staged, release_options, collector):
             return collector.report()
     finally:
-        shutil.rmtree(staging_root, ignore_errors=True)
+        os.close(build_fd)
+    destination = build_root / set_name
 
-    dist_root.mkdir(parents=True, exist_ok=True)
     archive_path = dist_root / f"{fmt.PACKAGE_NAME_PREFIX}{set_name}-{summary.set_conf.get('version')}.zip"
     checksum_path = archive_path.with_suffix(".zip.sha256")
     archive = build_zip_archive(staged)
+    dist_fd = open_built_root(dist_root, collector)
+    if dist_fd is None:
+        return collector.report()
     try:
-        replace_file(dist_root, pathlib.PurePath(archive_path.name), archive)
-        replace_file(dist_root, pathlib.PurePath(checksum_path.name), f"{hashlib.sha256(archive).hexdigest()}  {archive_path.name}\n".encode("utf-8"))
+        replace_file(dist_fd, pathlib.PurePath(archive_path.name), archive)
+        replace_file(dist_fd, pathlib.PurePath(checksum_path.name), f"{hashlib.sha256(archive).hexdigest()}  {archive_path.name}\n".encode("utf-8"))
     except RefusedRead as refusal:
         collector.refuse(str(archive_path), refusal.rule_id, refusal.message)
         return collector.report()
+    finally:
+        os.close(dist_fd)
     for written in (destination, destination / "SHA256SUMS", archive_path, checksum_path):
         print(f"build-set: wrote {written.relative_to(root) if root in written.parents else written}")
     return collector.report()

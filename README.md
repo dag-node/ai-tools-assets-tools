@@ -16,7 +16,7 @@ a set follows, the validator that applies it, the scaffolding and build
 commands, and the GitHub workflows that run them.
 
 **Status.** Format 1, the commands, the fixtures, the workflows and the signed
-set release are released as `v1.5.2`, which `v1` names. A publisher calls
+set release are released as `v1.6.0`, which `v1` names. A publisher calls
 the workflows at `v1` or at a commit, and runs the tools from the RPM
 `ai-tools-assets-tools` or from a checkout. A host holds that RPM
 at an installed version with dnf's `versionlock` plugin.
@@ -25,12 +25,12 @@ at an installed version with dnf's `versionlock` plugin.
 
 ```text
 format/         FORMAT.md: format 1, the kind table and the rule ids
-tools/          validate, new-set, new-asset, sync-manifests, build-set,
-                link-set, check-licenses, check-signoff, check-publisher,
-                reserved-words.txt, lib/
+tools/          validate, new-publisher, new-set, new-asset, sync-manifests,
+                build-set, sign-set, verify-set, link-set, check-licenses,
+                check-signoff, check-publisher, reserved-words.txt, lib/
 fixtures/       conformance fixtures: sets that pass, and sets that fail
                 one named rule each
-formatters/     reflow prose at the column a checker names (AGPL-3.0-only)
+formatters/     reflow prose at the column a checker names
 packaging/      the release steps, the nFPM template of a set's RPM and the
                 RPM signer
 tests/          tests for tools/, packaging/ and the fixtures
@@ -72,9 +72,6 @@ and take that checker as `--checker <path>`:
 bash ../ai-tools-assets-tools/formatters/format.sh --checker <prose-check.py>
 ```
 
-They are `AGPL-3.0-only`, unlike the rest of this repository, and no set
-or template copies them.
-
 ## Community
 
 - [Contributing](CONTRIBUTING.md), including the sign-off every commit carries
@@ -83,8 +80,6 @@ or template copies them.
 
 ## License
 
-MIT, see [LICENSE](LICENSE), for every file that does not state another;
-`formatters/**` and `packaging/sign-rpms.sh` are `AGPL-3.0-only`, stated
-in each file's header.
-[REUSE.toml](REUSE.toml) covers files that do not state one, and `LICENSES/`
-holds every text.
+MIT, see [LICENSE](LICENSE).
+[REUSE.toml](REUSE.toml) covers files that do not state it in a header,
+and `LICENSES/` holds the text.

@@ -28,6 +28,8 @@ PORTABLE_FILE_NAME_PATTERN = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 PORTABLE_FILE_NAME_MAX_BYTES = 255
 CLAUDE_RESERVED_WORDS: Tuple[str, ...] = ("anthropic", "claude")
 UPSTREAM_PUBLISHER = "dag-node"
+# A contact at this domain is UPSTREAM_PUBLISHER's; another publisher's release does not keep one.
+UPSTREAM_DOMAIN = "dagnode.com"
 UPSTREAM_SET = "core"
 BASE_SET = "ai-tools"
 UPSTREAM_ASSET_PREFIX = "ai-tools-"
@@ -37,6 +39,13 @@ PLUGIN_NAME_PREFIX = "ai-tools-assets-"
 # alone.
 PACKAGE_NAME_PREFIX = "ai-tools-assets-sets-"
 MARKETPLACE_NAME_SUFFIX = "-ai-tools-assets"
+# The publisher template (dag-node/ai-tools-assets-template): the placeholder its identity keys hold until
+# `new-publisher` writes a copy's own, and the `REUSE.toml` package name a copy that skipped the command still carries.
+TEMPLATE_PLACEHOLDER = "change-me"
+# The placeholder bounded by a character outside a-z and 0-9, so `change-me-example` and `change-me@example.com` hold it
+# and the owner `exchange-media` does not.
+TEMPLATE_PLACEHOLDER_TOKEN = re.compile(rf"(?<![a-z0-9]){re.escape(TEMPLATE_PLACEHOLDER)}(?![a-z0-9])")
+TEMPLATE_PACKAGE_NAME = "ai-tools-assets-template"
 # OpenAI's plugin submission limits `<plugin>:<skill>` to 64 characters; the tools warn, since it binds one route.
 COMPOSED_NAME_MAX_LENGTH = 64
 SEMVER_PATTERN = re.compile(
@@ -102,7 +111,10 @@ SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SET_ROOT_ENTRY_TYPES)
 # a capability token joins KNOWN_CAPABILITIES, the entry moves to the allowed table, and a set carrying content at it
 # declares the token, so a reader without the token refuses the set whole. Until then no capability allows content
 # at one. `llms.txt` is the agent-discovery index (llmstxt.org) the tools may generate beside the manifests.
-SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt"})
+# `attestations/` is where a third party's signed statement about a set, bound to it by digest, will sit beside the
+# publisher's signature; until its design exists every validator and every base refuses a set carrying one.
+ATTESTATIONS_DIRECTORY = "attestations"
+SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt", ATTESTATIONS_DIRECTORY})
 RELEASE_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({"SHA256SUMS", "SHA256SUMS.asc"})
 CLAUDE_PLUGIN_DIRECTORY = ".claude-plugin"
 CLAUDE_PLUGIN_MANIFEST = "plugin.json"
@@ -134,7 +146,7 @@ RESERVED_FILE_NAMES: FrozenSet[str] = frozenset({
     "SHA256SUMS", "SHA256SUMS.asc", "UPSTREAM.conf", "asset.conf", "plugin.json", "README.md",
 })
 RESERVED_FILE_NAME_PATTERNS: Tuple[re.Pattern, ...] = (re.compile(r"^SHA512SUMS.*$"), re.compile(r"^.*\.oms\.sig$"))
-RESERVED_DIRECTORY_NAMES: FrozenSet[str] = frozenset({".claude-plugin", ".agents", "metadata", "variants"})
+RESERVED_DIRECTORY_NAMES: FrozenSet[str] = frozenset({".claude-plugin", ".agents", "metadata", "variants", ATTESTATIONS_DIRECTORY})
 
 # ── Frontmatter ────────────────────────────────────────────────────────────────────────────────────────────────────
 DESCRIPTION_MAX_LENGTH = 1024
@@ -184,7 +196,10 @@ SET_CONF_REQUIRED: Tuple[str, ...] = ("format", "name", "version", "summary", "l
 SET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_base", "requires_integrations", "requires_capabilities")
 SET_CONF_LIST_KEYS: Tuple[str, ...] = ("maintainers", "requires_integrations", "requires_capabilities")
 PUBLISHER_CONF_REQUIRED: Tuple[str, ...] = ("publisher", "contact", "maintainers", "source", "description")
-PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses", "allow_dynamic_injection")
+# `license_text_digests` lists `<identifier>:<sha256>` pairs, the digests a licence text is compared with beside
+# the tools'.
+LICENSE_TEXT_DIGESTS_KEY = "license_text_digests"
+PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses", "allow_dynamic_injection", LICENSE_TEXT_DIGESTS_KEY)
 UPSTREAM_CONF_REQUIRED: Tuple[str, ...] = ("source", "path", "revision", "license")
 UPSTREAM_CONF_OPTIONAL: Tuple[str, ...] = ("signature", "signer")
 UPSTREAM_CONF_FILE = "UPSTREAM.conf"
@@ -270,7 +285,7 @@ RULES: Dict[str, str] = {
     "set.conf.requires-integrations": "every required integration is written as `integration-<name>`",
     "set.conf.unknown-key": "a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key",
     "set.entry.unknown": "a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone",
-    "set.entry.reserved": "`jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; a set holding one, empty or not, is refused",
+    "set.entry.reserved": "`jobs/`, `libs/`, `variants/`, `attestations/` and `llms.txt` are reserved; a set holding one, empty or not, is refused",
     "set.manifest.plugin": "`plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read",
     "set.manifest.components": "a plugin manifest does not declare a component key",
     "set.manifest.claude-plugin": "`.claude-plugin` holds `plugin.json` alone",
@@ -318,10 +333,19 @@ RULES: Dict[str, str] = {
     "license.expression": "a licence is a well-formed SPDX expression without `WITH`, `LicenseRef` or a `+` suffix",
     "license.allowlist": "every identifier of a licence is on the list in force",
     "license.text": "`LICENSES/<identifier>.txt` exists for every identifier a set declares",
+    "license.text-modified": "a licence text whose digest the tools or `publisher.conf` `license_text_digests` hold is the text SPDX publishes, its holder line the placeholder; one that differs warns",
+    "license.text-unpinned": "a licence text whose digest neither the tools nor `publisher.conf` `license_text_digests` hold warns, since it is not compared",
     "license.file": "every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation",
     "release.inventory": "`SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each",
+    "release.signature": "`SHA256SUMS.asc` is a detached OpenPGP signature of `SHA256SUMS` by the key a host's binding names",
 }
-RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix"})
+RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix",
+                                          "license.text-modified", "license.text-unpinned"})
+
+
+def holds_template_placeholder(value: str) -> bool:
+    """True when `value` carries the template's placeholder as a whole token, in any letter case."""
+    return TEMPLATE_PLACEHOLDER_TOKEN.search(value.lower()) is not None
 
 
 def is_valid_name(name: str) -> bool:

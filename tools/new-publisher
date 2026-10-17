@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/new-publisher -- turns an unmodified copy of the publisher template into the publisher's own repository.
+#
+# ```bash
+# python3 tools/new-publisher --repository <owner>/<repo> --contact <email> [--root DIR] [--source URL]
+#     [--maintainers <email>,...] [--holder TEXT] [--license ID] [--set NAME] [--summary TEXT] [--code-owner @handle]...
+#     [--job-id ID]
+#     [--tag-signer FINGERPRINT]... [--tag-signer-key-url URL] [--artifact-signer FINGERPRINT] [--description TEXT]
+# ```
+#
+# The copy is dag-node/ai-tools-assets-template as generated: `publisher.conf` holds the placeholder `change-me`,
+# `sets/` holds `change-me-example` alone, and each file the command rewrites carries the template line it replaces
+# (the workflows' job key `ai-tools-assets-template:` and `MIT-0` header, the release signer inputs, the licence's
+# holder line, `REUSE.toml`'s package lines and annotation), matched as text. Every input and every one of those files
+# is checked before the first write, so a refusal leaves the tree as it was; a second run on an initialized copy is
+# refused rather than repeated. The publisher is the owner lower-cased and `source` its GitHub URL, the two values
+# `check-publisher --repository` holds a release to; `--source` names another URL for a publisher whose hosts take its
+# sets from elsewhere, which the pull-request checks accept and the release check does not. The command writes
+# `publisher.conf`, `REUSE.toml`, `CODEOWNERS` and `README.md` whole, rewrites the template lines of the two workflows,
+# writes `LICENSE` from the licence text with its holder line filled, takes `LICENSES/<ID>.txt` from the copy or from
+# `LICENSES/` beside this directory (removing the template's `MIT-0` text when the licence differs, since `reuse lint`
+# refuses an unused text), removes the example set, and runs `new-set` and `new-asset` for the publisher's first set.
+# Every write and removal goes through `tools/lib/safe_write.py`, so neither follows a link. It does not run git: it
+# prints the steps that follow as `next` lines. Standard library only.
+from __future__ import annotations
+
+import argparse
+import datetime
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+TOOLS = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS / "lib"))
+
+import asset_format as fmt  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
+from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
+from safe_write import create_file, remove_file, remove_tree, replace_file  # noqa: E402
+from set_validation import read_reserved_words  # noqa: E402
+
+TEMPLATE_SET = "change-me-example"
+TEMPLATE_LICENSE = "MIT-0"
+TEMPLATE_JOB_LINE = "  ai-tools-assets-template:"
+# `reuse lint` reads the tag in these literals as an expression of this file, so they sit in ignored blocks.
+# REUSE-IgnoreStart
+HEADER_LINE = "# SPDX-License-Identifier: {license}"
+TEMPLATE_HEADER_LINE = HEADER_LINE.format(license=TEMPLATE_LICENSE)
+TEMPLATE_SIGNER_LINES = {
+    "tag-signer-fingerprints": "      tag-signer-fingerprints: change-me",
+    "tag-signer-key-url": "      tag-signer-key-url: https://github.com/change-me.gpg",
+    "artifact-signer-fingerprint": "      artifact-signer-fingerprint: change-me",
+}
+TEMPLATE_REUSE_LINES = (
+    f'SPDX-PackageName = "{fmt.TEMPLATE_PACKAGE_NAME}"',
+    f'SPDX-PackageDownloadLocation = "https://github.com/dag-node/{fmt.TEMPLATE_PACKAGE_NAME}"',
+    f'SPDX-License-Identifier = "{TEMPLATE_LICENSE}"',
+)
+# REUSE-IgnoreEnd
+VALIDATE_WORKFLOW = pathlib.PurePath(".github", "workflows", "validate.yml")
+RELEASE_WORKFLOW = pathlib.PurePath(".github", "workflows", "release.yml")
+CODEOWNERS = pathlib.PurePath(".github", "CODEOWNERS")
+
+OWNER_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
+REPOSITORY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+# A KEY=value list item and a manifest address: no whitespace, comma, quote, bracket or comment character.
+EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
+CODE_OWNER_PATTERN = re.compile(r"^@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
+JOB_ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+FINGERPRINT_PATTERN = re.compile(r"^[0-9A-Fa-f]{40}$")
+KEY_URL_PATTERN = re.compile(r"^https://[^\s\"'<>]+$")
+# A `KEY=value` value and a TOML basic string: a scheme, then no whitespace, quote, bracket, comma or `#`.
+SOURCE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>#\[\],\\]+$")
+LICENSE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]*$")
+# The holder line of a published licence text that carries one, read within the text's opening lines: two angle-bracket
+# placeholders (`Copyright (c) <year> <copyright holders>` in MIT, `Copyright <YEAR> <COPYRIGHT HOLDER>` in MIT-0,
+# `Copyright (c) <year> <owner>. ` in BSD-3-Clause) or 0BSD's `Copyright (C) YEAR by AUTHOR EMAIL`. The prefix and
+# a closing period are kept, and trailing blanks dropped.
+HOLDER_LINE = re.compile(r"^(?P<prefix>Copyright (?:\([cC]\) )?)(?:<[^>]+> <[^>]+>|YEAR by AUTHOR EMAIL)(?P<suffix>\.?)\s*$")
+HOLDER_LINE_SEARCH_LINES = 5
+TEMPLATE_HOLDER_LINE = re.compile(r"^Copyright \S.*$")
+SKILL_DESCRIPTION = "Prints a greeting. Replace it with your first skill."
+
+PUBLISHER_CONF_TEMPLATE = """# Who publishes this repository's sets. Read as KEY=value data, not
+# executed. Every name and contact a set ships with is copied from
+# here, and tools/check-publisher refuses a copy that differs; a
+# release refuses a publisher that is not the repository's GitHub
+# owner.
+
+# The GitHub owner of the repository; the marketplace is
+# <publisher>-ai-tools-assets, and set names start with it.
+publisher={publisher}
+
+# The address in the plugin manifests' author and the marketplace's
+# owner.
+contact={contact}
+
+# Every set.conf's maintainers.
+maintainers=[{maintainers}]
+
+# The repository the sets are published from: every set.conf's
+# source, and the manifests' homepage and repository.
+source={source}
+
+# The marketplace's description, one line. Quoted in the character the
+# value does not carry, since KEY=value has no escape.
+description={quoted_description}
+"""
+
+# REUSE-IgnoreStart
+REUSE_TEMPLATE = """# REUSE (https://reuse.software) licensing and copyright fallbacks.
+#
+# A file's own header, or an adjacent .license file, takes priority; the
+# annotation supplies the copyright and the licence a file does not state
+# for itself. Within this file only the last matching annotation applies,
+# so an annotation for one set goes after this one.
+
+version = 1
+SPDX-PackageName = "{repo}"
+SPDX-PackageDownloadLocation = "{source}"
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "{year} {holder}"
+SPDX-License-Identifier = "{license}"
+"""
+# REUSE-IgnoreEnd
+
+CODEOWNERS_TEMPLATE = """# Review requests route to the publisher's maintainers; a code owner
+# without write access to this repository is ignored.
+* {owners}
+
+# The publisher identity, its keys, the marketplace catalogue and CI
+# decide what a release publishes under the publisher's name.
+/publisher.conf {owners}
+/keys/ {owners}
+/.claude-plugin/ {owners}
+/.github/ {owners}
+"""
+
+README_TEMPLATE = """# {repo}
+
+{description}
+
+Released as versioned sets by `{publisher}`. In Claude Code, add the
+marketplace and install the first set:
+
+```text
+/plugin marketplace add {owner}/{repo}
+/plugin install ai-tools-assets-{set}@{publisher}-ai-tools-assets
+```
+
+## Adding a set or an asset
+
+```bash
+python3 ../ai-tools-assets-tools/tools/new-set {publisher}-<topic> --summary "<one line>"
+python3 ../ai-tools-assets-tools/tools/new-asset {set} skill {set}-<name> --description "<what it does, then when to use it>"
+python3 ../ai-tools-assets-tools/tools/validate
+```
+
+The [tools](https://github.com/dag-node/ai-tools-assets-tools/blob/main/tools/README.md)
+describe each command, and a set release follows the
+[release page](https://github.com/dag-node/ai-tools-assets/blob/main/docs/development/release.md)
+of dag-node/ai-tools-assets.
+
+## Licence
+
+{license}, see [LICENSE](LICENSE). [REUSE.toml](REUSE.toml) covers a file
+that does not state its licence in a header.
+"""
+
+
+def quoted(value: str) -> str:
+    """`value` in the quote character it does not carry, as new-set writes a summary; the caller checked one exists."""
+    quote = "\"" if "\"" not in value else "'"
+    return quote + value + quote
+
+
+def one_line(value: str) -> bool:
+    return bool(value.strip()) and not fmt.CONTROL_CHARACTERS.search(value) and "\n" not in value and "\r" not in value
+
+
+class Initialization:
+    """The checked inputs and the template's files, read before the first write."""
+
+    def __init__(self, args: argparse.Namespace, root: pathlib.Path, collector: FindingCollector) -> None:
+        self.args = args
+        self.root = root
+        self.collector = collector
+        self.texts = {}
+        self.year = datetime.datetime.now(datetime.timezone.utc).year
+
+    def refuse(self, path, rule_id: str, message: str) -> None:
+        self.collector.refuse(str(path), rule_id, message)
+
+    # ── the inputs ─────────────────────────────────────────────────────────────────────────────────────────────────
+    def check_inputs(self) -> None:
+        args = self.args
+        owner, _, repo = args.repository.partition("/")
+        if not OWNER_PATTERN.match(owner) or not REPOSITORY_NAME_PATTERN.match(repo) or repo in (".", ".."):
+            self.refuse("publisher.conf", "repo.publisher-conf", f"`--repository {args.repository}` is not <owner>/<repo> as GitHub names them")
+            return
+        self.owner, self.repo = owner, repo
+        self.publisher = owner.lower()
+        self.source = args.source or f"https://github.com/{owner}/{repo}"
+        if not SOURCE_PATTERN.match(self.source):
+            self.refuse("publisher.conf", "repo.publisher-conf", f"the source `{self.source}` is not a URL (a scheme, then no whitespace, quote, bracket, comma or `#`)")
+        self.maintainers = [item.strip() for item in (args.maintainers or args.contact).split(",")]
+        self.holder = args.holder if args.holder is not None else owner
+        self.set_name = args.set or self.publisher
+        self.job_id = args.job_id or repo
+        self.code_owners = args.code_owner or [f"@{owner}"]
+        self.check_publisher_name()
+        for address in (args.contact, *self.maintainers):
+            if not EMAIL_PATTERN.match(address):
+                self.refuse("publisher.conf", "repo.publisher-conf", f"`{address}` is not one address (`name@domain`)")
+            elif fmt.UPSTREAM_DOMAIN in address.lower() and self.publisher != fmt.UPSTREAM_PUBLISHER:
+                self.refuse("publisher.conf", "repo.publisher-conf", f"`{address}` is {fmt.UPSTREAM_PUBLISHER}'s address at {fmt.UPSTREAM_DOMAIN}; set the publisher's own")
+        if not one_line(args.description) or ("\"" in args.description and "'" in args.description):
+            self.refuse("publisher.conf", "repo.publisher-conf", "the description is one non-empty line carrying one quote character at most")
+        if not one_line(self.holder) or "\"" in self.holder or "\\" in self.holder:
+            self.refuse("REUSE.toml", "repo.publisher-conf", "the holder is one non-empty line without `\"` or `\\`")
+        for handle in self.code_owners:
+            if not CODE_OWNER_PATTERN.match(handle):
+                self.refuse(CODEOWNERS, "repo.layout", f"`{handle}` is not a GitHub handle: a user is `@user`, a team `@org/team`")
+        if not JOB_ID_PATTERN.match(self.job_id):
+            self.refuse(VALIDATE_WORKFLOW, "repo.layout", f"the job id `{self.job_id}` is not one GitHub accepts (a letter or `_`, then letters, digits, `-` and `_`); name one with --job-id")
+        for fingerprint in [*(args.tag_signer or []), *([args.artifact_signer] if args.artifact_signer else [])]:
+            if not FINGERPRINT_PATTERN.match(fingerprint):
+                self.refuse(RELEASE_WORKFLOW, "repo.layout", f"`{fingerprint}` is not a fingerprint of 40 hex digits")
+        self.key_url = args.tag_signer_key_url or (f"https://github.com/{owner}.gpg" if args.tag_signer else None)
+        if self.key_url is not None and not KEY_URL_PATTERN.match(self.key_url):
+            self.refuse(RELEASE_WORKFLOW, "repo.layout", f"`{self.key_url}` is not an https URL")
+        if not one_line(args.summary) or ("\"" in args.summary and "'" in args.summary):
+            self.refuse(f"sets/{self.set_name}/set.conf", "set.conf.syntax", "the summary is one non-empty line carrying one quote character at most")
+        self.check_set_name()
+        self.check_placeholder()
+
+    def check_publisher_name(self) -> None:
+        name = self.publisher
+        if not fmt.is_valid_name(name):
+            self.refuse("publisher.conf", "name.grammar", f"the publisher `{name}` (the owner lower-cased) is not 1-64 characters of a-z, 0-9 and single hyphens, starting and ending with a letter or digit")
+            return
+        for word in fmt.CLAUDE_RESERVED_WORDS:
+            if word in name:
+                self.refuse("publisher.conf", "name.reserved-claude", f"the publisher `{name}` contains `{word}`, which Claude reserves")
+        first_word = name.split("-", 1)[0]
+        if first_word in read_reserved_words(TOOLS / "reserved-words.txt"):
+            self.refuse("publisher.conf", "name.reserved-word", f"the publisher `{name}` starts with `{first_word}`, a word in reserved-words.txt")
+
+    def check_set_name(self) -> None:
+        name, path = self.set_name, f"sets/{self.set_name}"
+        if not fmt.is_valid_name(name) or not fmt.is_valid_name(f"{name}-hello"):
+            self.refuse(path, "name.grammar", f"`{name}` is not a name of a-z, 0-9 and single hyphens that leaves room for the skill `{name}-hello`")
+            return
+        for word in fmt.CLAUDE_RESERVED_WORDS:
+            if word in name:
+                self.refuse(path, "name.reserved-claude", f"`{name}` contains `{word}`, which Claude reserves")
+        if name == fmt.UPSTREAM_SET and self.publisher != fmt.UPSTREAM_PUBLISHER:
+            self.refuse(path, "name.publisher", f"`core` belongs to {fmt.UPSTREAM_PUBLISHER}; name the set `{self.publisher}` or `{self.publisher}-<topic>`")
+        elif name != fmt.UPSTREAM_SET and name != self.publisher and not name.startswith(self.publisher + "-"):
+            self.refuse(path, "name.publisher", f"`{name}` does not start with its publisher; name it `{self.publisher}` or `{self.publisher}-<topic>`")
+
+    def check_placeholder(self) -> None:
+        args = self.args
+        values = {"publisher": self.publisher, "contact": args.contact, "maintainers": ",".join(self.maintainers),
+                  "source": self.source, "description": args.description, "holder": self.holder, "set": self.set_name,
+                  "summary": args.summary, "job id": self.job_id, "code owner": " ".join(self.code_owners),
+                  "tag signer": " ".join(args.tag_signer or []), "tag signer key URL": self.key_url or "",
+                  "artifact signer": args.artifact_signer or ""}
+        for what, value in values.items():
+            if fmt.holds_template_placeholder(value):
+                self.refuse("publisher.conf", "repo.publisher-conf", f"the {what} `{value}` holds the template placeholder `{fmt.TEMPLATE_PLACEHOLDER}`; give the publisher's own")
+
+    # ── the template's files ───────────────────────────────────────────────────────────────────────────────────────
+    def read_template(self, root_fd: int) -> None:
+        conf_text = self.read(root_fd, pathlib.PurePath("publisher.conf"))
+        if conf_text is not None:
+            publisher = parse_key_value_text(conf_text).get("publisher")
+            if publisher != fmt.TEMPLATE_PLACEHOLDER:
+                self.refuse("publisher.conf", "repo.publisher-conf", f"names the publisher `{publisher}`: the copy is initialized already, and the command runs once, on an unmodified copy")
+        self.check_sets(root_fd)
+        self.require_lines(root_fd, VALIDATE_WORKFLOW, (TEMPLATE_HEADER_LINE, TEMPLATE_JOB_LINE))
+        self.require_lines(root_fd, RELEASE_WORKFLOW, (TEMPLATE_HEADER_LINE, TEMPLATE_JOB_LINE, *TEMPLATE_SIGNER_LINES.values()))
+        self.require_lines(root_fd, pathlib.PurePath("REUSE.toml"), TEMPLATE_REUSE_LINES)
+        reuse = self.texts.get(pathlib.PurePath("REUSE.toml"))
+        if reuse is not None and not any(line.startswith('SPDX-FileCopyrightText = "') for line in reuse.splitlines()):
+            self.refuse("REUSE.toml", "repo.layout", "lacks the template's `SPDX-FileCopyrightText` annotation line; the tree is not an unmodified copy of the template")
+        license_text = self.read(root_fd, pathlib.PurePath("LICENSE"))
+        if license_text is not None and not any(TEMPLATE_HOLDER_LINE.match(line) for line in license_text.splitlines()[:HOLDER_LINE_SEARCH_LINES]):
+            self.refuse("LICENSE", "repo.layout", "lacks the template's holder line; the tree is not an unmodified copy of the template")
+        for path in (CODEOWNERS, pathlib.PurePath("README.md"), pathlib.PurePath(fmt.LICENSE_TEXTS_DIRECTORY, f"{TEMPLATE_LICENSE}.txt")):
+            self.read(root_fd, path)
+
+    def read(self, root_fd: int, path: pathlib.PurePath):
+        """The text of a file the command rewrites or removes, or None after a finding."""
+        try:
+            text = read_text_under(root_fd, path, fmt.FILE_MAX_BYTES)
+        except FileNotFoundError:
+            self.refuse(path, "repo.layout", "is absent; the tree is not an unmodified copy of the template")
+            return None
+        except RefusedRead as refusal:
+            self.refuse(path, refusal.rule_id, f"{refusal.message}; the command does not write through it")
+            return None
+        except OSError as error:
+            self.refuse(path, "repo.layout", f"cannot be read: {error.strerror}")
+            return None
+        self.texts[path] = text
+        return text
+
+    def require_lines(self, root_fd: int, path: pathlib.PurePath, lines) -> None:
+        text = self.read(root_fd, path)
+        if text is None:
+            return
+        present = set(text.splitlines())
+        for line in lines:
+            if line not in present:
+                self.refuse(path, "repo.layout", f"lacks the template line `{line.strip()}` the command rewrites; the tree is not an unmodified copy of the template")
+
+    def check_sets(self, root_fd: int) -> None:
+        try:
+            sets_fd = open_directory("sets", root_fd)
+        except FileNotFoundError:
+            self.refuse("sets", "repo.layout", "is absent; the tree is not an unmodified copy of the template")
+            return
+        except NotADirectoryError:
+            self.refuse("sets", "repo.layout", "is not a directory")
+            return
+        except RefusedRead as refusal:
+            self.refuse("sets", refusal.rule_id, refusal.message)
+            return
+        except OSError as error:
+            self.refuse("sets", "repo.layout", f"cannot be read: {error.strerror}")
+            return
+        try:
+            with os.scandir(sets_fd) as listing:
+                entries = {entry.name: os.lstat(entry.name, dir_fd=sets_fd) for entry in listing}
+        except OSError as error:
+            self.refuse("sets", "repo.layout", f"cannot be read: {error.strerror}")
+            return
+        finally:
+            os.close(sets_fd)
+        if set(entries) != {TEMPLATE_SET}:
+            self.refuse("sets", "repo.layout", f"holds {', '.join(f'`{name}`' for name in sorted(entries)) or 'nothing'}; an unmodified copy holds `{TEMPLATE_SET}` alone, the set the command removes")
+        elif stat.S_ISLNK(entries[TEMPLATE_SET].st_mode):
+            self.refuse(f"sets/{TEMPLATE_SET}", "file.symlink", "is a symbolic link; the command removes the template's set directory and nothing a link names")
+        elif not stat.S_ISDIR(entries[TEMPLATE_SET].st_mode):
+            self.refuse(f"sets/{TEMPLATE_SET}", "repo.layout", "is not a directory")
+
+    def find_license_text(self) -> None:
+        """The licence text the copy takes, read from the copy's `LICENSES/` or this directory's; None after
+        a finding."""
+        identifier = self.args.license
+        self.license_text, self.license_from_tools = None, False
+        if not LICENSE_ID_PATTERN.match(identifier):
+            self.refuse("LICENSE", "license.expression", f"`{identifier}` is not an SPDX identifier")
+            return
+        if identifier not in fmt.DEFAULT_LICENSE_ALLOWLIST:
+            self.refuse("LICENSE", "license.allowlist", f"`{identifier}` is outside the default list a new copy is held to: {', '.join(fmt.DEFAULT_LICENSE_ALLOWLIST)}")
+            return
+        relative = pathlib.PurePath(fmt.LICENSE_TEXTS_DIRECTORY, f"{identifier}.txt")
+        root_fd = open_root(self.root)
+        try:
+            self.license_text = read_text_under(root_fd, relative, fmt.FILE_MAX_BYTES)
+            return
+        except FileNotFoundError:
+            pass
+        except RefusedRead as refusal:
+            self.refuse(relative, refusal.rule_id, refusal.message)
+            return
+        except OSError as error:
+            self.refuse(relative, "license.text", f"cannot be read: {error.strerror}")
+            return
+        finally:
+            os.close(root_fd)
+        tools_fd = open_root(TOOLS.parent)
+        try:
+            self.license_text = read_text_under(tools_fd, relative, fmt.FILE_MAX_BYTES)
+            self.license_from_tools = True
+        except (FileNotFoundError, RefusedRead):
+            self.refuse(relative, "license.text", f"no `{identifier}.txt` in the copy's LICENSES/ or the tools'; place it with `reuse download {identifier}` and run the command again")
+        except OSError as error:
+            self.refuse(f"{TOOLS.parent / relative}", "license.text", f"cannot be read: {error.strerror}")
+        finally:
+            os.close(tools_fd)
+
+    # ── the writes ─────────────────────────────────────────────────────────────────────────────────────────────────
+    def license_file(self) -> str:
+        lines = self.license_text.split("\n")
+        for index, line in enumerate(lines[:HOLDER_LINE_SEARCH_LINES]):
+            match = HOLDER_LINE.match(line)
+            if match:
+                lines[index] = f"{match.group('prefix')}{self.year} {self.holder}{match.group('suffix')}"
+                break
+        return "\n".join(lines)
+
+    def workflow(self, path: pathlib.PurePath, signers: bool) -> str:
+        replacements = {TEMPLATE_HEADER_LINE: HEADER_LINE.format(license=self.args.license), TEMPLATE_JOB_LINE: f"  {self.job_id}:"}
+        if signers:
+            if self.args.tag_signer:
+                replacements[TEMPLATE_SIGNER_LINES["tag-signer-fingerprints"]] = f"      tag-signer-fingerprints: {' '.join(self.args.tag_signer)}"
+            if self.key_url:
+                replacements[TEMPLATE_SIGNER_LINES["tag-signer-key-url"]] = f"      tag-signer-key-url: {self.key_url}"
+            if self.args.artifact_signer:
+                replacements[TEMPLATE_SIGNER_LINES["artifact-signer-fingerprint"]] = f"      artifact-signer-fingerprint: {self.args.artifact_signer}"
+        text = self.texts[path]
+        return "".join(replacements.get(line.rstrip("\n"), line.rstrip("\n")) + ("\n" if line.endswith("\n") else "")
+                       for line in text.splitlines(keepends=True))
+
+    def write(self) -> int:
+        args = self.args
+        values = {"publisher": self.publisher, "contact": args.contact, "maintainers": ", ".join(self.maintainers),
+                  "source": self.source, "quoted_description": quoted(args.description), "description": args.description,
+                  "repo": self.repo, "owner": self.owner, "year": self.year, "holder": self.holder, "license": args.license,
+                  "owners": " ".join(self.code_owners), "set": self.set_name}
+        files = []
+        if self.license_from_tools:
+            files.append((create_file, pathlib.PurePath(fmt.LICENSE_TEXTS_DIRECTORY, f"{args.license}.txt"), self.license_text))
+        files += [
+            (replace_file, pathlib.PurePath("LICENSE"), self.license_file()),
+            (replace_file, pathlib.PurePath("REUSE.toml"), REUSE_TEMPLATE.format(**values)),
+            (replace_file, pathlib.PurePath("publisher.conf"), PUBLISHER_CONF_TEMPLATE.format(**values)),
+            (replace_file, CODEOWNERS, CODEOWNERS_TEMPLATE.format(**values)),
+            (replace_file, VALIDATE_WORKFLOW, self.workflow(VALIDATE_WORKFLOW, signers=False)),
+            (replace_file, RELEASE_WORKFLOW, self.workflow(RELEASE_WORKFLOW, signers=True)),
+            (replace_file, pathlib.PurePath("README.md"), README_TEMPLATE.format(**values)),
+        ]
+        template_text = pathlib.PurePath(fmt.LICENSE_TEXTS_DIRECTORY, f"{TEMPLATE_LICENSE}.txt")
+        path = None
+        try:
+            for writer, path, text in files:
+                writer(self.root, path, text.encode("utf-8"))
+                print(f"new-publisher: wrote {path}")
+            if args.license != TEMPLATE_LICENSE:
+                path = template_text
+                remove_file(self.root, template_text)
+                print(f"new-publisher: removed {template_text}")
+            path = pathlib.PurePath("sets", TEMPLATE_SET)
+            remove_tree(self.root, path)
+            print(f"new-publisher: removed {path}/")
+        except RefusedRead as refusal:
+            self.refuse(path, refusal.rule_id, f"{refusal.message}; the files before it are written, the rest are not")
+            return self.collector.report()
+        except OSError as error:
+            self.refuse(path, "repo.layout", f"cannot be written or removed: {error.strerror}; the files before it are written, the rest are not")
+            return self.collector.report()
+        for command in (["new-set", self.set_name, "--license", args.license, "--summary", args.summary],
+                        ["new-asset", self.set_name, "skill", f"{self.set_name}-hello", "--description", SKILL_DESCRIPTION]):
+            status = subprocess.run([sys.executable, str(TOOLS / command[0]), *command[1:], "--root", str(self.root)]).returncode
+            if status != 0:
+                return status
+        self.print_next()
+        return 0
+
+    def print_next(self) -> None:
+        print(f'new-publisher: next, commit the initialization: git add -A && git commit -s -m "chore: initialize the publisher {self.publisher}"')
+        print("new-publisher: next, push it and create develop from it: git push && git switch -c develop && git push -u origin develop")
+        left = [name for name, given in (("tag-signer-fingerprints", self.args.tag_signer), ("tag-signer-key-url", self.key_url),
+                                         ("artifact-signer-fingerprint", self.args.artifact_signer)) if not given]
+        if left:
+            print(f"new-publisher: next, set the release signers in {RELEASE_WORKFLOW} ({', '.join(left)} left at {fmt.TEMPLATE_PLACEHOLDER})")
+        print(f"new-publisher: next, apply the settings a copy does not inherit, listed in https://github.com/dag-node/{fmt.TEMPLATE_PACKAGE_NAME}#readme")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Turn an unmodified copy of the publisher template into the publisher's repository.")
+    parser.add_argument("--repository", required=True, metavar="OWNER/REPO", help="the GitHub repository the copy is")
+    parser.add_argument("--contact", required=True, metavar="EMAIL", help="publisher.conf contact")
+    parser.add_argument("--source", metavar="URL", help="publisher.conf source (default: https://github.com/<owner>/<repo>)")
+    parser.add_argument("--maintainers", metavar="EMAIL,...", help="publisher.conf maintainers (default: the contact)")
+    parser.add_argument("--holder", help="the copyright holder in LICENSE and REUSE.toml (default: the owner)")
+    parser.add_argument("--license", default="MIT", metavar="ID", help="the copy's licence (default: MIT)")
+    parser.add_argument("--set", help="the first set's name (default: the publisher)")
+    parser.add_argument("--summary", default="One line on what the set holds", help="the first set's summary")
+    parser.add_argument("--code-owner", action="append", metavar="@HANDLE", help="a CODEOWNERS owner, repeatable (default: @<owner>)")
+    parser.add_argument("--job-id", help="the caller job id in both workflows (default: the repository name)")
+    parser.add_argument("--tag-signer", action="append", metavar="FINGERPRINT", help="release.yml tag-signer-fingerprints, repeatable")
+    parser.add_argument("--tag-signer-key-url", metavar="URL", help="release.yml tag-signer-key-url (default: https://github.com/<owner>.gpg with a tag signer)")
+    parser.add_argument("--artifact-signer", metavar="FINGERPRINT", help="release.yml artifact-signer-fingerprint")
+    parser.add_argument("--description", default="Skills and subagents for coding agents, released as versioned sets",
+                        help="publisher.conf description, one line")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the copy (default: the current directory)")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    collector = FindingCollector("new-publisher")
+    return refuse_unconverted_errors(collector, "repo.layout", root, lambda: initialize(args, root, collector))
+
+
+def initialize(args: argparse.Namespace, root: pathlib.Path, collector: FindingCollector) -> int:
+    try:
+        root_fd = open_root(root)
+    except OSError:
+        collector.refuse(str(root), "repo.layout", "is not a directory; run from the copy or pass --root")
+        return collector.report()
+    initialization = Initialization(args, root, collector)
+    try:
+        initialization.read_template(root_fd)
+    finally:
+        os.close(root_fd)
+    initialization.check_inputs()
+    if not collector.has_refusals():
+        initialization.find_license_text()
+    if collector.has_refusals():
+        return collector.report()
+    return initialization.write()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

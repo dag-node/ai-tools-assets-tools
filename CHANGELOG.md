@@ -7,6 +7,88 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-17
+
+### Added
+
+- **`new-publisher` initializes a copy of the publisher template.**
+  `python3 tools/new-publisher --repository <owner>/<repo> --contact <email>`
+  turns a repository generated from dag-node/ai-tools-assets-template into
+  the publisher's own: it writes `publisher.conf`, `LICENSE` (MIT by default,
+  `--license` for another licence on the default list), `REUSE.toml`,
+  `CODEOWNERS`, `README.md`, the workflows' job key and, where given, the
+  release signers, and replaces the example set with the publisher's first
+  set, so the copy passes every pull-request check and the release check. It
+  checks every input and file before the first write, refuses a second run,
+  and prints the git steps instead of running them. `--source <url>` names
+  where the sets come from for a publisher whose hosts do not take them from
+  GitHub.
+- **`sign-set` signs a staged set with the publisher's own key.**
+  `python3 tools/sign-set <set> [--key <fingerprint>]` signs the
+  `SHA256SUMS` of the set `build-set` staged through the publisher's `gpg`
+  and `gpg-agent`, verifies the signature with `gpgv`, writes
+  `SHA256SUMS.asc` and prints the primary fingerprint a host's binding names,
+  so a set can be signed and placed in a base host's local root without
+  GitHub or a release workflow. A stage edited after `build-set` is refused
+  before `gpg` runs.
+- **`verify-set` verifies a signed set without ai-tools-base.**
+  `python3 tools/verify-set <dir> --key <file> [--signer <fingerprint>]`
+  checks `SHA256SUMS.asc` with `gpgv` against the publisher's public key and
+  `SHA256SUMS` against the tree, as base does before it links a set, and exits
+  0 with the signer's primary printed, 1 on a mismatch, 2 when it could not
+  verify. `--source <tree>` builds the set from its repository and refuses
+  each path whose hash differs, so a reviewer can show that a signed set is
+  its public source.
+- **Each licence text is compared with the text SPDX publishes.**
+  `check-licenses` and `validate` hold every `LICENSES/<identifier>.txt`,
+  the repository's, a set's own and the copy `build-set` stages, to the SHA-256
+  of the text spdx/license-list-data publishes, for the widely used licences
+  and every licence that 25 or more Fedora packages carry, with every revision
+  published since list 3.20. A text that differs, a filled holder line
+  included, warns under `license.text-modified`; `reuse download <identifier>`
+  writes the published text, and the holder belongs in `REUSE.toml`
+  or `LICENSE`. A text the tools hold no digest of warns
+  under `license.text-unpinned`, and `publisher.conf`
+  `license_text_digests=[<identifier>:<sha256>]` names the digest to compare it
+  with.
+- **Each known licence carries a class.** The tools class a licence as
+  `public-domain`, `permissive`, `weak-copyleft`, `copyleft` or `limited-use`
+  (source-available, non-commercial or no-derivatives terms), and
+  `check-licenses` names the class of each licence in its summary line.
+  The allowlist still decides whether a licence is used; its default does not
+  hold a `limited-use` licence.
+
+### Changed
+
+- **`attestations/` is reserved at a set's root.** A set carrying it is
+  refused under `set.entry.reserved`, as `variants/` is, so the name stays
+  free for a third party's signed statement about a set, bound to it by
+  digest beside the publisher's signature. The format names that signature
+  under the new rule `release.signature`.
+- **A release refuses a copy of the template that was not initialized.**
+  `check-publisher --repository`, which every set release runs, refuses
+  a `publisher.conf` whose `publisher`, `contact`, `maintainers` or `source`
+  still holds the template placeholder `change-me` as a whole token, in any
+  case (an owner such as `exchange-media` passes), and a `REUSE.toml`
+  whose `SPDX-PackageName` is still `ai-tools-assets-template`, and names
+  `new-publisher` as the fix. A pull request runs neither check, so a copy
+  passes every pull request as generated. Before, a copy whose GitHub owner was
+  itself named `change-me` passed the release check.
+- **The tools are MIT throughout.** The formatters under `formatters/` and
+  `packaging/sign-rpms.sh` are under MIT, as the rest of the repository is,
+  and the tools RPM's licence tag is `MIT`. A publisher who copied
+  a formatter into its own repository may keep the copy under MIT. Before,
+  those files were `AGPL-3.0-only` and the tag was `MIT AND AGPL-3.0-only`.
+
+### Fixed
+
+- **`repin-tools` names the command that creates a missing `develop`.**
+  In a caller that has neither a `develop` branch nor an `origin/develop`,
+  the refusal names `git switch -c develop` and `git push -u origin develop`.
+  Before, it named `git switch develop`, which fails there. `--help` and the
+  release page state why a caller holds `develop`: it follows the branch
+  model of dag-node/ai-tools-assets.
+
 ## [1.5.2] - 2026-10-16
 
 ### Fixed

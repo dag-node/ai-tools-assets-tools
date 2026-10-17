@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 """Reflow the paragraphs of a Markdown page at a column, leaving every other block as written.
 
 ```bash

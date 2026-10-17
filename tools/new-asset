@@ -24,7 +24,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from safe_read import RefusedRead  # noqa: E402
 from safe_write import create_file  # noqa: E402
 
@@ -65,6 +65,10 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     collector = FindingCollector("new-asset")
+    return refuse_unconverted_errors(collector, "repo.layout", root, lambda: create_asset(args, root, collector))
+
+
+def create_asset(args: argparse.Namespace, root: pathlib.Path, collector: FindingCollector) -> int:
     set_directory = root / "sets" / args.set
     if not (set_directory / fmt.SET_CONF_FILE).is_file():
         collector.refuse(f"sets/{args.set}", "set.conf.missing", "no such set; create it with new-set")

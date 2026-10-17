@@ -94,11 +94,12 @@ is a patch, and a new command, option or workflow input is a minor.
    opened earlier, it runs CI on a tree without that commit and again when it
    lands. Its body lists the commits `main` lacks, oldest first,
    which `origin/main..origin/develop` is exactly, since `main` is a merge
-   of `develop`:
+   of `develop`. Each line opens with the commit's short hash, which GitHub
+   renders as a link to the commit:
 
    ```bash
    git fetch origin
-   gh pr create --repo dag-node/ai-tools-assets-tools --base main --head develop --title "Merge develop" --body "$(git log --reverse --format='- **%s**' origin/main..origin/develop)"
+   gh pr create --repo dag-node/ai-tools-assets-tools --base main --head develop --title "Merge develop" --body "$(git log --reverse --format='- %h **%s**' origin/main..origin/develop)"
    gh pr merge <number> --repo dag-node/ai-tools-assets-tools --merge --admin
    ```
 
@@ -307,7 +308,10 @@ request starts green.
 ### Re-pinning a caller to a release
 
 The same command, given a tag, re-pins a caller to a release of the tools.
-From the caller's root, with the tools checked out at `develop` beside it,
+A caller holds a `develop` branch because it follows the branch model of
+[dag-node/ai-tools-assets](https://github.com/dag-node/ai-tools-assets/blob/main/docs/development/release.md):
+pull requests into `develop`, releases on `main`. From the caller's root,
+on its `develop` and with the tools checked out at `develop` beside it,
 after the final's release run is green:
 
 ```bash

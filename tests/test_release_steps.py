@@ -22,6 +22,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -31,6 +32,10 @@ REPOSITORY = TESTS.parent
 RELEASE_STEPS = REPOSITORY / "packaging" / "release-steps.sh"
 SIGN_RPMS = REPOSITORY / "packaging" / "sign-rpms.sh"
 STUB = TESTS / "command_stub.py"
+sys.path.insert(0, str(TESTS))
+
+from gnupg_home import remove_tree  # noqa: E402
+
 BASH = shutil.which("bash")
 
 IMAGES = {
@@ -1066,6 +1071,19 @@ class RepinCase(ChangeCase):
 
 
 class RepinTools(RepinCase):
+    def test_a_caller_without_develop_is_told_to_create_it(self):
+        self.git(self.caller, "switch", "--quiet", "-c", "main-only")
+        self.git(self.caller, "branch", "--quiet", "-D", "develop")
+        status, _, stderr = self.repin("v1.6.0")
+        self.assertEqual(status, 1)
+        self.assertIn("the checkout is on main-only, not `develop`; run `git switch develop`", stderr,
+                      "origin/develop is there, so `git switch develop` creates the branch")
+        self.git(self.caller, "update-ref", "-d", "refs/remotes/origin/develop")
+        status, _, stderr = self.repin("v1.6.0")
+        self.assertEqual(status, 1)
+        self.assertIn("the checkout is on main-only and has no `develop` branch; create it with `git switch -c develop`"
+                      " and `git push -u origin develop`, then run again", stderr)
+
     def test_a_refresh_commit_is_pinned_with_its_pull_request(self):
         sha = self.push_refresh()
         self.answer("gh", ["api", f"repos/{TOOLS_SLUG}/commits/{sha}/pulls"], stdout="31\n")
@@ -1863,9 +1881,7 @@ class ArtifactSignerFromPublicExport(unittest.TestCase):
         self.other = self.generate("Other <other@example.org>")
 
     def tearDown(self):
-        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
-                       capture_output=True)
-        shutil.rmtree(self.root)
+        remove_tree(self.root, homes=(self.gnupg,))
 
     def gpg(self, *arguments: str) -> str:
         return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",
@@ -2159,10 +2175,7 @@ class RepinToolsToARelease(RepinCase):
         self.answer("curl", [], stdout=self.gpg("--armor", "--export", self.primary))
 
     def tearDown(self):
-        # The generated keyring's gpg-agent is stopped before its home is removed under it.
-        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
-                       capture_output=True)
-        super().tearDown()
+        remove_tree(self.root, homes=(self.gnupg,))
 
     def gpg(self, *arguments: str) -> str:
         return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",

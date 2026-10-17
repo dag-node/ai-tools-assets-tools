@@ -31,8 +31,12 @@ sets/<set>/
 ```
 
 A set directory holds these entries and no other. `jobs/`, `libs/`,
-`variants/` and `llms.txt` are reserved: the names are spoken for, and no
-capability of format 1 allows content at one. `llms.txt` is the
+`variants/`, `attestations/` and `llms.txt` are reserved: the names are
+spoken for, and no capability of format 1 allows content at one.
+`attestations/` is where a third party's signed statement about a set will
+sit, bound to the set by digest beside the publisher's signature, which it
+leaves as signed; until that design exists every validator and every base
+refuses a set carrying the directory. `llms.txt` is the
 agent-discovery index of [llmstxt.org](https://llmstxt.org/) -- an H1,
 a blockquote summary and H2 link lists, which an agent without a plugin
 loader reads from a root -- that the tools may generate beside the manifests;
@@ -59,7 +63,10 @@ The **release** profile is a set `tools/build-set` staged: the same tree plus
 where the set has none, and `SHA256SUMS` at the set root listing every file
 of the set other than `SHA256SUMS` and its signature, `SHA256SUMS.asc`.
 `SHA256SUMS` and its signature are not committed: the source profile refuses
-them.
+them. `SHA256SUMS.asc` is a detached OpenPGP signature of `SHA256SUMS` by the
+key a host's binding names, written by the release workflow or by
+`tools/sign-set` with the publisher's own key; `tools/verify-set` checks
+a staged or installed set against that key.
 
 ## Names
 
@@ -163,10 +170,12 @@ that differs.
 `publisher.conf` at the repository root carries `publisher`, `contact`,
 `maintainers`, `source` and `description` (the marketplace's), and optionally
 `licenses`, the SPDX allowlist that replaces the default,
-and `allow_dynamic_injection`, `yes` or `no`, which allows the load-time
-substitution of [Bodies and files](#bodies-and-files). An absent key reads
-as `no`; any other value is refused under `repo.publisher-conf` and also
-reads as `no`.
+`allow_dynamic_injection`, `yes` or `no`, which allows the load-time
+substitution of [Bodies and files](#bodies-and-files), and
+`license_text_digests`, the `<identifier>:<sha256>` pairs of
+[Licences](#licences). An absent `allow_dynamic_injection` reads as `no`;
+any other value is refused under `repo.publisher-conf` and also reads
+as `no`.
 
 ## Skills
 
@@ -339,6 +348,24 @@ of each identifier is `LICENSES/<identifier>.txt`, in the set
 or at the repository root -- one regular file, not a link -- and `build-set`
 copies it into the payload.
 
+A licence text is the text SPDX publishes, byte for byte,
+as `reuse download <identifier>` writes it: a holder line stays the placeholder
+the published text carries, and the holder is stated in `REUSE.toml`, `LICENSE`
+or a file's header. The tools hold the SHA-256 of the published text of each
+widely used licence and of every licence that 25 or more Fedora packages carry,
+with every revision SPDX has published since list 3.20, and warn for a text
+that matches none under `license.text-modified`. A text whose identifier
+the tools do not hold warns under `license.text-unpinned`; `publisher.conf`
+`license_text_digests=[<identifier>:<sha256>, ...]` names the digests that text
+is held to instead, the digest 64 lower-case hex digits. The tools also class
+each of those licences as `public-domain`, `permissive`, `weak-copyleft`,
+`copyleft` or `limited-use`, the last a licence that limits use by field,
+hosted service, commercial use or derivatives, and `check-licenses` names
+the class in its summary line. The allowlist decides whether a licence is used,
+and its default does not hold a `limited-use` licence; a class describes
+the licence's terms, and the tools do not decide whether two licences may be
+combined.
+
 Every other tracked file of a publisher repository states its licence too,
 as REUSE 3.2 resolves it: every `SPDX-License-Identifier` header anywhere
 in the file (read whole, up to the file bound; the lines from
@@ -363,17 +390,16 @@ set carries breaks that set, which is why each list starts narrow. `format`
 stays the integer `1` until a change in what an existing entry means, which
 is `format=2` and a new major of the tools; a new entry is not that change.
 
-A reserved entry (`jobs/`, `libs/`, `variants/`, `llms.txt`, a reserved kind)
-is added by one bundled change: a capability token in the existing
-`<kind>.<profile>.v<n>` shape joins the capabilities this format defines,
-the entry moves to the allowed table with its shape and rules, a rule
-requires a set carrying content at it to declare the token
+A reserved entry (`jobs/`, `libs/`, `variants/`, `attestations/`, `llms.txt`,
+a reserved kind) is added by one bundled change: a capability token
+in the existing `<kind>.<profile>.v<n>` shape joins the capabilities this
+format defines, the entry moves to the allowed table with its shape and rules,
+a rule requires a set carrying content at it to declare the token
 in `requires_capabilities`, and fixtures prove both directions. A reader
-without the token -- an earlier release of the tools, or of `ai-tools-base`
--- then refuses such a set whole, on the token, whatever else it reads of
-the set; a reader with it refuses a set that carries the content and omits
-the token.
-No reader reads an entry it does not define, and none ignores one.
+without the token -- an earlier release of the tools, or of `ai-tools-base` --
+then refuses such a set whole, on the token, whatever else it reads of the set;
+a reader with it refuses a set that carries the content and omits the token. No
+reader reads an entry it does not define, and none ignores one.
 
 A publisher's own key in `set.conf`,
 `UPSTREAM.conf` or `asset.conf` is `x_<key>`, which base reads past; a key
@@ -436,7 +462,7 @@ differ.
 | `set.conf.requires-integrations` | refuses | every required integration is written as `integration-<name>` |
 | `set.conf.unknown-key` | refuses | a key of `set.conf`, `asset.conf` or `UPSTREAM.conf` is one its table names or an `x_<key>` extension key |
 | `set.entry.unknown` | refuses | a set directory holds `set.conf`, `CHANGELOG.md`, `README.md`, `LICENSE`, `LICENSES`, `plugin.json`, `.claude-plugin`, `skills`, `agents` and `metadata` alone |
-| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/` and `llms.txt` are reserved; a set holding one, empty or not, is refused |
+| `set.entry.reserved` | refuses | `jobs/`, `libs/`, `variants/`, `attestations/` and `llms.txt` are reserved; a set holding one, empty or not, is refused |
 | `set.manifest.plugin` | refuses | `plugin.json` and `.claude-plugin/plugin.json` carry the set's name, version, summary and licence, the keys `sync-manifests` writes and no other, and equal its rendering where `publisher.conf` is read |
 | `set.manifest.components` | refuses | a plugin manifest does not declare a component key |
 | `set.manifest.claude-plugin` | refuses | `.claude-plugin` holds `plugin.json` alone |
@@ -484,6 +510,9 @@ differ.
 | `license.expression` | refuses | a licence is a well-formed SPDX expression without `WITH`, `LicenseRef` or a `+` suffix |
 | `license.allowlist` | refuses | every identifier of a licence is on the list in force |
 | `license.text` | refuses | `LICENSES/<identifier>.txt` exists for every identifier a set declares |
+| `license.text-modified` | warns | a licence text whose digest the tools or `publisher.conf` `license_text_digests` hold is the text SPDX publishes, its holder line the placeholder; one that differs warns |
+| `license.text-unpinned` | warns | a licence text whose digest neither the tools nor `publisher.conf` `license_text_digests` hold warns, since it is not compared |
 | `license.file` | refuses | every file of a repository states its licence in an SPDX header or a `REUSE.toml` annotation |
 | `release.inventory` | refuses | `SHA256SUMS` lists every file of the built set other than itself and `SHA256SUMS.asc` once, and matches each |
+| `release.signature` | refuses | `SHA256SUMS.asc` is a detached OpenPGP signature of `SHA256SUMS` by the key a host's binding names |
 <!-- rules:end -->

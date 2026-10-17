@@ -23,7 +23,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from manifests import render_manifest_files, find_stale_manifest_files  # noqa: E402
 from safe_read import RefusedRead, open_directory, read_text_under  # noqa: E402
@@ -93,7 +93,7 @@ def main() -> int:
         collector.refuse(str(root), "repo.layout", "is not a directory")
         return collector.report()
     try:
-        return sync(root_fd, root, args.check, collector)
+        return refuse_unconverted_errors(collector, "repo.layout", root, lambda: sync(root_fd, root, args.check, collector))
     finally:
         os.close(root_fd)
 

@@ -966,7 +966,9 @@ caller's checkout first, so a caller that is not ready refuses the refresh befor
 
 repin-tools, in a caller's checkout on a clean develop equal to origin/develop, run from the tools' tree
 (bash ../ai-tools-assets-tools/packaging/release-steps.sh repin-tools ...): rewrites every `uses:` line naming a
-workflow of dag-node/ai-tools-assets-tools to one commit and opens the pull request into develop.
+workflow of dag-node/ai-tools-assets-tools to one commit and opens the pull request into develop. A caller holds
+develop because it follows the branch model of dag-node/ai-tools-assets: pull requests into develop, releases on main
+(https://github.com/dag-node/ai-tools-assets/blob/main/docs/development/release.md).
   <sha>     a digest refresh merged into the tools' develop, pinned until the next tools release; refused unless it
             changes image pin lines and CHANGELOG.md alone. --pr names its pull request where GitHub does not.
   <vX.Y.Z>  a tools release: a tag signed by a key the tools' release.yml pins, with a release whose run passed.
@@ -1086,8 +1088,15 @@ _release_steps__require_synced_develop() {
         _release_steps__die "the tree has uncommitted changes (\`git status --short\` printed above); commit or stash them, then run again"
     fi
     branch="$(git -C "$directory" symbolic-ref --quiet --short HEAD)" || branch="a detached HEAD"
-    [[ "$branch" == develop ]] \
-        || _release_steps__die "the checkout is on $branch, not \`develop\`; run \`git switch develop\`"
+    if [[ "$branch" != develop ]]; then
+        # `git switch develop` creates the branch from origin/develop where only that exists, and fails where neither
+        # does: a repository that has not taken up the develop branch model yet.
+        if git -C "$directory" show-ref --verify --quiet refs/heads/develop \
+            || git -C "$directory" show-ref --verify --quiet refs/remotes/origin/develop; then
+            _release_steps__die "the checkout is on $branch, not \`develop\`; run \`git switch develop\`"
+        fi
+        _release_steps__die "the checkout is on $branch and has no \`develop\` branch; create it with \`git switch -c develop\` and \`git push -u origin develop\`, then run again"
+    fi
     _release_steps__step "fetching origin/develop in $directory"
     # `--no-tags`: the fetch updates origin/develop alone and does not add a tag to the checkout.
     answer="$(git -C "$directory" fetch --quiet --no-tags origin +refs/heads/develop:refs/remotes/origin/develop 2>&1)" \

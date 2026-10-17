@@ -39,9 +39,10 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import resolve_license_allowlist  # noqa: E402
+from license_texts import check_license_text_directory, read_declared_digests  # noqa: E402
 from manifests import MARKETPLACE_PATH, render_manifest_files, find_stale_manifest_files  # noqa: E402
 from safe_read import RefusedRead, open_directory, open_root, read_text_under  # noqa: E402
 from set_validation import (PROFILE_SOURCE, PROFILES, ValidationOptions, dynamic_injection_setting,  # noqa: E402
@@ -120,6 +121,11 @@ def validate_repository_under(root_fd: int, root: pathlib.Path, profile: str, on
     allowlist, allowlist_error = resolve_license_allowlist(publisher_conf)
     if allowlist_error:
         collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
+    declared_digests, declared_error = read_declared_digests(publisher_conf)
+    if declared_error:
+        collector.refuse("publisher.conf", "repo.publisher-conf", declared_error)
+    # The repository's own texts are the ones build-set copies into a set that carries none.
+    check_license_text_directory(collector, root_fd, declared_digests)
 
     options = ValidationOptions(publisher=publisher_conf.get("publisher") or None, profile=profile,
                                 reserved_words=read_reserved_words(RESERVED_WORDS_FILE), license_allowlist=allowlist,
@@ -229,6 +235,10 @@ def main() -> int:
     if args.list_rules:
         return list_rules(args.markdown)
     collector = FindingCollector("validate")
+    return refuse_unconverted_errors(collector, "repo.layout", args.root, lambda: validate(args, collector))
+
+
+def validate(args: argparse.Namespace, collector: FindingCollector) -> int:
     if args.set_directory is not None:
         # The path is made absolute without resolving its last component, which the validator opens without following
         # a link; its parent is the operator's argument.

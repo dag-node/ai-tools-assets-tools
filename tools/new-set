@@ -25,7 +25,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS / "lib"))
 
 import asset_format as fmt  # noqa: E402
-from findings import FindingCollector  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
 from safe_write import create_file  # noqa: E402
@@ -117,6 +117,10 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     collector = FindingCollector("new-set")
+    return refuse_unconverted_errors(collector, "repo.layout", root, lambda: create_set(args, root, collector))
+
+
+def create_set(args: argparse.Namespace, root: pathlib.Path, collector: FindingCollector) -> int:
     publisher = read_publisher_conf(root, collector)
     if publisher is None:
         return collector.report()

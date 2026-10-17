@@ -15,7 +15,7 @@ release: @RELEASE@
 maintainer: "dag-node <tools@dagnode.com>"
 vendor: dag-node
 homepage: https://github.com/dag-node/ai-tools-assets-tools
-license: MIT AND AGPL-3.0-only
+license: MIT
 description: The ai-tools-assets format and the tools that check and build a set
 umask: 0o022
 contents:

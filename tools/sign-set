@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/sign-set -- signs a staged set's SHA256SUMS with the publisher's own key, for a host that verifies the set from
+# its local root.
+#
+# ```bash
+# python3 tools/sign-set <set> [--key FINGERPRINT] [--root DIR] [--build DIR]
+# ```
+#
+# The set is the one `build-set` staged under `<build>/<set>/`: the marker `build-set` writes beside it must name the
+# set, and the staged set must validate under the release profile, so a stale or edited stage is refused before `gpg`
+# runs. The build root is opened once, and the marker, the stage and the signature's write are reached under that
+# descriptor (`tools/lib/staged_build.py`). The bytes of `SHA256SUMS` that validation read are the bytes signed, on
+# gpg's standard input with the publisher's own `gpg` and `gpg-agent` (`--detach-sign --armor`, `--local-user` where
+# `--key` is given), the agent asking for the passphrase; no secret key leaves the keyring and no other copy is made.
+# The signature is then verified with `gpgv` against the signer's exported public key in a scratch directory the command
+# removes, the signing key and its primary are printed, since a host's binding names the primary, and a signature whose
+# key and primary both differ from `--key` is refused. `SHA256SUMS.asc` is written last, replaced as a directory entry
+# (`tools/lib/safe_write.py`), so a refusal leaves the stage as it was and a link at that name is refused. Standard
+# library only; `gpg` and `gpgv` run as separate programs, and a missing one is a refusal naming it.
+from __future__ import annotations
+
+import argparse
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+from typing import Optional
+
+TOOLS = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS / "lib"))
+
+import asset_format as fmt  # noqa: E402
+from findings import FindingCollector, refuse_unconverted_errors  # noqa: E402
+from key_value_config import parse_key_value_text  # noqa: E402
+from license_policy import resolve_license_allowlist  # noqa: E402
+from openpgp import FINGERPRINT_PATTERN, check_signature, scratch_directory  # noqa: E402
+from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
+from safe_write import replace_file  # noqa: E402
+from set_validation import PROFILE_RELEASE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
+from staged_build import INVENTORY_FILE, SIGNATURE_FILE, check_output_root, is_managed_build_directory, marker_name, open_output_root  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Sign a staged set's SHA256SUMS with the publisher's own key.")
+    parser.add_argument("set", help="the staged set, by name")
+    parser.add_argument("--key", metavar="FINGERPRINT", help="the signing key or its primary, 40 hex digits (default: gpg's default key)")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the publisher repository (default: the current directory)")
+    parser.add_argument("--build", type=pathlib.Path, default=pathlib.Path("build"), help="where build-set staged the set (default: build/)")
+    args = parser.parse_args()
+    collector = FindingCollector("sign-set")
+    if not fmt.is_valid_name(args.set):
+        collector.refuse(args.set, "name.grammar", "a set is named, not pathed: 1-64 characters of a-z, 0-9 and single hyphens")
+        return collector.report()
+    key = args.key.replace(" ", "").upper() if args.key else None
+    if key is not None and not FINGERPRINT_PATTERN.match(key):
+        collector.refuse(args.set, "release.signature", f"`--key {args.key}` is not a fingerprint of 40 hex digits")
+        return collector.report()
+    root = args.root.resolve()
+    build_root = check_output_root(root, args.build, "build", collector)
+    if build_root is None:
+        return collector.report()
+    try:
+        build_fd = open_output_root(build_root)
+    except OSError:
+        build_fd = None
+    try:
+        return refuse_unconverted_errors(collector, "release.signature", root, lambda: sign_stage(args.set, key, root, build_root, build_fd, collector))
+    finally:
+        if build_fd is not None:
+            os.close(build_fd)
+
+
+def sign_stage(set_name: str, key: Optional[str], root: pathlib.Path, build_root: pathlib.Path, build_fd: Optional[int],
+               collector: FindingCollector) -> int:
+    """Sign the stage `<set>` under the build root `build_fd`, every read and the write at that descriptor."""
+    stage = build_root / set_name
+    if build_fd is None or not is_managed_build_directory(build_fd, set_name):
+        collector.refuse(str(stage), "repo.layout", f"is not a set build-set staged (no `{marker_name(set_name)}` beside it names it); run build-set {set_name} first")
+        return collector.report()
+    inventory = validate_stage(root, build_root, build_fd, stage, collector)
+    if inventory is None:
+        return collector.report()
+    for program in ("gpg", "gpgv"):
+        if shutil.which(program) is None:
+            collector.refuse(set_name, "release.signature", f"`{program}` is not on PATH; sign-set signs and verifies with the publisher's own GnuPG")
+    if collector.has_refusals():
+        return collector.report()
+    signature = sign(inventory, key, collector)
+    if signature is None:
+        return collector.report()
+    signer = verify(inventory, signature, key, collector)
+    if signer is None:
+        return collector.report()
+    signing_key, primary = signer
+    if key is not None and key not in (signing_key, primary):
+        collector.refuse(f"{stage}/{SIGNATURE_FILE}", "release.signature", f"the signature is by {signing_key} (primary {primary}), not by `--key {key}`; nothing was written")
+        return collector.report()
+    try:
+        replace_file(build_fd, pathlib.PurePath(set_name, SIGNATURE_FILE), signature)
+    except RefusedRead as refusal:
+        collector.refuse(f"{stage}/{SIGNATURE_FILE}", refusal.rule_id, refusal.message)
+        return collector.report()
+    shown = stage.relative_to(root) if root in stage.parents else stage
+    print(f"sign-set: wrote {shown}/{SIGNATURE_FILE}")
+    print(f"sign-set: signed by {signing_key}, primary {primary}; a host's binding names the primary: signers=openpgp:{primary}")
+    return collector.report()
+
+
+def validate_stage(root: pathlib.Path, build_root: pathlib.Path, build_fd: int, stage: pathlib.Path,
+                   collector: FindingCollector) -> Optional[bytes]:
+    """The bytes of `SHA256SUMS` the validator read, where the staged set `stage` validates under the release profile,
+    opened under the build root `build_fd`, its inventory equal to its tree; None after a finding."""
+    publisher = None
+    try:
+        root_fd = open_root(root)
+        try:
+            publisher = parse_key_value_text(read_text_under(root_fd, pathlib.PurePath("publisher.conf"), fmt.FILE_MAX_BYTES))
+        finally:
+            os.close(root_fd)
+    except (OSError, RefusedRead):
+        collector.refuse("publisher.conf", "repo.layout", f"is not readable under {root}; a set is signed inside its publisher repository")
+        return None
+    allowlist, allowlist_error = resolve_license_allowlist(publisher)
+    if allowlist_error:
+        collector.refuse("publisher.conf", "license.allowlist", allowlist_error)
+        return None
+    options = ValidationOptions(publisher=publisher.get("publisher") or None, profile=PROFILE_RELEASE,
+                                reserved_words=read_reserved_words(TOOLS / "reserved-words.txt"), license_allowlist=allowlist,
+                                license_text_directories=[], display_root=build_root, publisher_conf=publisher)
+    summary = validate_set_directory(stage, options, collector, parent_fd=build_fd)
+    if collector.has_refusals():
+        print(f"sign-set: the staged set does not validate under the release profile; run build-set {stage.name} again; nothing was signed", file=sys.stderr)
+        return None
+    record = next((record for record in summary.files if record.relative_path == pathlib.Path(INVENTORY_FILE)), None)
+    if record is None or record.data is None:
+        collector.refuse(f"{stage}/{INVENTORY_FILE}", "release.inventory", "was not read whole; nothing was signed")
+        return None
+    return record.data
+
+
+def sign(data: bytes, key, collector: FindingCollector):
+    """The armored detached signature of `data` by the publisher's gpg, or None after a finding."""
+    command = ["gpg", "--detach-sign", "--armor", "--output", "-"] + (["--local-user", key] if key else [])
+    completed = subprocess.run(command, input=data, capture_output=True)
+    if completed.returncode != 0 or not completed.stdout:
+        reason = completed.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or ["no signature"]
+        collector.refuse(INVENTORY_FILE, "release.signature", f"gpg did not sign ({reason[0]}); nothing was written")
+        return None
+    return completed.stdout
+
+
+def verify(data: bytes, signature: bytes, key, collector: FindingCollector):
+    """(signing key, primary) of `signature` over `data` as gpgv reports them against the signer's exported public
+    key, or None after a finding."""
+    exported = subprocess.run(["gpg", "--export", *([key] if key else [])], capture_output=True)
+    if exported.returncode != 0 or not exported.stdout:
+        collector.refuse(INVENTORY_FILE, "release.signature", f"gpg exported no public key{' for ' + key if key else ''}; nothing was written")
+        return None
+    with scratch_directory("sign-set.") as scratch:
+        result = check_signature(scratch, exported.stdout, data, signature)
+    if result.error is not None:
+        collector.refuse(INVENTORY_FILE, "release.signature", f"{result.error}; nothing was written")
+        return None
+    return result.signing_key, result.primary
+
+
+if __name__ == "__main__":
+    sys.exit(main())

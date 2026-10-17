@@ -3,13 +3,16 @@
 
 Every command prints one line per finding, `<command>: <path>: <rule-id>: <what>`, with `warning: ` after the command
 name for a finding that does not refuse, so a test and a CI log grep one shape. A rule id is the stable identifier the
-format specification states beside the rule; the message is for the person reading the line.
+format specification states beside the rule; the message is for the person reading the line. Each command's `main` runs
+its work through `refuse_unconverted_errors`, so an operating-system error that no reader turned into a finding is
+printed in the same shape, under a rule the command already reports, and not as a traceback.
 """
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
-from typing import List, TextIO
+from typing import Callable, List, Optional, TextIO
 
 REFUSE = "refuse"
 WARN = "warn"
@@ -47,10 +50,26 @@ class FindingCollector:
     def has_refusals(self) -> bool:
         return any(finding.severity == REFUSE for finding in self.findings)
 
-    def report(self, stream: TextIO = sys.stderr) -> int:
-        """Print every finding and return the exit status: 1 while a refusal was found, 0 otherwise."""
+    def report(self, stream: Optional[TextIO] = None) -> int:
+        """Print every finding to `stream`, standard error by default, and return the exit status: 1 while a refusal
+        was found, 0 otherwise."""
+        stream = stream if stream is not None else sys.stderr
         for finding in self.findings:
             severity_prefix = "" if finding.severity == REFUSE else "warning: "
             print(f"{self.command_name}: {severity_prefix}{finding.path}: {finding.rule_id}: {finding.message}",
                   file=stream)
         return 1 if self.has_refusals() else 0
+
+
+def refuse_unconverted_errors(collector: FindingCollector, rule_id: str, default_path, body: Callable[[], int],
+                              status: int = 1) -> int:
+    """`body()`'s exit status. An OSError it lets through, one no reader turned into a finding, is reported instead of
+    a traceback: a refusal under `rule_id` naming the path the failed call names (`default_path` where it names none),
+    every finding printed, and `status` returned. SystemExit and KeyboardInterrupt are not OSError, so they pass."""
+    try:
+        return body()
+    except OSError as error:
+        path = error.filename if isinstance(error.filename, (str, bytes, os.PathLike)) else default_path
+        collector.refuse(os.fsdecode(path), rule_id, f"{error.strerror or error}; {collector.command_name} stopped before it finished")
+        collector.report()
+        return status
