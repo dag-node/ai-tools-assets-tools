@@ -5,17 +5,17 @@
 the caller passed and no keyring of the user's own GnuPG home, and with `--status-fd 1`. The machine-readable status
 lines and the exit status decide the outcome; the human-readable output does not. A set is signed once, so a status
 stream reporting more than one signature (a second `NEWSIG`, `VALIDSIG` or result line) is UNABLE, and every other line
-is read as the one signature's. `BADSIG` is a MISMATCH, and so are `EXPSIG`, `EXPKEYSIG`, `REVKEYSIG` and
-`KEYREVOKED`, since `gpgv` exits 0 for a good signature by an expired or a revoked key; `KEYEXPIRED` alone decides
-nothing, as `gpgv` prints it for an expired subkey the signature does not use. `NO_PUBKEY`, `ERRSIG` and a non-zero exit
+is read as the one signature's. `BADSIG` is a MISMATCH, and so are `EXPSIG`, `EXPKEYSIG`, `REVKEYSIG` and `KEYREVOKED`,
+since `gpgv` exits 0 for a good signature by an expired or a revoked key; `KEYEXPIRED` alone does not change the
+outcome, as `gpgv` prints it for an expired subkey the signature does not use. `NO_PUBKEY`, `ERRSIG` and a non-zero exit
 are UNABLE. VERIFIED needs a zero exit, `GOODSIG`, and a `VALIDSIG` with its nine fields: the first names the signing
 key, and the tenth, where present, the primary, which is the fingerprint a host's binding pins. ai-tools-base's verifier
 takes the same policy. An armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone.
 
 `scratch_directory` makes the scratch directory the commands write the key, the inventory and its signature into:
-a `tempfile.TemporaryDirectory` removed on exit, on an exception and on SIGTERM or SIGHUP, whose default action would end
-the interpreter without removing it. The two signals are blocked while the handlers are installed and the directory is
-created, and again while it is removed, so a signal that arrives in either window waits instead of leaving
+a `tempfile.TemporaryDirectory` removed on exit, on an exception and on SIGTERM or SIGHUP, whose default action would
+end the interpreter without removing it. The two signals are blocked while the handlers are installed and the directory
+is created, and again while it is removed, so a signal that arrives in either window waits instead of leaving
 the directory behind.
 """
 from __future__ import annotations

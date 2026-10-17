@@ -1382,7 +1382,7 @@ class VerifySet(unittest.TestCase):
         import signed_inventory
         directory_fd = os.open(set_directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            return signed_inventory.verify_inventory(directory_fd, (set_directory / "SHA256SUMS").read_text(encoding="utf-8"))
+            return signed_inventory.check_inventory(directory_fd, (set_directory / "SHA256SUMS").read_text(encoding="utf-8"))
         finally:
             os.close(directory_fd)
 
@@ -1443,7 +1443,7 @@ class VerifySet(unittest.TestCase):
             (directory / name).write_bytes(data)
         directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            return signed_inventory.verify_inventory(directory_fd, inventory_text)
+            return signed_inventory.check_inventory(directory_fd, inventory_text)
         finally:
             os.close(directory_fd)
 

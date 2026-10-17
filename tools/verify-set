@@ -7,18 +7,21 @@
 # ```
 #
 # The twin of ai-tools-base's `assets-verify.lib.sh`, for a consumer without base, a reviewer, or the publisher before
-# shipping, under the same status contract: 0 verified, the signer's primary fingerprint printed alone on stdout;
-# 1 a mismatch, the signed inventory and the tree not both what the publisher built (the signature is bad or expired or
-# by an expired or revoked key, or `SHA256SUMS` does not describe the tree); 2 unable to verify (an input absent or
-# unreadable, a file of the set that is a link, a special file or a second hard link, a key that does not hold
-# the signer, a signature file holding more than one signature, a `--signer` the signature does not match). `--key` is
-# the publisher's public key, armored (dearmored here) or binary; `gpgv` checks `SHA256SUMS.asc` over `SHA256SUMS` against it alone (`tools/lib/openpgp.py`), before the
-# inventory is parsed, and the inventory is then held to the tree (`tools/lib/signed_inventory.py`). With
-# `--source <tree>`, `build-set` builds the set the verified `set.conf` names from that publisher repository into
-# a scratch directory, and every path whose hash differs between the two inventories is a mismatch: `build-set` writes
-# the same bytes for the same tree, so a match shows that the signed set is that source. A signature proves who signed
-# and that the files are the ones signed, not that their content is safe. Each refusal is printed as
-# `verify-set: <path>: <rule-id>: <what>`. Standard library only, and `gpgv`.
+# shipping, under the same status contract: 0 verified, the signer's primary fingerprint printed alone on stdout; 1 a
+# mismatch, the signed inventory and the tree not both what the publisher built (the signature is bad or expired or by
+# an expired or revoked key, or `SHA256SUMS` does not describe the tree); 2 unable to verify (an input absent or
+# unreadable, a file of the set that is a link, a special file or a second hard link, a key that does not hold the
+# signer, a signature file holding more than one signature, a `--signer` the signature does not match). `--key` is the
+# publisher's public key, armored (dearmored here) or binary; `gpgv` checks `SHA256SUMS.asc` over `SHA256SUMS` against
+# it alone (`tools/lib/openpgp.py`), before the inventory is parsed, and the inventory is then held to the tree
+# (`tools/lib/signed_inventory.py`). The walk holds the tree to every budget of format 1's `file.size` rule, where
+# base's verifier holds the per-file, file-count and payload bounds alone: a set over the directory, depth or
+# per-directory entry budget cannot come from `build-set`, which validates the same budgets, and this command reports it
+# 2 where base would verify it. With `--source <tree>`, `build-set` builds the set the verified `set.conf` names from
+# that publisher repository into a scratch directory, and every path whose hash differs between the two inventories is a
+# mismatch: `build-set` writes the same bytes for the same tree, so a match shows that the signed set is that source. A
+# signature proves who signed and that the files are the ones signed, not that their content is safe. Each refusal is
+# printed as `verify-set: <path>: <rule-id>: <what>`. Standard library only, and `gpgv`.
 from __future__ import annotations
 
 import argparse
@@ -157,7 +160,7 @@ def verify(run: Verification, args: argparse.Namespace, signer, key: bytes, dire
     except UnicodeDecodeError:
         run.fail(MISMATCH, INVENTORY_FILE, "release.inventory", "is not UTF-8 text")
         return
-    inventory = signed_inventory.verify_inventory(directory_fd, inventory_text)
+    inventory = signed_inventory.check_inventory(directory_fd, inventory_text)
     for path, message in inventory.problems:
         run.fail(inventory.outcome, path, "release.inventory", message)
     if run.status:
