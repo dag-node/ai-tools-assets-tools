@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 """The staged set `build-set` writes under the build root, as the commands that read it after find it.
 
-`build-set` renames a staged set over `<build>/<set>` only where the sibling marker `<build>/.<set>.ai-tools-assets-build`
-names that set under this marker version, and writes the marker after the rename, so a directory at that name without
-the marker is not this command's and is left alone. `sign-set` signs a staged set only where the same marker stands
-beside it. An output root may not be `sets/`, hold it or lie inside it, and no existing component of it is a link.
+`build-set` renames a staged set over `<build>/<set>` only where the sibling marker
+`<build>/.<set>.ai-tools-assets-build` names that set under this marker version, and writes the marker after the rename,
+so a directory at that name without the marker is not this command's and is left alone. `sign-set` signs a staged set
+only where the same marker stands beside it. An output root may not be `sets/`, hold it or lie inside it, and no
+existing component of it is a link.
 """
 from __future__ import annotations
 
@@ -29,7 +30,8 @@ def marker_path(build_root: pathlib.Path, set_name: str) -> pathlib.Path:
 
 
 def check_output_root(root: pathlib.Path, given: pathlib.Path, what: str, collector: FindingCollector) -> Optional[pathlib.Path]:
-    """The absolute output root, or None after a refusal: it does not overlap sets/ and no existing component is a link."""
+    """The absolute output root, or None after a refusal: it does not overlap sets/ and no existing component is
+    a link."""
     output_root = pathlib.Path(os.path.abspath(root / given))
     sets_root = root / "sets"
     if output_root == sets_root or sets_root in output_root.parents or output_root in sets_root.parents:

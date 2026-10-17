@@ -47,11 +47,14 @@ the workflow.
 `reserved-words.txt` holds the words a set name does not start with; every
 command reads it beside itself. `lib/` holds the modules the commands share:
 the format registry, the descriptor-based file reader every command opens
-a repository's files through and the writer that creates them without following
-a link, the `KEY=value` reader, the frontmatter reader, the SPDX evaluator,
-the licence table (each widely used licence's class and the digests of its published text), the manifest renderer,
-the set validator, the portable name the `file.name`
-finding proposes and the reader of an entry file's relative links.
+a repository's files through and the writer that creates and removes them
+without following a link, the `KEY=value` reader, the frontmatter reader,
+the SPDX evaluator, the licence table (each widely used licence's class
+and the digests of its published text), the manifest renderer, the set
+validator, the marker that names a staged build, the signature check
+over `gpgv`, the inventory check of a signed set, the portable name
+the `file.name` finding proposes and the reader of an entry file's relative
+links.
 
 A signature from `sign-set` or the release workflow proves who signed a set and
 that its files are the ones signed, not that their content is safe: the

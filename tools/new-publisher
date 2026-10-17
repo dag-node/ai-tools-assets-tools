@@ -3,8 +3,9 @@
 # tools/new-publisher -- turns an unmodified copy of the publisher template into the publisher's own repository.
 #
 # ```bash
-# python3 tools/new-publisher --repository <owner>/<repo> --contact <email> [--root DIR] [--source URL] [--maintainers <email>,...]
-#     [--holder TEXT] [--license ID] [--set NAME] [--summary TEXT] [--code-owner @handle]... [--job-id ID]
+# python3 tools/new-publisher --repository <owner>/<repo> --contact <email> [--root DIR] [--source URL]
+#     [--maintainers <email>,...] [--holder TEXT] [--license ID] [--set NAME] [--summary TEXT] [--code-owner @handle]...
+#     [--job-id ID]
 #     [--tag-signer FINGERPRINT]... [--tag-signer-key-url URL] [--artifact-signer FINGERPRINT] [--description TEXT]
 # ```
 #
@@ -347,7 +348,8 @@ class Initialization:
             self.refuse(f"sets/{TEMPLATE_SET}", "repo.layout", "is not a directory")
 
     def find_license_text(self) -> None:
-        """The licence text the copy takes, read from the copy's `LICENSES/` or this directory's; None after a finding."""
+        """The licence text the copy takes, read from the copy's `LICENSES/` or this directory's; None after
+        a finding."""
         identifier = self.args.license
         self.license_text, self.license_from_tools = None, False
         if not LICENSE_ID_PATTERN.match(identifier):

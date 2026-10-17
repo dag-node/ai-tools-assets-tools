@@ -391,16 +391,15 @@ stays the integer `1` until a change in what an existing entry means, which
 is `format=2` and a new major of the tools; a new entry is not that change.
 
 A reserved entry (`jobs/`, `libs/`, `variants/`, `attestations/`, `llms.txt`,
-a reserved kind) is added by one bundled change: a capability token in the existing
-`<kind>.<profile>.v<n>` shape joins the capabilities this format defines,
-the entry moves to the allowed table with its shape and rules, a rule
-requires a set carrying content at it to declare the token
+a reserved kind) is added by one bundled change: a capability token
+in the existing `<kind>.<profile>.v<n>` shape joins the capabilities this
+format defines, the entry moves to the allowed table with its shape and rules,
+a rule requires a set carrying content at it to declare the token
 in `requires_capabilities`, and fixtures prove both directions. A reader
-without the token -- an earlier release of the tools, or of `ai-tools-base`
--- then refuses such a set whole, on the token, whatever else it reads of
-the set; a reader with it refuses a set that carries the content and omits
-the token.
-No reader reads an entry it does not define, and none ignores one.
+without the token -- an earlier release of the tools, or of `ai-tools-base` --
+then refuses such a set whole, on the token, whatever else it reads of the set;
+a reader with it refuses a set that carries the content and omits the token. No
+reader reads an entry it does not define, and none ignores one.
 
 A publisher's own key in `set.conf`,
 `UPSTREAM.conf` or `asset.conf` is `x_<key>`, which base reads past; a key

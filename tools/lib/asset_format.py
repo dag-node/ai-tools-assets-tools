@@ -196,7 +196,8 @@ SET_CONF_REQUIRED: Tuple[str, ...] = ("format", "name", "version", "summary", "l
 SET_CONF_OPTIONAL: Tuple[str, ...] = ("requires_base", "requires_integrations", "requires_capabilities")
 SET_CONF_LIST_KEYS: Tuple[str, ...] = ("maintainers", "requires_integrations", "requires_capabilities")
 PUBLISHER_CONF_REQUIRED: Tuple[str, ...] = ("publisher", "contact", "maintainers", "source", "description")
-# `license_text_digests` lists `<identifier>:<sha256>` pairs, the digests a licence text is compared with beside the tools'.
+# `license_text_digests` lists `<identifier>:<sha256>` pairs, the digests a licence text is compared with beside
+# the tools'.
 LICENSE_TEXT_DIGESTS_KEY = "license_text_digests"
 PUBLISHER_CONF_OPTIONAL: Tuple[str, ...] = ("licenses", "allow_dynamic_injection", LICENSE_TEXT_DIGESTS_KEY)
 UPSTREAM_CONF_REQUIRED: Tuple[str, ...] = ("source", "path", "revision", "license")

@@ -159,8 +159,9 @@ def remove_file(root: Path, relative_path: PurePath) -> None:
 def remove_tree(root: Path, relative_path: PurePath) -> None:
     """Remove the directory at `relative_path` under `root` and every entry under it, by descriptor.
 
-    A link at `relative_path` or at a component above it refuses (`file.symlink`); a link inside the tree is unlinked
-    as an entry. An entry that changes type during the removal raises the OSError or RefusedRead of the call it fails.
+    A link at `relative_path` or at a directory that holds it refuses (`file.symlink`); a link inside the tree is
+    unlinked as an entry. An entry that changes type during the removal raises the OSError or RefusedRead of the failing
+    call.
     """
     parent_fd = _open_existing_parent(root, relative_path)
     try:

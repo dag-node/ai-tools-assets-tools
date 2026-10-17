@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 """The one signature check `sign-set` and `verify-set` make: `gpgv` over a detached signature, against one key.
 
-`gpgv` runs with `--homedir` set to a scratch directory the caller owns and removes, so the keyring it reads is the
-key the caller passed and nothing in the user's own GnuPG home, and with `--status-fd 1`, whose machine-readable lines
+`gpgv` runs with `--homedir` set to a scratch directory the caller owns and removes, so the keyring it reads is the key
+the caller passed and no keyring of the user's own GnuPG home, and with `--status-fd 1`, whose machine-readable lines
 decide the outcome; its exit status and its human-readable output do not. A good signature is a `VALIDSIG` line: its
 fields name the signing key and, where it differs, the primary, which is the fingerprint a host's binding pins. An
-armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone. `scratch_directory` is the one
+armored key is dearmored here, by its base64 body, so verifying needs `gpgv` alone. `scratch_directory` makes the
 scratch directory the commands write the key, the inventory and its signature into: a `tempfile.TemporaryDirectory`
 removed on exit, on an exception and on SIGTERM or SIGHUP, whose default action would end the interpreter without
 removing it.
@@ -68,7 +68,8 @@ class SignatureCheck:
 
 
 def dearmor(text: bytes) -> Optional[bytes]:
-    """The binary packets of every armored public key block in `text`, or None when it holds no well-formed block."""
+    """The binary packets of every armored public key block in `text`, or None when it does not hold a well-formed
+    block."""
     blocks: List[bytes] = []
     body: Optional[List[str]] = None
     in_headers = False

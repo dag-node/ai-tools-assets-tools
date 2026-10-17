@@ -14,12 +14,12 @@ identifier it names is held to those digests too, so an unpinned text is compare
 differs warns rather than refuses, since format 1 sets passed without the comparison; a published revision of a text
 joins the table as one more digest.
 
-The class is this table's, since SPDX records no such property: `public-domain` a dedication, `permissive` a licence
-whose conditions are notice and attribution, `weak-copyleft` one whose copyleft stops at the file or the library,
-`copyleft` one whose copyleft reaches the whole work, and `limited-use` one that limits use by field, hosted service,
-commercial use or derivatives, the source-available licences among them. `check-licenses` names each licence's class
-in its summary line. A class is a reading of the licence's terms for an operator: whether a licence is used at all is
-the allowlist's decision, which leaves every `limited-use` licence off its default, and the tools do not decide
+The class is this table's, since SPDX does not record such a property: `public-domain` a dedication, `permissive` a
+licence whose conditions are notice and attribution, `weak-copyleft` one whose copyleft stops at the file or the
+library, `copyleft` one whose copyleft reaches the whole work, and `limited-use` one that limits use by field, hosted
+service, commercial use or derivatives, the source-available licences among them. `check-licenses` names each licence's
+class in its summary line. A class is a reading of the licence's terms for an operator: whether a licence is used at all
+is the allowlist's decision, which leaves every `limited-use` licence off its default, and the tools do not decide
 whether two licences may be combined.
 """
 from __future__ import annotations
