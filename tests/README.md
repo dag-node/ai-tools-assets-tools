@@ -19,6 +19,7 @@ a test runs, where `python3 -B` does not. Each file holds one concern:
 | `test_formatters.py` | `formatters/verify-reflow.py` over a scratch repository: a pure reflow, a changed word, a base that does not exist, a path one copy does not hold, a column table realigned, broken or joined, every difference in a file and a respaced line; `formatters/align-tables.py` over a table beside a fence; where Emacs is installed, `formatters/fill-comments.sh` over each shape it fills by a rule of its own and a table of three columns it leaves |
 | `test_rules_documented.py` | the rule registry, `format/FORMAT.md` and the fixtures agree: every rule is documented and has a fixture or a named test |
 | `command_stub.py` | not a test: answers for `skopeo`, `gh`, `curl` and `sleep` in `test_release_steps.py`, which exports it to the script as a bash function and logs each call |
+| `gnupg_home.py` | not a test: stops the daemons of a GnuPG home a test generated a key in, and removes its scratch tree where a daemon unlinks its socket during the removal |
 | `fixture_generator.py` | not a test: writes the fixtures from one base tree (`generate`), and `check` fails when a committed fixture differs |
 
 A fixture is one set directory beside a `fixture.conf` naming the outcome

@@ -22,6 +22,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -31,6 +32,10 @@ REPOSITORY = TESTS.parent
 RELEASE_STEPS = REPOSITORY / "packaging" / "release-steps.sh"
 SIGN_RPMS = REPOSITORY / "packaging" / "sign-rpms.sh"
 STUB = TESTS / "command_stub.py"
+sys.path.insert(0, str(TESTS))
+
+from gnupg_home import remove_tree  # noqa: E402
+
 BASH = shutil.which("bash")
 
 IMAGES = {
@@ -1876,9 +1881,7 @@ class ArtifactSignerFromPublicExport(unittest.TestCase):
         self.other = self.generate("Other <other@example.org>")
 
     def tearDown(self):
-        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
-                       capture_output=True)
-        shutil.rmtree(self.root)
+        remove_tree(self.root, homes=(self.gnupg,))
 
     def gpg(self, *arguments: str) -> str:
         return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",
@@ -2172,10 +2175,7 @@ class RepinToolsToARelease(RepinCase):
         self.answer("curl", [], stdout=self.gpg("--armor", "--export", self.primary))
 
     def tearDown(self):
-        # The generated keyring's gpg-agent is stopped before its home is removed under it.
-        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=dict(os.environ, GNUPGHOME=str(self.gnupg)),
-                       capture_output=True)
-        super().tearDown()
+        remove_tree(self.root, homes=(self.gnupg,))
 
     def gpg(self, *arguments: str) -> str:
         return subprocess.run(["gpg", "--homedir", str(self.gnupg), "--batch", "--pinentry-mode", "loopback",

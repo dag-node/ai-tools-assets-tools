@@ -33,6 +33,7 @@ sys.path.insert(0, str(TESTS))
 sys.path.insert(0, str(TOOLS / "lib"))
 
 from fixture_generator import PUBLISHER_CONF, UNPINNED_LICENSE  # noqa: E402
+from gnupg_home import remove_tree, stop_daemons  # noqa: E402
 from license_texts import LICENSE_TEXTS  # noqa: E402
 
 
@@ -1331,8 +1332,7 @@ class SignedSetCase(unittest.TestCase):
         self.signature = self.root / "build" / "acme" / "SHA256SUMS.asc"
 
     def tearDown(self):
-        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=self.environment, capture_output=True)
-        shutil.rmtree(self.scratch)
+        remove_tree(self.scratch, homes=(self.gnupg,))
 
     def gpg(self, *arguments: str) -> str:
         return subprocess.run(["gpg", "--batch", "--pinentry-mode", "loopback", *arguments], capture_output=True, text=True,
@@ -1582,7 +1582,7 @@ class VerifySetWithAKey(SignedSetCase):
         subprocess.run(["gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "Other <o@example.org>",
                         "ed25519", "sign", "never"], capture_output=True, check=True, env=environment)
         exported = subprocess.run(["gpg", "--armor", "--export"], capture_output=True, check=True, env=environment).stdout
-        subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=environment, capture_output=True)
+        stop_daemons(other)
         (self.scratch / "other.asc").write_bytes(exported)
         status, _, stderr = self.verify(key=self.scratch / "other.asc")
         self.assertEqual(status, 2, "a key that does not hold the signer leaves the check unable, as base's contract has it")
