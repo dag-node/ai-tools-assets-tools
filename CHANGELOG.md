@@ -54,6 +54,15 @@ a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
   a formatter into its own repository may keep the copy under MIT. Before,
   those files were `AGPL-3.0-only` and the tag was `MIT AND AGPL-3.0-only`.
 
+### Fixed
+
+- **`repin-tools` names the command that creates a missing `develop`.**
+  In a caller that has neither a `develop` branch nor an `origin/develop`,
+  the refusal names `git switch -c develop` and `git push -u origin develop`.
+  Before, it named `git switch develop`, which fails there. `--help` and the
+  release page state why a caller holds `develop`: it follows the branch
+  model of dag-node/ai-tools-assets.
+
 ## [1.5.2] - 2026-10-16
 
 ### Fixed
