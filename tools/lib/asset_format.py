@@ -42,6 +42,9 @@ MARKETPLACE_NAME_SUFFIX = "-ai-tools-assets"
 # The publisher template (dag-node/ai-tools-assets-template): the placeholder its identity keys hold until
 # `new-publisher` writes a copy's own, and the `REUSE.toml` package name a copy that skipped the command still carries.
 TEMPLATE_PLACEHOLDER = "change-me"
+# The placeholder bounded by a character outside a-z and 0-9, so `change-me-example` and `change-me@example.com` hold it
+# and the owner `exchange-media` does not.
+TEMPLATE_PLACEHOLDER_TOKEN = re.compile(rf"(?<![a-z0-9]){re.escape(TEMPLATE_PLACEHOLDER)}(?![a-z0-9])")
 TEMPLATE_PACKAGE_NAME = "ai-tools-assets-template"
 # OpenAI's plugin submission limits `<plugin>:<skill>` to 64 characters; the tools warn, since it binds one route.
 COMPOSED_NAME_MAX_LENGTH = 64
@@ -339,8 +342,8 @@ RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length
 
 
 def holds_template_placeholder(value: str) -> bool:
-    """True when `value` carries the template's placeholder, in any letter case."""
-    return TEMPLATE_PLACEHOLDER in value.lower()
+    """True when `value` carries the template's placeholder as a whole token, in any letter case."""
+    return TEMPLATE_PLACEHOLDER_TOKEN.search(value.lower()) is not None
 
 
 def is_valid_name(name: str) -> bool:
