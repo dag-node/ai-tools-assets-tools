@@ -7,6 +7,7 @@ synthetic history each have a case here; the set-level rules are tests/test_fixt
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import os
 import pathlib
@@ -487,6 +488,229 @@ class PublisherRepository(unittest.TestCase):
         self.assertIn("the record is not a regular file", stderr)
         self.assertEqual(outside.read_text(encoding="utf-8"), "mine\n", "the link's target is not written")
         self.assertFalse((target / "acme-pdf-processing").exists(), "nothing is placed on a record that is refused")
+
+
+# The template's skeleton files carry SPDX headers and annotations as string literals; `reuse lint` reads each as an
+# expression of this file, so the constants and the class sit in an ignored block.
+# REUSE-IgnoreStart
+TEMPLATE_PUBLISHER_CONF = """# Who publishes this repository's sets.
+publisher=change-me
+contact=change-me@example.com
+maintainers=[change-me@example.com]
+source=https://github.com/change-me/ai-tools-assets
+description="Skills and subagents for coding agents, released as versioned sets"
+"""
+TEMPLATE_REUSE = """version = 1
+SPDX-PackageName = "ai-tools-assets-template"
+SPDX-PackageDownloadLocation = "https://github.com/dag-node/ai-tools-assets-template"
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 the ai-tools-assets-template authors"
+SPDX-License-Identifier = "MIT-0"
+"""
+TEMPLATE_CODEOWNERS = """* @dag-node/ai-tools-maintainers
+/publisher.conf @dag-node/ai-tools-maintainers
+/keys/ @dag-node/ai-tools-maintainers
+/.claude-plugin/ @dag-node/ai-tools-maintainers
+/.github/ @dag-node/ai-tools-maintainers
+"""
+TEMPLATE_VALIDATE = """# SPDX-License-Identifier: MIT-0
+name: validate
+on:
+  pull_request:
+jobs:
+  ai-tools-assets-template:
+    uses: dag-node/ai-tools-assets-tools/.github/workflows/validate.yml@b11c27282193da07f1067ce905de6974e420c433 # v1.5.0
+    with:
+      enforce-signoff: true
+"""
+TEMPLATE_RELEASE = """# SPDX-License-Identifier: MIT-0
+name: release
+on:
+  push:
+    tags: ['*/v*']
+jobs:
+  ai-tools-assets-template:
+    uses: dag-node/ai-tools-assets-tools/.github/workflows/set-release.yml@b11c27282193da07f1067ce905de6974e420c433 # v1.5.0
+    secrets: inherit
+    with:
+      tag-signer-fingerprints: change-me
+      tag-signer-key-url: https://github.com/change-me.gpg
+      artifact-signer-fingerprint: change-me
+"""
+INITIALIZE = ("--repository", "Acme/ai-tools-assets", "--contact", "tools@acme.example")
+
+
+def tree_state(root: pathlib.Path):
+    """Every path under `root` with its bytes, or its link target, so a refusal is shown to leave the tree whole."""
+    state = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            state[relative] = ("link", os.readlink(path))
+        elif path.is_file():
+            state[relative] = ("file", path.read_bytes())
+        else:
+            state[relative] = ("directory",)
+    return state
+
+
+class NewPublisher(unittest.TestCase):
+    """new-publisher over a tree composed the way the template is made."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        self.root = self.scratch / "ai-tools-assets"
+        (self.root / "sets").mkdir(parents=True)
+        (self.root / "LICENSES").mkdir()
+        shutil.copy(FIXTURES / "LICENSES" / "MIT-0.txt", self.root / "LICENSES" / "MIT-0.txt")
+        (self.root / "publisher.conf").write_text(TEMPLATE_PUBLISHER_CONF, encoding="utf-8")
+        for command in (("new-set", "change-me-example", "--license", "MIT-0", "--summary", "An example set; rename it to start with your publisher name"),
+                        ("new-asset", "change-me-example", "skill", "change-me-example-hello", "--description", "Prints a greeting. Replace it with your first skill.")):
+            status, _, stderr = run(*command, "--root", str(self.root))
+            self.assertEqual(status, 0, stderr)
+        mit0 = (FIXTURES / "LICENSES" / "MIT-0.txt").read_text(encoding="utf-8")
+        files = {"LICENSE": mit0.replace("<YEAR> <COPYRIGHT HOLDER>", "2026 the ai-tools-assets-template authors"),
+                 "REUSE.toml": TEMPLATE_REUSE, ".github/CODEOWNERS": TEMPLATE_CODEOWNERS, "README.md": "# ai-tools-assets-template\n",
+                 ".github/workflows/validate.yml": TEMPLATE_VALIDATE, ".github/workflows/release.yml": TEMPLATE_RELEASE}
+        for relative, text in files.items():
+            (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / relative).write_text(text, encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def initialize(self, *arguments):
+        return run("new-publisher", "--root", str(self.root), *(arguments or INITIALIZE))
+
+    def test_initializes_a_copy_that_passes_every_check(self):
+        status, stdout, stderr = self.initialize()
+        self.assertEqual((status, stderr), (0, ""))
+        for command in (("validate",), ("sync-manifests", "--check"), ("check-licenses",), ("check-publisher", "--repository", "Acme/ai-tools-assets")):
+            status, _, stderr = run(*command, "--root", str(self.root))
+            self.assertEqual((status, stderr), (0, ""), command)
+        self.assertEqual(sorted(path.name for path in (self.root / "sets").iterdir()), ["acme"])
+        self.assertTrue((self.root / "sets" / "acme" / "skills" / "acme-hello" / "SKILL.md").is_file())
+        year = datetime.datetime.now(datetime.timezone.utc).year
+        self.assertIn("  ai-tools-assets:\n", (self.root / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8"))
+        self.assertIn("* @Acme\n", (self.root / ".github" / "CODEOWNERS").read_text(encoding="utf-8"))
+        reuse = (self.root / "REUSE.toml").read_text(encoding="utf-8")
+        self.assertIn('SPDX-PackageName = "ai-tools-assets"', reuse)
+        self.assertIn('SPDX-PackageDownloadLocation = "https://github.com/Acme/ai-tools-assets"', reuse)
+        self.assertIn(f'SPDX-FileCopyrightText = "{year} Acme"', reuse)
+        self.assertIn(f"Copyright (c) {year} Acme\n", (self.root / "LICENSE").read_text(encoding="utf-8"))
+        self.assertTrue((self.root / "README.md").read_text(encoding="utf-8").startswith("# ai-tools-assets\n"))
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").lower()
+                self.assertNotIn("ai-tools-assets-template", text, path)
+                if path.name != "release.yml":
+                    self.assertNotIn("change-me", text, path)
+        self.assertIn('new-publisher: next, commit the initialization: git add -A && git commit -s -m "chore: initialize the publisher acme"', stdout)
+
+    def test_a_second_run_is_refused_and_leaves_the_tree_whole(self):
+        self.assertEqual(self.initialize()[0], 0)
+        before = tree_state(self.root)
+        status, _, stderr = self.initialize()
+        self.assertEqual(status, 1)
+        self.assertIn("publisher.conf: repo.publisher-conf: names the publisher `acme`: the copy is initialized already", stderr)
+        self.assertEqual(tree_state(self.root), before)
+
+    def test_each_refusal_leaves_the_tree_whole(self):
+        before = tree_state(self.root)
+        cases = [
+            (("--repository", "Acme/ai-tools-assets", "--contact", "change-me@acme.example"), "repo.publisher-conf"),
+            (("--repository", "Acme/ai-tools-assets", "--contact", "tools@acme.example", "--maintainers", "someone@dagnode.com"), "repo.publisher-conf"),
+            (("--repository", "OpenAI/ai-tools-assets", "--contact", "tools@acme.example"), "name.reserved-word"),
+            (("--repository", "acme/3d-assets", "--contact", "tools@acme.example"), "repo.layout"),
+            (("--repository", "Acme/ai-tools-assets", "--contact", "tools@acme.example", "--tag-signer", "0" * 39), "repo.layout"),
+            (("--repository", "Acme/ai-tools-assets", "--contact", "tools@acme.example", "--license", "Apache-2.0"), "license.text"),
+            (("--repository", "Acme/ai-tools-assets", "--contact", "tools@acme.example", "--license", "GPL-3.0-only"), "license.allowlist"),
+            (("--repository", "Acme/ai-tools-assets", "--contact", "tools@acme.example\nx_key=1"), "repo.publisher-conf"),
+            (("--repository", "Acme/ai-tools-assets", "--contact", "tools@acme.example", "--code-owner", "tools@acme.example"), "repo.layout"),
+        ]
+        for arguments, rule in cases:
+            status, _, stderr = self.initialize(*arguments)
+            self.assertEqual(status, 1, arguments)
+            self.assertIn(f": {rule}: ", stderr, arguments)
+            self.assertEqual(tree_state(self.root), before, arguments)
+        status, _, stderr = self.initialize("--repository", "acme/3d-assets", "--contact", "tools@acme.example")
+        self.assertIn("name one with --job-id", stderr)
+        (self.root / "sets" / "acme").mkdir()
+        status, _, stderr = self.initialize()
+        self.assertEqual(status, 1)
+        self.assertIn("sets: repo.layout: holds `acme`, `change-me-example`", stderr)
+        (self.root / "sets" / "acme").rmdir()
+        workflow = self.root / ".github" / "workflows" / "validate.yml"
+        workflow.write_text(TEMPLATE_VALIDATE.replace("  ai-tools-assets-template:", "  mine:"), encoding="utf-8")
+        before = tree_state(self.root)
+        status, _, stderr = self.initialize()
+        self.assertEqual(status, 1)
+        self.assertIn(".github/workflows/validate.yml: repo.layout: lacks the template line `ai-tools-assets-template:`", stderr)
+        self.assertEqual(tree_state(self.root), before)
+
+    def test_does_not_write_through_a_link(self):
+        outside = self.scratch / "outside"
+        outside.mkdir()
+        (outside / "LICENSE").write_text("theirs\n", encoding="utf-8")
+        (self.root / "LICENSE").unlink()
+        (self.root / "LICENSE").symlink_to(outside / "LICENSE")
+        status, _, stderr = self.initialize()
+        self.assertEqual(status, 1)
+        self.assertIn("LICENSE: file.symlink: ", stderr)
+        self.assertEqual((outside / "LICENSE").read_text(encoding="utf-8"), "theirs\n")
+        (self.root / "LICENSE").unlink()
+        (self.root / "LICENSE").write_text("Copyright 2026 the ai-tools-assets-template authors\n", encoding="utf-8")
+        shutil.move(str(self.root / "sets" / "change-me-example"), str(outside / "change-me-example"))
+        (self.root / "sets" / "change-me-example").symlink_to(outside / "change-me-example")
+        status, _, stderr = self.initialize()
+        self.assertEqual(status, 1)
+        self.assertIn("sets/change-me-example: file.symlink: ", stderr)
+        self.assertTrue((outside / "change-me-example" / "set.conf").is_file(), "the link's target is not removed")
+
+    def test_the_signer_inputs(self):
+        status, stdout, _ = self.initialize(*INITIALIZE, "--tag-signer", "A" * 40, "--artifact-signer", "B" * 40)
+        self.assertEqual(status, 0)
+        release = (self.root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn(f"      tag-signer-fingerprints: {'A' * 40}\n", release)
+        self.assertIn("      tag-signer-key-url: https://github.com/Acme.gpg\n", release)
+        self.assertIn(f"      artifact-signer-fingerprint: {'B' * 40}\n", release)
+        self.assertNotIn("set the release signers", stdout)
+        self.tearDown()
+        self.setUp()
+        status, stdout, _ = self.initialize()
+        release = (self.root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertEqual(release.count("change-me"), 3)
+        self.assertIn("next, set the release signers in .github/workflows/release.yml", stdout)
+
+    def test_the_licence(self):
+        status, _, stderr = self.initialize()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual((self.root / "LICENSES" / "MIT.txt").read_bytes(), (REPOSITORY / "LICENSES" / "MIT.txt").read_bytes(),
+                         "the text as published, from the tools")
+        self.assertFalse((self.root / "LICENSES" / "MIT-0.txt").exists(), "an unused text fails reuse lint")
+        for workflow in ("validate.yml", "release.yml"):
+            self.assertTrue((self.root / ".github" / "workflows" / workflow).read_text(encoding="utf-8").startswith("# SPDX-License-Identifier: MIT\n"))
+        status, stdout, _ = run("check-licenses", "--root", str(self.root))
+        self.assertIn("every file is under MIT (permissive)", stdout)
+        self.tearDown()
+        self.setUp()
+        status, _, stderr = self.initialize(*INITIALIZE, "--license", "MIT-0")
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(sorted(path.name for path in (self.root / "LICENSES").iterdir()), ["MIT-0.txt"])
+        self.tearDown()
+        self.setUp()
+        status, _, stderr = self.initialize(*INITIALIZE, "--license", "Apache-2.0")
+        self.assertEqual(status, 1)
+        self.assertIn("license.text: no `Apache-2.0.txt` in the copy's LICENSES/ or the tools'; place it with `reuse download Apache-2.0`", stderr)
+        (self.root / "LICENSES" / "Apache-2.0.txt").write_text("Apache License\nVersion 2.0, January 2004\n", encoding="utf-8")
+        status, _, stderr = self.initialize(*INITIALIZE, "--license", "Apache-2.0")
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual((self.root / "LICENSE").read_text(encoding="utf-8"), "Apache License\nVersion 2.0, January 2004\n",
+                         "a text without a holder line is written as published")
+# REUSE-IgnoreEnd
 
 
 class LicenseCheck(unittest.TestCase):

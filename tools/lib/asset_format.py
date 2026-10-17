@@ -28,6 +28,8 @@ PORTABLE_FILE_NAME_PATTERN = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 PORTABLE_FILE_NAME_MAX_BYTES = 255
 CLAUDE_RESERVED_WORDS: Tuple[str, ...] = ("anthropic", "claude")
 UPSTREAM_PUBLISHER = "dag-node"
+# A contact at this domain is UPSTREAM_PUBLISHER's; another publisher's release does not keep one.
+UPSTREAM_DOMAIN = "dagnode.com"
 UPSTREAM_SET = "core"
 BASE_SET = "ai-tools"
 UPSTREAM_ASSET_PREFIX = "ai-tools-"
@@ -37,6 +39,10 @@ PLUGIN_NAME_PREFIX = "ai-tools-assets-"
 # alone.
 PACKAGE_NAME_PREFIX = "ai-tools-assets-sets-"
 MARKETPLACE_NAME_SUFFIX = "-ai-tools-assets"
+# The publisher template (dag-node/ai-tools-assets-template): the placeholder its identity keys hold until
+# `new-publisher` writes a copy's own, and the `REUSE.toml` package name a copy that skipped the command still carries.
+TEMPLATE_PLACEHOLDER = "change-me"
+TEMPLATE_PACKAGE_NAME = "ai-tools-assets-template"
 # OpenAI's plugin submission limits `<plugin>:<skill>` to 64 characters; the tools warn, since it binds one route.
 COMPOSED_NAME_MAX_LENGTH = 64
 SEMVER_PATTERN = re.compile(
@@ -327,6 +333,11 @@ RULES: Dict[str, str] = {
 }
 RULES_WARNING: FrozenSet[str] = frozenset({"name.composed-length", "skill.length", "frontmatter.metadata-prefix",
                                           "license.text-modified", "license.text-unpinned"})
+
+
+def holds_template_placeholder(value: str) -> bool:
+    """True when `value` carries the template's placeholder, in any letter case."""
+    return TEMPLATE_PLACEHOLDER in value.lower()
 
 
 def is_valid_name(name: str) -> bool:
