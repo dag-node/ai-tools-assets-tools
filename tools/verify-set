@@ -35,6 +35,7 @@ import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 import openpgp  # noqa: E402
+from openpgp import MISMATCH, UNABLE, VERIFIED  # noqa: E402
 from safe_read import RefusedRead, open_root, read_file, read_file_under  # noqa: E402
 import signed_inventory  # noqa: E402
 from staged_build import INVENTORY_FILE, SIGNATURE_FILE  # noqa: E402
@@ -46,7 +47,7 @@ class Verification:
     def __init__(self, directory: pathlib.Path) -> None:
         self.directory = directory
         self.collector = FindingCollector("verify-set")
-        self.status = signed_inventory.VERIFIED
+        self.status = VERIFIED
 
     def fail(self, status: int, path, rule_id: str, message: str) -> int:
         self.collector.refuse(str(path), rule_id, message)
@@ -97,16 +98,16 @@ def main() -> int:
     run = Verification(directory)
     signer = args.signer.replace(" ", "").upper() if args.signer else None
     if signer is not None and not openpgp.FINGERPRINT_PATTERN.match(signer):
-        run.fail(signed_inventory.UNABLE, "--signer", "release.signature", f"`{args.signer}` is not a fingerprint of 40 hex digits")
+        run.fail(UNABLE, "--signer", "release.signature", f"`{args.signer}` is not a fingerprint of 40 hex digits")
         return run.finish()
     key, reason = read_key(args.key)
     if key is None:
-        run.fail(signed_inventory.UNABLE, args.key, "release.signature", reason)
+        run.fail(UNABLE, args.key, "release.signature", reason)
         return run.finish()
     try:
         directory_fd = open_root(directory)
     except OSError as error:
-        run.fail(signed_inventory.UNABLE, directory, "release.inventory", f"is not a directory: {error.strerror}")
+        run.fail(UNABLE, directory, "release.inventory", f"is not a directory: {error.strerror}")
         return run.finish()
     try:
         verify(run, args, signer, key, directory_fd)
@@ -123,34 +124,33 @@ def verify(run: Verification, args: argparse.Namespace, signer, key: bytes, dire
         try:
             read = read_file_under(directory_fd, pathlib.PurePath(name), bound)
         except FileNotFoundError:
-            run.fail(signed_inventory.UNABLE, name, rule_id, "is absent")
+            run.fail(UNABLE, name, rule_id, "is absent")
             continue
         except RefusedRead as refusal:
-            run.fail(signed_inventory.UNABLE, name, rule_id, refusal.message)
+            run.fail(UNABLE, name, rule_id, refusal.message)
             continue
         except OSError as error:
-            run.fail(signed_inventory.UNABLE, name, rule_id, f"cannot be read: {error.strerror}")
+            run.fail(UNABLE, name, rule_id, f"cannot be read: {error.strerror}")
             continue
         if read.truncated:
-            run.fail(signed_inventory.UNABLE, name, rule_id, f"is over {bound} bytes")
+            run.fail(UNABLE, name, rule_id, f"is over {bound} bytes")
             continue
         files[name] = read.data
     if run.status:
         return
     with openpgp.scratch_directory("verify-set.") as scratch:
-        signature = openpgp.valid_signature(scratch, key, files[INVENTORY_FILE], files[SIGNATURE_FILE])
-    if signature.outcome != openpgp.VERIFIED:
-        status = signed_inventory.MISMATCH if signature.outcome == openpgp.MISMATCH else signed_inventory.UNABLE
-        run.fail(status, SIGNATURE_FILE, "release.signature", signature.error)
+        signature = openpgp.check_signature(scratch, key, files[INVENTORY_FILE], files[SIGNATURE_FILE])
+    if signature.outcome != VERIFIED:
+        run.fail(signature.outcome, SIGNATURE_FILE, "release.signature", signature.error)
         return
     if signer is not None and signer not in (signature.signing_key, signature.primary):
-        run.fail(signed_inventory.UNABLE, SIGNATURE_FILE, "release.signature",
+        run.fail(UNABLE, SIGNATURE_FILE, "release.signature",
                  f"is by {signature.signing_key} (primary {signature.primary}), not by `--signer {signer}`")
         return
     try:
         inventory_text = files[INVENTORY_FILE].decode("utf-8")
     except UnicodeDecodeError:
-        run.fail(signed_inventory.MISMATCH, INVENTORY_FILE, "release.inventory", "is not UTF-8 text")
+        run.fail(MISMATCH, INVENTORY_FILE, "release.inventory", "is not UTF-8 text")
         return
     inventory = signed_inventory.verify_inventory(directory_fd, inventory_text)
     for path, message in inventory.problems:
@@ -170,24 +170,24 @@ def read_inventory_file(run: Verification, directory_fd: int, name: str, listed_
     try:
         read = read_file_under(directory_fd, pathlib.PurePath(name), fmt.FILE_MAX_BYTES)
     except FileNotFoundError:
-        run.fail(signed_inventory.UNABLE, name, "release.inventory", "is absent")
+        run.fail(UNABLE, name, "release.inventory", "is absent")
         return None
     except RefusedRead as refusal:
-        run.fail(signed_inventory.UNABLE, name, "release.inventory", refusal.message)
+        run.fail(UNABLE, name, "release.inventory", refusal.message)
         return None
     except OSError as error:
-        run.fail(signed_inventory.UNABLE, name, "release.inventory", f"cannot be read: {error.strerror}")
+        run.fail(UNABLE, name, "release.inventory", f"cannot be read: {error.strerror}")
         return None
     if read.truncated:
-        run.fail(signed_inventory.UNABLE, name, "release.inventory", f"is over {fmt.FILE_MAX_BYTES} bytes")
+        run.fail(UNABLE, name, "release.inventory", f"is over {fmt.FILE_MAX_BYTES} bytes")
         return None
     if listed_digest is not None and read.digest != listed_digest:
-        run.fail(signed_inventory.UNABLE, name, "release.inventory", "changed since the inventory was verified")
+        run.fail(UNABLE, name, "release.inventory", "changed since the inventory was verified")
         return None
     try:
         return read.data.decode("utf-8")
     except UnicodeDecodeError:
-        run.fail(signed_inventory.UNABLE, name, "release.inventory", "is not UTF-8 text")
+        run.fail(UNABLE, name, "release.inventory", "is not UTF-8 text")
         return None
 
 
@@ -202,7 +202,7 @@ def compare_with_source(run: Verification, directory_fd: int, source: pathlib.Pa
         return
     set_name = parse_key_value_text(text).get("name")
     if not fmt.is_valid_name(set_name or ""):
-        run.fail(signed_inventory.UNABLE, fmt.SET_CONF_FILE, "set.conf.name", f"`name={set_name}` is not a set name")
+        run.fail(UNABLE, fmt.SET_CONF_FILE, "set.conf.name", f"`name={set_name}` is not a set name")
         return
     with openpgp.scratch_directory("verify-set.") as scratch:
         build = scratch / "build"
@@ -211,12 +211,12 @@ def compare_with_source(run: Verification, directory_fd: int, source: pathlib.Pa
                                    capture_output=True, text=True)
         if completed.returncode != 0:
             reason = completed.stderr.strip().splitlines()[-1:] or ["no output"]
-            run.fail(signed_inventory.UNABLE, str(source), "release.inventory", f"build-set {set_name} did not build it ({reason[0]})")
+            run.fail(UNABLE, str(source), "release.inventory", f"build-set {set_name} did not build it ({reason[0]})")
             return
         try:
             build_fd = open_root(build / set_name)
         except OSError as error:
-            run.fail(signed_inventory.UNABLE, str(source), "release.inventory", f"build-set {set_name} staged no set: {error.strerror}")
+            run.fail(UNABLE, str(source), "release.inventory", f"build-set {set_name} staged no set: {error.strerror}")
             return
         try:
             built_text = read_inventory_file(run, build_fd, INVENTORY_FILE, None)
@@ -228,7 +228,7 @@ def compare_with_source(run: Verification, directory_fd: int, source: pathlib.Pa
     for path in sorted(set(listed) | set(built)):
         if listed.get(path) != built.get(path):
             what = "is absent from the source's build" if path not in built else "is absent from the signed set" if path not in listed else "differs from the source's build"
-            run.fail(signed_inventory.MISMATCH, path, "release.inventory", f"{what}, so the signed set is not the set the source builds")
+            run.fail(MISMATCH, path, "release.inventory", f"{what}, so the signed set is not the set the source builds")
 
 
 if __name__ == "__main__":

@@ -982,7 +982,7 @@ class SignSetWithAKey(SignedSetCase):
         import openpgp
         key = subprocess.run(["gpg", "--export", self.primary], capture_output=True, check=True, env=self.environment).stdout
         with tempfile.TemporaryDirectory() as scratch:
-            check = openpgp.valid_signature(pathlib.Path(scratch), key, (self.root / "build" / "acme" / "SHA256SUMS").read_bytes(),
+            check = openpgp.check_signature(pathlib.Path(scratch), key, (self.root / "build" / "acme" / "SHA256SUMS").read_bytes(),
                                             self.signature.read_bytes())
         self.assertEqual((check.outcome, check.primary), (openpgp.VERIFIED, self.primary))
 

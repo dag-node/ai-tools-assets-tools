@@ -113,7 +113,8 @@ SET_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset(SET_ROOT_ENTRY_TYPES)
 # at one. `llms.txt` is the agent-discovery index (llmstxt.org) the tools may generate beside the manifests.
 # `attestations/` is where a third party's signed statement about a set, bound to it by digest, will sit beside the
 # publisher's signature; until its design exists every validator and every base refuses a set carrying one.
-SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt", "attestations"})
+ATTESTATIONS_DIRECTORY = "attestations"
+SET_ROOT_ENTRIES_RESERVED: FrozenSet[str] = frozenset({"jobs", "libs", "variants", "llms.txt", ATTESTATIONS_DIRECTORY})
 RELEASE_ROOT_ENTRIES_ALLOWED: FrozenSet[str] = frozenset({"SHA256SUMS", "SHA256SUMS.asc"})
 CLAUDE_PLUGIN_DIRECTORY = ".claude-plugin"
 CLAUDE_PLUGIN_MANIFEST = "plugin.json"
@@ -145,7 +146,7 @@ RESERVED_FILE_NAMES: FrozenSet[str] = frozenset({
     "SHA256SUMS", "SHA256SUMS.asc", "UPSTREAM.conf", "asset.conf", "plugin.json", "README.md",
 })
 RESERVED_FILE_NAME_PATTERNS: Tuple[re.Pattern, ...] = (re.compile(r"^SHA512SUMS.*$"), re.compile(r"^.*\.oms\.sig$"))
-RESERVED_DIRECTORY_NAMES: FrozenSet[str] = frozenset({".claude-plugin", ".agents", "metadata", "variants", "attestations"})
+RESERVED_DIRECTORY_NAMES: FrozenSet[str] = frozenset({".claude-plugin", ".agents", "metadata", "variants", ATTESTATIONS_DIRECTORY})
 
 # ── Frontmatter ────────────────────────────────────────────────────────────────────────────────────────────────────
 DESCRIPTION_MAX_LENGTH = 1024

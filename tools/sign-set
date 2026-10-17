@@ -34,7 +34,7 @@ import asset_format as fmt  # noqa: E402
 from findings import FindingCollector  # noqa: E402
 from key_value_config import parse_key_value_text  # noqa: E402
 from license_policy import resolve_license_allowlist  # noqa: E402
-from openpgp import FINGERPRINT_PATTERN, scratch_directory, valid_signature  # noqa: E402
+from openpgp import FINGERPRINT_PATTERN, check_signature, scratch_directory  # noqa: E402
 from safe_read import RefusedRead, open_root, read_text_under  # noqa: E402
 from safe_write import replace_file  # noqa: E402
 from set_validation import PROFILE_RELEASE, ValidationOptions, read_reserved_words, validate_set_directory  # noqa: E402
@@ -143,7 +143,7 @@ def verify(data: bytes, signature: bytes, key, collector: FindingCollector):
         collector.refuse(INVENTORY_FILE, "release.signature", f"gpg exported no public key{' for ' + key if key else ''}; nothing was written")
         return None
     with scratch_directory("sign-set.") as scratch:
-        result = valid_signature(scratch, exported.stdout, data, signature)
+        result = check_signature(scratch, exported.stdout, data, signature)
     if result.error is not None:
         collector.refuse(INVENTORY_FILE, "release.signature", f"{result.error}; nothing was written")
         return None

@@ -27,9 +27,10 @@ from typing import Iterator, List, Optional
 FINGERPRINT_PATTERN = re.compile(r"^[0-9A-F]{40}$")
 ARMOR_BEGIN = re.compile(r"^-----BEGIN PGP PUBLIC KEY BLOCK-----\s*$")
 ARMOR_END = re.compile(r"^-----END PGP PUBLIC KEY BLOCK-----\s*$")
-VERIFIED = "verified"
-MISMATCH = "mismatch"
-UNABLE = "unable"
+# The status contract of ai-tools-base's verifier, which verify-set exits with; the inventory half reports under it.
+VERIFIED = 0
+MISMATCH = 1
+UNABLE = 2
 TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 
 
@@ -60,7 +61,7 @@ class SignatureCheck:
     not read the signature, or the key does not hold the signer), the split ai-tools-base's verifier makes; the keys are
     set when VERIFIED, `error` otherwise."""
 
-    outcome: str
+    outcome: int
     signing_key: Optional[str] = None
     primary: Optional[str] = None
     error: Optional[str] = None
@@ -98,7 +99,7 @@ def dearmor(text: bytes) -> Optional[bytes]:
     return b"".join(blocks)
 
 
-def valid_signature(scratch: pathlib.Path, key: bytes, data: bytes, signature: bytes) -> SignatureCheck:
+def check_signature(scratch: pathlib.Path, key: bytes, data: bytes, signature: bytes) -> SignatureCheck:
     """Check `signature` over `data` against the binary key `key`, with gpgv's home in the empty directory `scratch`."""
     if shutil.which("gpgv") is None:
         return SignatureCheck(UNABLE, error="`gpgv` is not on PATH")
