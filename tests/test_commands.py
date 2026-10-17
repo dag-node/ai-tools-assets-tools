@@ -557,27 +557,33 @@ def tree_state(root: pathlib.Path):
     return state
 
 
+def compose_template(root: pathlib.Path) -> None:
+    """Write the template's tree at `root` as it is made: the placeholder publisher.conf, `new-set` and `new-asset` for
+    the example set, and the skeleton files with the lines new-publisher rewrites."""
+    (root / "sets").mkdir(parents=True)
+    (root / "LICENSES").mkdir()
+    shutil.copy(FIXTURES / "LICENSES" / "MIT-0.txt", root / "LICENSES" / "MIT-0.txt")
+    (root / "publisher.conf").write_text(TEMPLATE_PUBLISHER_CONF, encoding="utf-8")
+    for command in (("new-set", "change-me-example", "--license", "MIT-0", "--summary", "An example set; rename it to start with your publisher name"),
+                    ("new-asset", "change-me-example", "skill", "change-me-example-hello", "--description", "Prints a greeting. Replace it with your first skill.")):
+        status, _, stderr = run(*command, "--root", str(root))
+        assert status == 0, stderr
+    mit0 = (FIXTURES / "LICENSES" / "MIT-0.txt").read_text(encoding="utf-8")
+    files = {"LICENSE": mit0.replace("<YEAR> <COPYRIGHT HOLDER>", "2026 the ai-tools-assets-template authors"),
+             "REUSE.toml": TEMPLATE_REUSE, ".github/CODEOWNERS": TEMPLATE_CODEOWNERS, "README.md": "# ai-tools-assets-template\n",
+             ".github/workflows/validate.yml": TEMPLATE_VALIDATE, ".github/workflows/release.yml": TEMPLATE_RELEASE}
+    for relative, text in files.items():
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text(text, encoding="utf-8")
+
+
 class NewPublisher(unittest.TestCase):
     """new-publisher over a tree composed the way the template is made."""
 
     def setUp(self):
         self.scratch = pathlib.Path(tempfile.mkdtemp())
         self.root = self.scratch / "ai-tools-assets"
-        (self.root / "sets").mkdir(parents=True)
-        (self.root / "LICENSES").mkdir()
-        shutil.copy(FIXTURES / "LICENSES" / "MIT-0.txt", self.root / "LICENSES" / "MIT-0.txt")
-        (self.root / "publisher.conf").write_text(TEMPLATE_PUBLISHER_CONF, encoding="utf-8")
-        for command in (("new-set", "change-me-example", "--license", "MIT-0", "--summary", "An example set; rename it to start with your publisher name"),
-                        ("new-asset", "change-me-example", "skill", "change-me-example-hello", "--description", "Prints a greeting. Replace it with your first skill.")):
-            status, _, stderr = run(*command, "--root", str(self.root))
-            self.assertEqual(status, 0, stderr)
-        mit0 = (FIXTURES / "LICENSES" / "MIT-0.txt").read_text(encoding="utf-8")
-        files = {"LICENSE": mit0.replace("<YEAR> <COPYRIGHT HOLDER>", "2026 the ai-tools-assets-template authors"),
-                 "REUSE.toml": TEMPLATE_REUSE, ".github/CODEOWNERS": TEMPLATE_CODEOWNERS, "README.md": "# ai-tools-assets-template\n",
-                 ".github/workflows/validate.yml": TEMPLATE_VALIDATE, ".github/workflows/release.yml": TEMPLATE_RELEASE}
-        for relative, text in files.items():
-            (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
-            (self.root / relative).write_text(text, encoding="utf-8")
+        compose_template(self.root)
 
     def tearDown(self):
         shutil.rmtree(self.scratch)
@@ -710,6 +716,56 @@ class NewPublisher(unittest.TestCase):
         self.assertEqual(status, 0, stderr)
         self.assertEqual((self.root / "LICENSE").read_text(encoding="utf-8"), "Apache License\nVersion 2.0, January 2004\n",
                          "a text without a holder line is written as published")
+
+
+class CheckPublisherRelease(unittest.TestCase):
+    """check-publisher --repository over the template as generated and as initialized."""
+
+    def setUp(self):
+        self.scratch = pathlib.Path(tempfile.mkdtemp())
+        self.root = self.scratch / "ai-tools-assets"
+        compose_template(self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def check(self, *arguments):
+        status, _, stderr = run("check-publisher", "--root", str(self.root), *arguments)
+        return status, stderr
+
+    def test_a_copy_as_generated_passes_a_pull_request_and_fails_its_release(self):
+        self.assertEqual(self.check(), (0, ""))
+        status, stderr = self.check("--repository", "change-me/ai-tools-assets")
+        self.assertEqual(status, 1, "an owner named change-me passed on the owner comparison alone")
+        for key in ("publisher", "contact", "maintainers", "source"):
+            self.assertIn(f"publisher.conf: `{key}` still holds the template placeholder `change-me`", stderr, key)
+        self.assertIn("REUSE.toml: `SPDX-PackageName` still names the template", stderr)
+
+    def test_each_identity_key_holding_the_placeholder_is_refused_at_release(self):
+        status, _, stderr = run("new-publisher", "--root", str(self.root), *INITIALIZE)
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.check("--repository", "Acme/ai-tools-assets"), (0, ""))
+        conf = self.root / "publisher.conf"
+        original = conf.read_text(encoding="utf-8")
+        for key, old, new in (("contact", "contact=tools@acme.example", "contact=Change-Me@acme.example"),
+                              ("maintainers", "maintainers=[tools@acme.example]", "maintainers=[tools@acme.example, change-me@acme.example]"),
+                              ("source", "source=https://github.com/Acme/ai-tools-assets", "source=https://github.com/Acme/change-me")):
+            conf.write_text(original.replace(old, new), encoding="utf-8")
+            status, stderr = self.check("--repository", "Acme/ai-tools-assets")
+            self.assertEqual(status, 1, key)
+            self.assertIn(f"publisher.conf: `{key}` still holds the template placeholder `change-me`", stderr, key)
+        conf.write_text(original, encoding="utf-8")
+
+    def test_the_template_package_name_is_refused_at_release_alone(self):
+        status, _, stderr = run("new-publisher", "--root", str(self.root), *INITIALIZE)
+        self.assertEqual(status, 0, stderr)
+        reuse = self.root / "REUSE.toml"
+        reuse.write_text(reuse.read_text(encoding="utf-8").replace('SPDX-PackageName = "ai-tools-assets"', 'SPDX-PackageName = "ai-tools-assets-template"'),
+                         encoding="utf-8")
+        self.assertEqual(self.check(), (0, ""), "a pull request does not read the package name")
+        status, stderr = self.check("--repository", "Acme/ai-tools-assets")
+        self.assertEqual(status, 1)
+        self.assertIn("REUSE.toml: `SPDX-PackageName` still names the template; run new-publisher", stderr)
 # REUSE-IgnoreEnd
 
 

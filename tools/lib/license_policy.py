@@ -203,6 +203,28 @@ def read_reuse_annotations(root_fd: int) -> Tuple[List[ReuseAnnotation], Optiona
     return annotations, None
 
 
+def read_reuse_package_name(root_fd: int) -> Tuple[Optional[str], Optional[str]]:
+    """The `SPDX-PackageName` of the REUSE.toml under `root_fd`, read from the lines before the first table with the
+    value forms `read_reuse_annotations` accepts, and what is wrong with the file where something is; None for a file
+    or a key that is absent."""
+    try:
+        text = read_text_under(root_fd, PurePath("REUSE.toml"), FILE_MAX_BYTES)
+    except FileNotFoundError:
+        return None, None
+    except RefusedRead as refusal:
+        return None, refusal.message
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if REUSE_TABLE_HEADER.match(line):
+            break
+        match = REUSE_KEY_VALUE.match(line)
+        if match and match.group("key") == "SPDX-PackageName":
+            value, problem = _toml_value(match.group("value"))
+            if problem is not None or not isinstance(value, str):
+                return None, f"line {line_number}: `SPDX-PackageName =`: {problem or 'is not a string'}"
+            return value, None
+    return None, None
+
+
 def _toml_value(raw: str) -> Tuple[TomlValue, Optional[str]]:
     """The string, or the tuple of strings, a one-line TOML value holds; the problem where it is outside the subset."""
     if not raw.startswith("["):
